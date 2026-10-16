@@ -14,6 +14,13 @@
 
 В PATH старых терминалов может не быть cargo: добавлять `$env:USERPROFILE\.cargo\bin`.
 
+Код — в приватном репозитории https://github.com/Fr4nke9stein/battle-chess (с 2026-10-16,
+ветка `main`). Git и GitHub CLI поставлены через winget; в старых терминалах их может не быть в
+PATH (`C:\Program Files\Git\cmd`, `C:\Program Files\GitHub CLI`). В репозитории
+`core.autocrlf = false` (файлы — с LF), коммиты — от `Fr4nke9stein` с адресом GitHub
+`66310481+Fr4nke9stein@users.noreply.github.com`. Не входят: `target` и старая копия
+`battle-chess/` внутри проекта.
+
 ## Тулчейн: rustup stable-x86_64-pc-windows-gnu без Visual Studio и MinGW
 
 - В Cargo.toml закреплены `parking_lot_core =0.9.10` и `libloading =0.8.8`: новые
