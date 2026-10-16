@@ -1,0 +1,29 @@
+[package]
+name = "battle-chess"
+version = "0.39.1"
+edition = "2024"
+rust-version = "1.88"
+description = "Боевые шахматы: у фигур есть атака и здоровье"
+publish = false
+
+[dependencies]
+eframe = "0.31.1"
+resvg = { version = "0.48.1", default-features = false }
+rodio = { version = "0.20.1", default-features = false, features = ["mp3"] }
+
+# Более новые версии этих крейтов линкуются через raw-dylib, а для этого
+# GNU-тулчейну нужен полный MinGW (dlltool + ассемблер). Эти версии
+# используют готовые import-библиотеки и собираются «голым» rustup.
+[target.'cfg(all(windows, target_env = "gnu"))'.dependencies]
+parking_lot_core = "=0.9.10"
+libloading = "=0.8.8"
+
+[profile.dev]
+opt-level = 1
+
+# Зависимости (растеризация SVG, декодер mp3) собираем с оптимизациями и в отладке.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+strip = true
