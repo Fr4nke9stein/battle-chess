@@ -41,14 +41,21 @@ const COLLECTION_ZOOM: usize = 2;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     Menu,
+    /// Мультиплеер: адрес сервера, подключение, ожидание соперника.
+    Lobby,
     Decks,
     Collection,
     Game,
 }
 
 /// Что нажали в меню.
+#[allow(dead_code)] // колоды и коллекция скрыты (0.40)
 enum Choice {
     Play,
+    /// Экран мультиплеера, подключиться, отменить подключение.
+    Multiplayer,
+    Connect,
+    Disconnect,
     /// Компьютер с обычными или усиленными фигурами.
     Boost,
     Decks,
@@ -101,10 +108,11 @@ impl BattleChessApp {
                 let field = Field { origin, scale };
                 let response = ui.allocate_rect(avail, Sense::click());
                 let pointer = response.hover_pos();
-                let painter = ui.painter();
+                let painter = &ui.painter().clone();
                 self.pointer = Pointer::Default;
                 self.cursor_scale = physical as u32;
                 choice = match self.screen {
+                    Screen::Lobby => self.lobby_screen(ui, painter, &field, pointer),
                     Screen::Decks => self.deck_screen(ctx, painter, &field, pointer, physical),
                     Screen::Collection => {
                         self.collection_screen(ctx, painter, &field, pointer, physical)
@@ -158,6 +166,15 @@ impl BattleChessApp {
                 self.new_game(self.draft);
                 self.screen = Screen::Game;
             }
+            Some(Choice::Multiplayer) => {
+                self.net_status.clear();
+                self.screen = Screen::Lobby;
+            }
+            Some(Choice::Connect) => self.connect(ctx),
+            Some(Choice::Disconnect) => {
+                self.leave_network();
+                self.net_status = "Подключение отменено".to_owned();
+            }
             Some(Choice::Decks) => self.screen = Screen::Decks,
             Some(Choice::Boost) => self.settings.boosted = !self.settings.boosted,
             Some(Choice::Balance) => {
@@ -176,6 +193,9 @@ impl BattleChessApp {
                 self.collection_page = self.collection_page.saturating_add_signed(step).min(last);
             }
             Some(Choice::Back) => {
+                if self.screen == Screen::Lobby {
+                    self.leave_network();
+                }
                 self.reload_balance();
                 self.deck_message = None;
                 self.screen = Screen::Menu;
@@ -189,6 +209,75 @@ impl BattleChessApp {
         }
     }
 
+    /// Мультиплеер: поле адреса сервера, «Подключиться» (Enter) или «Отменить», «Назад» и
+    /// строка состояния. Партию начнёт сервер, когда подключится второй игрок.
+    fn lobby_screen(
+        &mut self,
+        ui: &mut egui::Ui,
+        painter: &Painter,
+        field: &Field,
+        pointer: Option<Pos2>,
+    ) -> Option<Choice> {
+        heading(painter, field, 34.0, "Мультиплеер", 22.0);
+        painter.text(
+            field.at(vec2(FIELD.x / 2.0, 58.0)),
+            Align2::CENTER_CENTER,
+            "Адрес сервера (IP:порт)",
+            FontId::proportional(7.0 * field.scale),
+            theme::TEXT_DIM,
+        );
+        let connecting = self.net.is_some();
+        let edit = ui.put(
+            field.rect(vec2(80.0, 66.0), vec2(200.0, 18.0)),
+            egui::TextEdit::singleline(&mut self.net_address)
+                .hint_text("например, 203.0.113.5:47900")
+                .font(FontId::proportional(8.0 * field.scale))
+                .interactive(!connecting)
+                .horizontal_align(egui::Align::Center)
+                .vertical_align(egui::Align::Center),
+        );
+        let entered = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        let mut picked = None;
+        let x = (FIELD.x - BUTTON.x) / 2.0;
+        let (label, action) = if connecting {
+            ("Отменить", Choice::Disconnect)
+        } else {
+            ("Подключиться", Choice::Connect)
+        };
+        if self.button(painter, field, vec2(x, 94.0), label, pointer) {
+            picked = Some(action);
+        }
+        if self.button(painter, field, vec2(x, 120.0), "Назад", pointer) {
+            picked = Some(Choice::Back);
+        }
+        if entered && !connecting {
+            // Enter в поле — сразу подключиться, без щелчка.
+            self.connect(&ui.ctx().clone());
+        }
+        painter.text(
+            field.at(vec2(FIELD.x / 2.0, 160.0)),
+            Align2::CENTER_CENTER,
+            &self.net_status,
+            FontId::proportional(7.0 * field.scale),
+            theme::TEXT_BRIGHT,
+        );
+        painter.text(
+            field.at(vec2(FIELD.x / 2.0, 200.0)),
+            Align2::CENTER_CENTER,
+            "Сервер — tools/mp_server.py на вашем VPS; оба игрока вводят один адрес.",
+            FontId::proportional(5.5 * field.scale),
+            theme::TEXT_DIM,
+        );
+        painter.text(
+            field.at(vec2(FIELD.x / 2.0, 210.0)),
+            Align2::CENTER_CENTER,
+            "Первый подключившийся играет белыми, второй — чёрными.",
+            FontId::proportional(5.5 * field.scale),
+            theme::TEXT_DIM,
+        );
+        picked
+    }
+
     /// Заглавный экран: название, кнопки и предупреждения о `balance.ini`, если они есть.
     fn title_screen(
         &mut self,
@@ -200,7 +289,7 @@ impl BattleChessApp {
         painter.text(
             field.at(vec2(FIELD.x / 2.0, 54.0)),
             Align2::CENTER_CENTER,
-            "шахматы, карты и пиксель-арт",
+            "шахматы и пиксель-арт",
             FontId::proportional(6.0 * field.scale),
             theme::TEXT_DIM,
         );
@@ -211,12 +300,12 @@ impl BattleChessApp {
         };
         let buttons = [
             ("Начать играть", Choice::Play),
+            ("Мультиплеер", Choice::Multiplayer),
             (strength, Choice::Boost),
-            ("Выбрать колоду", Choice::Decks),
-            ("Коллекция карт", Choice::Collection),
             ("Править баланс", Choice::Balance),
             ("Выйти", Choice::Quit),
         ];
+        // С 0.40 карт в игре нет: выбор колоды и коллекция скрыты.
         let mut picked = None;
         for (k, (label, choice)) in buttons.into_iter().enumerate() {
             let min = vec2((FIELD.x - BUTTON.x) / 2.0, 70.0 + k as f32 * 24.0);

@@ -82,6 +82,7 @@ const CLASSIC: &Recipe = &[
 pub const RECIPES: [&Recipe; DECK_COUNT] = [AZURE, CLASSIC, CLASSIC, CLASSIC, CLASSIC];
 
 /// Карты колоды `index` (по кругу) в порядке списка, не перемешанные: по составу из баланса.
+#[allow(dead_code)] // карты убраны из интерфейса (0.40)
 pub fn deck_cards(index: usize) -> Vec<CardKind> {
     balance()
         .deck(index)

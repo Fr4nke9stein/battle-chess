@@ -1,6 +1,6 @@
 [package]
 name = "battle-chess"
-version = "0.39.1"
+version = "0.45.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Боевые шахматы: у фигур есть атака и здоровье"

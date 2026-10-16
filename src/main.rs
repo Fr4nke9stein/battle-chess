@@ -10,6 +10,8 @@ mod assets;
 mod balance;
 mod editor;
 mod game;
+mod net;
+
 mod settings;
 mod sound;
 mod theme;

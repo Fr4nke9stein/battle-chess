@@ -31,6 +31,7 @@ pub fn choose_move(pos: &Position, cancel: &AtomicBool) -> Option<Move> {
     if moves.is_empty() {
         return None;
     }
+
     let mut search = Search {
         deadline: Instant::now() + THINK_TIME,
         cancel,
@@ -117,6 +118,7 @@ impl Search<'_> {
         }
         let mut moves = Vec::with_capacity(48);
         pos.pseudo_moves(&mut moves);
+
         if moves.is_empty() {
             // Ходить нечем (фигуры заморожены или заперты) — ход пропускается, фигуры бьют.
             let mut next = pos.clone();
@@ -143,9 +145,9 @@ impl Search<'_> {
 /// ходит; чем раньше выигрыш, тем он дороже.
 fn decided(pos: &Position, ply: i32) -> Option<i32> {
     let us = pos.side();
-    if !pos.has_pieces(us) {
+    if !pos.has_pieces(us) || pos.king_lost(us) {
         Some(-MATE + ply)
-    } else if !pos.has_pieces(us.opponent()) {
+    } else if !pos.has_pieces(us.opponent()) || pos.king_lost(us.opponent()) {
         Some(MATE - ply)
     } else {
         None
@@ -164,6 +166,15 @@ pub fn evaluate(pos: &Position) -> i32 {
         } else {
             -worth
         };
+    }
+    // Запас стоит половину фигуры на доске: его ещё надо выставить.
+    for color in [Color::White, Color::Black] {
+        let stock: i32 = pos
+            .reserve(color)
+            .iter()
+            .map(|&(kind, ready, waiting)| value(kind) * i32::from(ready + waiting) / 2)
+            .sum();
+        score += if color == Color::White { stock } else { -stock };
     }
     let score = if pos.side() == Color::White {
         score
@@ -277,13 +288,12 @@ mod tests {
 
     #[test]
     fn walks_up_to_a_free_kill() {
-        // Белый ферзь подходит к раненой ладье d5, в конце хода добивает её и встаёт на d5.
+        // Белый ферзь подходит к раненой ладье d5 и в конце хода добивает её.
         let mut pos = Position::from_fen("4k3/8/8/3r4/8/8/3Q4/4K3 w - - 0 1").unwrap();
         pos.set_hp(parse_square("d5").unwrap(), 100);
         let mv = choose_move(&pos, &AtomicBool::new(false)).unwrap();
         pos.make_turn(mv);
-        let d5 = pos.piece(parse_square("d5").unwrap()).unwrap();
-        assert_eq!((d5.kind, d5.color), (Kind::Queen, Color::White));
+        assert!(pos.piece(parse_square("d5").unwrap()).is_none());
     }
 
     #[test]

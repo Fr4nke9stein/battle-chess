@@ -351,16 +351,16 @@ const BALANCE = {
     { key: "start_hand", value: 3, min: 0, max: 10, note: "сколько карт сдаётся в руку перед первым ходом" },
     { key: "max_hand", value: 7, min: 1, max: 10, note: "больше карт в руке не бывает: с полной рукой карта остаётся в колоде" },
     { key: "lava_pawns", value: 3, min: 0, max: 16, note: "усиленный компьютер: сколько его случайных пешек в начале вашего хода насыщается лавой (в конце хода компьютера они взрываются огненной волной)" },
-    { key: "lava_damage", value: 300, min: 0, max: 9999, note: "усиленный компьютер: урон взрыва лавы каждой вашей фигуре вокруг пешки (свои фигуры взрыв не задевает)" },
+    { key: "lava_damage", value: 1, min: 0, max: 9999, note: "усиленный компьютер: урон взрыва лавы каждой вашей фигуре вокруг пешки (свои фигуры взрыв не задевает), в тех же единицах, что атака" },
     { key: "spark_percent", value: 100, min: 0, max: 1000, note: "усиленный компьютер: сколько процентов атаки слона с электричеством достаётся каждой вашей фигуре по диагонали вокруг его цели" }
   ],
   pieces: [
-    { id: "King", title: "Король", attack: 300, hp: 1500, points: 9 },
-    { id: "Queen", title: "Ферзь", attack: 300, hp: 1200, points: 7 },
-    { id: "Rook", title: "Ладья", attack: 300, hp: 1200, points: 5 },
-    { id: "Bishop", title: "Слон", attack: 300, hp: 900, points: 3 },
-    { id: "Knight", title: "Конь", attack: 300, hp: 600, points: 3 },
-    { id: "Pawn", title: "Пешка", attack: 300, hp: 900, points: 1 }
+    { id: "King", title: "Король", attack: 1, hp: 5, points: 9 },
+    { id: "Queen", title: "Ферзь", attack: 1, hp: 4, points: 7 },
+    { id: "Rook", title: "Ладья", attack: 1, hp: 4, points: 5 },
+    { id: "Bishop", title: "Слон", attack: 1, hp: 3, points: 3 },
+    { id: "Knight", title: "Конь", attack: 1, hp: 3, points: 3 },
+    { id: "Pawn", title: "Пешка", attack: 1, hp: 3, points: 1 }
   ],
   decks: ["Лазурная", "Багровая", "Изумрудная", "Золотая", "Аметистовая"],
 };

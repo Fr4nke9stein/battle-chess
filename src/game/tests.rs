@@ -129,39 +129,218 @@ fn pieces_strike_at_the_end_of_their_turn_without_an_answer() {
     let mut pos = position("4k3/8/8/8/8/2p5/8/1N2K3 w - - 0 1");
     assert_eq!(strikes(&mut pos), ["b1-c3 300"]);
     assert_eq!(hp(&pos, "c3"), 600);
-    assert_eq!(hp(&pos, "b1"), 600);
+    assert_eq!(hp(&pos, "b1"), 900);
     assert_eq!(pos.side(), Color::Black);
     // Бьёт только сторона, закончившая ход: пешка c3 бьёт вниз по диагонали — там пусто.
     assert!(strikes(&mut pos).is_empty());
 }
 
 #[test]
-fn a_killer_takes_the_square_of_its_victim() {
+fn a_killer_stays_on_its_square() {
     let mut pos = position("4k3/8/8/8/8/2p5/8/1N2K3 w - - 0 1");
     pos.set_hp(sq("c3"), 300);
     assert_eq!(strikes(&mut pos), ["b1-c3 300†"]);
-    assert!(pos.piece(sq("b1")).is_none());
-    assert_eq!(pos.piece(sq("c3")).map(|p| p.kind), Some(Kind::Knight));
-    assert_eq!(hp(&pos, "c3"), 600);
+    assert_eq!(pos.piece(sq("b1")).map(|p| p.kind), Some(Kind::Knight));
+    assert!(pos.piece(sq("c3")).is_none());
     assert_eq!(pos.points(Color::White, Points::Victory), 1);
     assert_eq!(pos.points(Color::Black, Points::Sacrifice), 1);
 }
 
 #[test]
-fn a_killer_strikes_once_and_a_pawn_on_the_last_rank_becomes_a_queen() {
-    // Ладья a4 убивает пешку b4 и встаёт на b4 — позже в очереди, но второй раз не бьёт.
-    let mut pos = position("4k3/8/8/8/Rpp5/8/8/4K3 w - - 0 1");
-    pos.set_hp(sq("b4"), 300);
-    assert_eq!(strikes(&mut pos), ["a4-b4 300†"]);
-    assert_eq!(hp(&pos, "c4"), 900);
-    // Пешка b7 добивает коня a8 и становится ферзём с полным здоровьем.
-    let mut pos = position("n3k3/1P6/8/8/8/8/8/4K3 w - - 0 1");
-    pos.set_hp(sq("a8"), 300);
-    assert_eq!(strikes(&mut pos), ["b7-a8 300†"]);
-    assert_eq!(
-        pos.piece(sq("a8")),
-        Some(Piece::new(Kind::Queen, Color::White))
+fn a_piece_strikes_every_enemy_in_reach() {
+    // Ферзь d4 бьёт и слона e5, и ладью d5, и пешку c5.
+    let mut pos = position("4k3/8/8/2prb3/3Q4/8/8/4K3 w - - 0 1");
+    pos.set_hp(sq("e5"), 300);
+    assert_eq!(strikes(&mut pos), ["d4-e5 300†", "d4-d5 300", "d4-c5 300"]);
+    assert_eq!(pos.piece(sq("d4")).map(|p| p.kind), Some(Kind::Queen));
+}
+
+#[test]
+fn a_bishop_strikes_two_squares_diagonally() {
+    for (target, reached) in [("f6", true), ("b2", true), ("g7", false), ("d6", false)] {
+        let mut pos = board(&[("d4", 'B'), (target, 'p')], 'w');
+        assert_eq!(!strikes(&mut pos).is_empty(), reached, "d4 → {target}");
+    }
+}
+
+#[test]
+fn rooks_and_queens_strike_two_squares() {
+    for (letter, target, reached) in [
+        ('R', "d6", true),
+        ('R', "b4", true),
+        ('R', "d7", false),
+        ('R', "f6", false),
+        ('Q', "f6", true),
+        ('Q', "d2", true),
+        ('Q', "b4", true),
+        ('Q', "g7", false),
+        ('Q', "a4", false),
+        ('Q', "f5", false),
+    ] {
+        let mut pos = board(&[("d4", letter), (target, 'p')], 'w');
+        assert_eq!(
+            !strikes(&mut pos).is_empty(),
+            reached,
+            "{letter} d4 → {target}"
+        );
+    }
+}
+
+#[test]
+fn long_strikes_hit_only_the_first_piece_on_a_line() {
+    // Ладья d4: пешки d5 и d6 на одной линии — бьёт только d5; своя пешка e4 закрывает f4.
+    let mut pos = board(
+        &[
+            ("d4", 'R'),
+            ("d5", 'p'),
+            ("d6", 'p'),
+            ("e4", 'P'),
+            ("f4", 'p'),
+        ],
+        'w',
     );
+    let hits = strikes(&mut pos);
+    assert!(hits.iter().any(|h| h.starts_with("d4-d5")));
+    assert!(
+        !hits
+            .iter()
+            .any(|h| h.starts_with("d4-d6") || h.starts_with("d4-f4"))
+    );
+    // Ферзь и слон — так же по диагонали.
+    for letter in ['Q', 'B'] {
+        let mut pos = board(&[("d4", letter), ("e5", 'p'), ("f6", 'p')], 'w');
+        assert_eq!(strikes(&mut pos).len(), 1, "{letter}");
+    }
+}
+
+#[test]
+fn killed_pieces_go_to_the_killers_reserve_and_drop_after_two_turns() {
+    // Конь b1 добивает пешку c3 — пешка в запасе белых, ждёт два начала их хода.
+    let mut pos = position("4k3/8/8/8/8/2p5/8/1N2K3 w - - 0 1");
+    pos.set_hp(sq("c3"), 300);
+    pos.make_move(find(&pos, "e1", "f1"));
+    pos.end_turn();
+    assert_eq!(pos.reserve(Color::White), [(Kind::Pawn, 0, 1)]);
+    let drops = |pos: &Position| pos.legal_moves().into_iter().filter(Move::is_drop).count();
+    pos.make_move(find(&pos, "e8", "d8"));
+    pos.end_turn();
+    assert_eq!(drops(&pos), 0, "ход белых 1 — ещё ждёт");
+    pos.make_move(find(&pos, "f1", "e1"));
+    pos.end_turn();
+    pos.make_move(find(&pos, "d8", "e8"));
+    pos.end_turn();
+    assert_eq!(pos.reserve(Color::White), [(Kind::Pawn, 1, 0)]);
+    let moves = pos.legal_moves();
+    let targets: Vec<Square> = moves.iter().filter(|m| m.is_drop()).map(|m| m.to).collect();
+    assert!(
+        targets.iter().all(|&t| (8..32).contains(&t)),
+        "своя половина, не 1-я"
+    );
+    assert!(!targets.contains(&sq("b1")) && targets.contains(&sq("d4")));
+    // Выставленная пешка d4 в этот ход не бьёт, со следующего — бьёт.
+    let mut pos2 = pos.clone();
+    pos2.set_hp(sq("e8"), 1500);
+    let mut board_pos = position("4k3/8/8/2p5/8/8/8/4K3 w - - 0 1");
+    board_pos.reserve = pos.reserve;
+    let drop = Move::new(sq("d4"), sq("d4"), MoveKind::Drop(Kind::Pawn));
+    assert!(board_pos.legal_moves().contains(&drop));
+    board_pos.make_move(drop);
+    assert!(board_pos.reserve(Color::White).is_empty());
+    assert!(
+        board_pos.end_turn().strikes.is_empty(),
+        "в ход выставления не бьёт"
+    );
+    board_pos.make_move(find(&board_pos, "e8", "e7"));
+    board_pos.end_turn();
+    board_pos.make_move(find(&board_pos, "e1", "e2"));
+    let turn = board_pos.end_turn();
+    assert!(
+        turn.strikes
+            .iter()
+            .any(|s| s.from == sq("d4") && s.hit.square == sq("c5"))
+    );
+}
+
+#[test]
+fn a_knight_intercepts_a_piece_moving_into_its_reach() {
+    // Чёрный конь d5 сразу бьёт белую ладью, вставшую на c3; дальше ладья не перехватывается.
+    let mut pos = position("4k3/8/8/3n4/8/8/8/R3K3 w - - 0 1");
+    let outcome = pos.make_move(find(&pos, "a1", "a3"));
+    assert!(outcome.reactions.is_empty(), "a3 конь не достаёт");
+    let mut pos = position("4k3/8/8/3n4/8/8/8/2R1K3 w - - 0 1");
+    let outcome = pos.make_move(find(&pos, "c1", "c3"));
+    assert_eq!(outcome.reactions.len(), 1);
+    let strike = outcome.reactions[0];
+    assert_eq!((strike.from, strike.hit.square), (sq("d5"), sq("c3")));
+    assert_eq!(hp(&pos, "c3"), 1200 - 300);
+    // Перехват убил — фигура уходит в запас коня.
+    let mut pos = position("4k3/8/8/3n4/8/8/8/2R1K3 w - - 0 1");
+    pos.set_hp(sq("c1"), 300);
+    let outcome = pos.make_move(find(&pos, "c1", "c3"));
+    assert!(outcome.reactions[0].hit.killed);
+    assert!(pos.piece(sq("c3")).is_none());
+    assert_eq!(pos.reserve(Color::Black), [(Kind::Rook, 0, 1)]);
+    // Замёрзший конь не перехватывает; невидимого коня соперника — тоже нет (свой ход).
+    let mut pos = position("4k3/8/8/3n4/8/8/8/2R1K3 w - - 0 1");
+    pos.set_frozen(sq("d5"), 1);
+    assert!(pos.make_move(find(&pos, "c1", "c3")).reactions.is_empty());
+    // Пешка на подошедшую фигуру не реагирует: ладья встала на c4 рядом с чёрной d5.
+    let mut pos = position("4k3/8/8/3p4/8/8/8/2R1K3 w - - 0 1");
+    assert!(pos.make_move(find(&pos, "c1", "c4")).reactions.is_empty());
+}
+
+#[test]
+fn a_pawn_strikes_en_passant() {
+    // Белая e2–e4 проходит через e3, которую бьёт чёрная d4: та сразу бьёт пешку на e4.
+    let mut pos = position("4k3/8/8/8/3p4/8/4P3/4K3 w - - 0 1");
+    let outcome = pos.make_move(find(&pos, "e2", "e4"));
+    assert_eq!(outcome.reactions.len(), 1);
+    let strike = outcome.reactions[0];
+    assert_eq!((strike.from, strike.hit.square), (sq("d4"), sq("e4")));
+    // Ход на одну клетку — не на проходе: e2–e3 встаёт прямо под удар d4, но пешка молчит.
+    let mut pos = position("4k3/8/8/8/3p4/8/4P3/4K3 w - - 0 1");
+    assert!(pos.make_move(find(&pos, "e2", "e3")).reactions.is_empty());
+    // Двойной ход мимо пешки, которая e3 не достаёт (b4), — тоже нет.
+    let mut pos = position("4k3/8/8/8/1p6/8/4P3/4K3 w - - 0 1");
+    assert!(pos.make_move(find(&pos, "e2", "e4")).reactions.is_empty());
+}
+
+#[test]
+fn a_piece_comes_back_from_the_reserve_at_most_twice() {
+    // Белая пешка d4 бьёт чёрного коня, вернувшегося уже дважды: в запас он не уходит.
+    let mut pos = position("4k3/8/8/4n3/3P4/8/8/4K3 w - - 0 1");
+    if let Some(p) = &mut pos.board[sq("e5") as usize] {
+        p.reborn = MAX_REBIRTHS;
+        p.hp = 300;
+    }
+    pos.make_move(find(&pos, "e1", "f1"));
+    let turn = pos.end_turn();
+    assert!(turn.strikes[0].hit.killed);
+    assert!(pos.reserve(Color::White).is_empty());
+    // Вернувшийся однажды — уходит и при выставлении будет вернувшимся дважды.
+    let mut pos = position("4k3/8/8/4n3/3P4/8/8/4K3 w - - 0 1");
+    if let Some(p) = &mut pos.board[sq("e5") as usize] {
+        p.reborn = 1;
+        p.hp = 300;
+    }
+    pos.make_move(find(&pos, "e1", "f1"));
+    pos.end_turn();
+    pos.make_move(find(&pos, "e8", "d8"));
+    pos.end_turn();
+    pos.make_move(find(&pos, "f1", "e1"));
+    pos.end_turn();
+    pos.make_move(find(&pos, "d8", "e8"));
+    pos.end_turn();
+    let drop = Move::new(sq("a3"), sq("a3"), MoveKind::Drop(Kind::Knight));
+    pos.make_move(drop);
+    assert_eq!(pos.piece(sq("a3")).unwrap().reborn, 2);
+}
+
+#[test]
+fn boosted_bishops_are_not_electric() {
+    let mut pos = position("4k3/8/8/8/8/8/8/2B1K3 w - - 0 1");
+    pos.boost(Color::White);
+    assert!(!pos.piece(sq("c1")).unwrap().spark);
 }
 
 #[test]
@@ -185,26 +364,6 @@ fn strikes_reach_one_square_by_the_rules_of_the_move() {
     // Чёрная пешка бьёт вниз по диагонали, не прямо.
     let mut pos = board(&[("d5", 'p'), ("c4", 'P'), ("d4", 'P')], 'b');
     assert_eq!(strikes(&mut pos), ["d5-c4 300"]);
-}
-
-#[test]
-fn the_weakest_target_is_struck_then_the_dearest_then_the_first_in_order() {
-    // Ферзь d4: пешка c5 (900), ладья d5 и слон e5.
-    let fen = "4k3/8/8/2prb3/3Q4/8/8/4K3 w - - 0 1";
-    let mut pos = position(fen);
-    pos.set_hp(sq("d5"), 900);
-    pos.set_hp(sq("e5"), 300);
-    assert_eq!(strikes(&mut pos), ["d4-e5 300†"], "меньше всего здоровья");
-    let mut pos = position(fen);
-    pos.set_hp(sq("d5"), 900);
-    assert_eq!(
-        strikes(&mut pos),
-        ["d4-d5 300"],
-        "поровну — ладья дороже пешки"
-    );
-    // Две пешки поровну — первая по очереди (вертикаль c раньше e).
-    let mut pos = position("4k3/8/8/2p1p3/3Q4/8/8/4K3 w - - 0 1");
-    assert_eq!(strikes(&mut pos), ["d4-c5 300"]);
 }
 
 #[test]
@@ -235,9 +394,9 @@ fn frozen_pieces_do_not_strike_but_can_be_struck() {
 }
 
 #[test]
-fn king_may_die_and_the_game_goes_on_without_cards() {
-    // Конь f3 бьёт раненого короля e1 (у ладьи h2 здоровья больше): у белых осталась ладья —
-    // партия идёт.
+fn the_game_ends_when_a_king_dies() {
+    // Конь f3 бьёт раненого короля e1 (у ладьи h2 здоровья больше): у белых осталась ладья,
+    // но без короля партия кончена (с 0.44).
     let mut pos = position("4k3/8/8/8/8/5n2/8/4K2R w - - 0 1");
     pos.set_hp(sq("e1"), 300);
     let mut game = Game::from_position(pos);
@@ -248,21 +407,22 @@ fn king_may_die_and_the_game_goes_on_without_cards() {
     assert!(game.end_turn());
     let pos = game.position();
     assert_eq!(pos.king_square(Color::White), None);
-    assert_eq!(game.status(), Status::Ongoing);
+    assert!(pos.king_lost(Color::White));
+    assert_eq!(
+        game.status(),
+        Status::Victory {
+            winner: Color::Black
+        }
+    );
     assert_eq!(
         pos.points(Color::Black, Points::Victory),
         9,
         "король стоит 9 очков"
     );
     // Без короля карты не играют и шаха нет.
-    assert!(!pos.cards(Color::White).hand().is_empty());
     assert!(!pos.can_play_card() && !pos.any_card_playable());
     assert!(!pos.in_check(Color::White));
     assert_eq!(pos.king_danger(Color::White), 0);
-    assert_eq!(game.play_card(0, &[]), None);
-    // Ход фигурой — и ход кончается сам.
-    game.play(find(game.position(), "h2", "h3")).unwrap();
-    assert_eq!(game.position().side(), Color::Black);
 }
 
 #[test]
@@ -498,7 +658,7 @@ fn random_games_end_when_a_side_has_no_pieces() {
                     moves.to_vec()
                 };
                 let mv = pool[next(pool.len())];
-                assert!(!game.position().piece(mv.from).unwrap().is_frozen());
+                assert!(mv.is_drop() || !game.position().piece(mv.from).unwrap().is_frozen());
                 assert!(game.position().piece(mv.to).is_none(), "ходом не бьют");
                 game.play(mv).unwrap();
             }
@@ -538,8 +698,9 @@ fn random_games_end_when_a_side_has_no_pieces() {
                 Status::Victory { winner } => {
                     // Без фигур обе стороны остаются только от карты, задевшей всех (волна,
                     // ледяной взрыв), — тогда проигрывает сыгравший её.
-                    assert!(!pos.has_pieces(winner.opponent()));
-                    assert!(pos.has_pieces(winner) || pos.side() == winner.opponent());
+                    let lost = |c: Color| !pos.has_pieces(c) || pos.king_lost(c);
+                    assert!(lost(winner.opponent()));
+                    assert!(!lost(winner) || pos.side() == winner.opponent());
                     victories += 1;
                 }
                 Status::Encircled { winner } => {
@@ -558,9 +719,14 @@ fn random_games_end_when_a_side_has_no_pieces() {
         }
         // Удары: бьёт сторона, закончившая ход, по чужим фигурам; убийства — ударами и картами.
         for record in game.history() {
+            // Перехват конём в записи хода — удар соперника.
+            let striker = match record.event {
+                Event::Move(_) => record.color().opponent(),
+                _ => record.color(),
+            };
             for strike in record.strikes() {
-                assert_eq!(strike.attacker.color, record.color());
-                assert_ne!(strike.hit.target.color, record.color());
+                assert_eq!(strike.attacker.color, striker);
+                assert_ne!(strike.hit.target.color, striker);
                 assert!(!strike.attacker.is_frozen());
                 strikes += 1;
                 kills += usize::from(strike.hit.killed);
@@ -615,7 +781,7 @@ fn undo_restores_the_position() {
 
 #[test]
 fn notation_and_description_show_the_strikes() {
-    // Конь b1 ранит пешку c3, слон d2 её добивает.
+    // Конь b1 ранит пешку c3, слон d2 бьёт пешку e3 и добивает c3.
     let mut pos = position("4k3/8/8/8/8/2p1p3/3B4/1N2K3 w - - 0 1");
     pos.set_hp(sq("c3"), 400);
     let mut game = Game::from_position(pos);
@@ -625,15 +791,15 @@ fn notation_and_description_show_the_strikes() {
     assert_eq!(
         record.notation(),
         Notation {
-            text: "Кb1⚔c3, Сd2×c3".to_owned(),
-            damage: Some(600),
+            text: "Кb1⚔c3, Сd2⚔e3, Сd2×c3".to_owned(),
+            damage: Some(900),
             suffix: "",
         }
     );
     let description = record.description();
     assert!(description.starts_with("Белые закончили ход."));
-    assert!(description.contains("Конь b1 ударил пешку на c3: −300 HP, осталось 100/900."));
-    assert!(description.contains("Слон d2 убил пешку на c3 (−300 HP) и встал на её место."));
+    assert!(description.contains("Конь b1 ударил пешку на c3: −1 HP, осталось 1/3."));
+    assert!(description.contains("Слон d2 убил пешку на c3 (−1 HP)."));
     assert_eq!(game.kills_by(Color::White).len(), 1);
 }
 
@@ -864,8 +1030,8 @@ fn fire_wave_burns_every_neighbour() {
     let pos = game.position();
     assert_eq!(hp(pos, "d5"), 900 - 300);
     assert_eq!(hp(pos, "c3"), 900 - 300, "своих волна тоже задевает");
-    assert_eq!(hp(pos, "e3"), 600 - 300);
-    assert_eq!(hp(pos, "d4"), 600, "выбранную фигуру — нет");
+    assert_eq!(hp(pos, "e3"), 900 - 300);
+    assert_eq!(hp(pos, "d4"), 900, "выбранную фигуру — нет");
     // Карта сыграна (можно ещё две), фигурой ещё можно сходить.
     assert_eq!(game.position().cards_played(), 1);
     assert!(game.position().can_play_card());
@@ -914,7 +1080,12 @@ fn fire_wave_targets_only_own_pieces_and_burns_kings_too() {
     let pos = game.position();
     assert_eq!(pos.king_square(Color::Black), None);
     assert_eq!(pos.points(Color::White, Points::Victory), 9);
-    assert_eq!(game.status(), Status::Ongoing);
+    assert_eq!(
+        game.status(),
+        Status::Victory {
+            winner: Color::White
+        }
+    );
 }
 
 #[test]
@@ -1255,9 +1426,9 @@ fn heal_restores_own_neighbours_of_a_bishop() {
     let mut game = Game::from_position(pos);
     let play = game.play_card(heal, &[sq("d4")]).unwrap();
     let after = game.position();
-    // Пешке — все 600, коню — до полного здоровья (600), чужим и ферзю — ничего.
+    // Пешке и коню — все 600, чужим и ферзю — ничего.
     assert_eq!(hp(after, "c3"), 700);
-    assert_eq!(hp(after, "e5"), 600);
+    assert_eq!(hp(after, "e5"), 800);
     assert_eq!(hp(after, "d5"), 100, "чужих не лечит");
     assert_eq!(hp(after, "d3"), 1200);
     assert_eq!(hp(after, "d4"), 100, "сам слон не лечится");
@@ -1267,12 +1438,12 @@ fn heal_restores_own_neighbours_of_a_bishop() {
         .map(|h| (square_name(h.square), h.amount))
         .collect();
     healed.sort();
-    assert_eq!(healed, [("c3".to_owned(), 600), ("e5".to_owned(), 400)]);
+    assert_eq!(healed, [("c3".to_owned(), 600), ("e5".to_owned(), 600)]);
     // Стоит 2 очка победы.
     assert_eq!(after.points(Color::White, Points::Victory), 0);
     let record = &game.history()[0];
     assert_eq!(record.notation().text, "Исцеление d4");
-    assert!(record.description().contains("пешка c3 — +600 HP"));
+    assert!(record.description().contains("пешка c3 — +2 HP"));
 }
 
 #[test]
@@ -1526,7 +1697,7 @@ fn they_multiply_splits_a_piece_and_returns_to_hand() {
         let knight = after.piece(sq(name)).unwrap();
         assert_eq!(
             (knight.kind, knight.hp, knight.attack()),
-            (Kind::Knight, 300, 300)
+            (Kind::Knight, 450, 300)
         );
     }
     // После конца хода карта возвращается в руку.
@@ -1555,15 +1726,15 @@ fn lone_warrior_grows_with_every_kill() {
         (bishop.attack(), bishop.max_hp(), bishop.hp),
         (375, 1125, 1125)
     );
-    // Слон встаёт рядом с пешкой c5 и в конце хода убивает её.
+    // Слон a3 достаёт пешку c5 через b4 и в конце хода убивает её.
     let mut pos = game.position().clone();
     pos.set_hp(sq("a3"), 100);
     pos.set_hp(sq("c5"), 300);
-    pos.make_move(find(&pos, "a3", "b4"));
+    pos.make_move(find(&pos, "e1", "f1"));
     let strikes = pos.end_turn().strikes;
     assert!(strikes[0].hit.killed);
     assert_eq!(strikes[0].feast, 1025);
-    let bishop = pos.piece(sq("c5")).unwrap();
+    let bishop = pos.piece(sq("a3")).unwrap();
     assert_eq!(
         (bishop.hp, bishop.attack()),
         (1125, 450),
@@ -1590,7 +1761,7 @@ fn defensive_position_halves_damage_around_the_rook() {
         assert!(game.end_turn());
     }
     // Ладья бьёт коня b4: он чужой — ладья его не прикрывает.
-    assert_eq!(hp(game.position(), "b4"), 600 - 300);
+    assert_eq!(hp(game.position(), "b4"), 900 - 300);
     game.play(find(game.position(), "e8", "d8")).unwrap();
     if game.position().side() == Color::Black {
         assert!(game.end_turn());
@@ -1638,7 +1809,7 @@ fn mass_sacrifice_halves_own_pieces_for_points() {
     let pos = game.position();
     assert_eq!(
         (hp(pos, "d4"), hp(pos, "c3"), hp(pos, "c4")),
-        (300, 600, 900)
+        (450, 600, 900)
     );
     assert_eq!(pos.points(Color::White, Points::Sacrifice), 3 + 5);
     assert_eq!(pos.points(Color::White, Points::Mana), 2);
@@ -1661,7 +1832,7 @@ fn blood_god_turns_sacrifice_points_into_victory() {
         assert!(game.end_turn());
     }
     let pos = game.position();
-    assert_eq!(pos.piece(sq("a1")).map(|p| p.color), Some(Color::Black));
+    assert!(pos.piece(sq("a1")).is_none());
     assert_eq!(pos.points(Color::White, Points::Sacrifice), 0);
     assert_eq!(pos.points(Color::White, Points::Victory), 5);
 }
@@ -1732,7 +1903,7 @@ fn ice_shard_wounds_and_freezes_an_enemy() {
     let mut game = Game::from_position(pos.clone());
     let play = game.play_card(card, &[sq("d5")]).unwrap();
     assert_eq!(play.frozen, [sq("d5")]);
-    assert_eq!(hp(game.position(), "d5"), 100);
+    assert_eq!(hp(game.position(), "d5"), 400);
     assert_eq!(frozen(game.position(), "d5"), 2);
     assert!(
         game.history()
@@ -1838,7 +2009,7 @@ fn ice_blast_hits_everyone_within_two_squares() {
     assert_eq!(play.hits.len(), 3);
     assert_eq!((hp(&pos, "c4"), hp(&pos, "d3")), (600, 600));
     assert!(pos.piece(sq("f7")).is_none());
-    assert_eq!(hp(&pos, "d5"), 600, "сам не страдает");
+    assert_eq!(hp(&pos, "d5"), 900, "сам не страдает");
     assert_eq!(
         (hp(&pos, "a1"), hp(&pos, "e1"), hp(&pos, "e8")),
         (1200, 1500, 1500)
@@ -1873,7 +2044,7 @@ fn hard_winter_hits_only_frozen_enemies() {
     assert_eq!(play.hits.len(), 1);
     assert_eq!(
         (hp(&pos, "d5"), hp(&pos, "e5"), hp(&pos, "d2")),
-        (100, 600, 600)
+        (400, 900, 900)
     );
 }
 
@@ -1892,7 +2063,7 @@ fn ice_warrior_freezes_the_survivors_of_its_strikes() {
         assert!(game.end_turn());
     }
     let pos = game.position();
-    assert_eq!(hp(pos, "d4"), 300);
+    assert_eq!(hp(pos, "d4"), 600);
     assert_eq!(frozen(pos, "d4"), 1);
     assert!(game.history().last().unwrap().strikes()[0].chilled);
     assert!(
@@ -2026,7 +2197,7 @@ const GOLDEN_CODE: &str = "BC1-AgECBwE4";
 #[test]
 #[ignore = "переписывает tools/deck_builder.html"]
 fn refresh_deck_builder_data() {
-    use crate::balance::{Balance, PARAMS, RULES, ordered_kinds};
+    use crate::balance::{Balance, PARAMS, RULES, ordered_kinds, rule_in_units, to_file};
     fn js(text: &str) -> String {
         let mut out = String::from("\"");
         for c in text.chars() {
@@ -2087,7 +2258,11 @@ fn refresh_deck_builder_data() {
             format!(
                 "{{ key: {}, value: {}, min: {}, max: {}, note: {} }}",
                 js(r.key),
-                r.default,
+                if rule_in_units(r.key) {
+                    to_file(r.default)
+                } else {
+                    r.default
+                },
                 r.min,
                 r.max,
                 js(r.note)
@@ -2101,8 +2276,8 @@ fn refresh_deck_builder_data() {
             format!(
                 "{{ id: \"{kind:?}\", title: {}, attack: {}, hp: {}, points: {} }}",
                 js(kind.title()),
-                p.attack,
-                p.hp,
+                to_file(p.attack),
+                to_file(p.hp),
                 p.points
             )
         })
@@ -2127,7 +2302,7 @@ fn refresh_deck_builder_data() {
 }
 
 #[test]
-fn a_boosted_side_gets_electric_bishops_and_three_lava_pawns() {
+fn a_boosted_side_gets_three_lava_pawns() {
     let mut pos = Position::start();
     pos.boost(Color::Black);
     assert_eq!(pos.boosted(), Some(Color::Black));
@@ -2147,7 +2322,7 @@ fn a_boosted_side_gets_electric_bishops_and_three_lava_pawns() {
         .filter(|(_, p)| p.spark)
         .map(|(sq, _)| sq)
         .collect();
-    assert_eq!(sparks, [sq("c8"), sq("f8")]);
+    assert!(sparks.is_empty(), "с 0.41 электричества нет");
     // Выбор пешек один и тот же — для отмены и перебора.
     let mut again = Position::start();
     again.boost(Color::Black);
@@ -2200,19 +2375,22 @@ fn an_electric_bishop_spreads_its_strike_diagonally_around_the_target() {
     // Слон e3 бьёт коня d4; молния — на пешки c5 и e5 (по диагонали от коня), своя ладья c3
     // не задета.
     let mut pos = position("4k3/8/8/2p1p3/3n4/2R1B3/8/4K3 w - - 0 1");
-    pos.boost(Color::White);
+    pos.set_spark(sq("e3"));
     let attack = pos.piece(sq("e3")).unwrap().attack();
     let spread = attack * balance().rule(Rule::SparkPercent) / 100;
     let pawn = Piece::new(Kind::Pawn, Color::Black).hp;
     let turn = pos.end_turn();
-    let strike = turn.strikes[0];
-    assert_eq!(strike.hit.square, sq("d4"));
-    assert_eq!(strike.hits().count(), 3);
-    assert_eq!(hp(&pos, "c5"), pawn - spread);
+    // Ладья c3 бьёт раньше по очереди — берём удары слона.
+    let bishop: Vec<&Strike> = turn.strikes.iter().filter(|s| s.from == sq("e3")).collect();
+    assert_eq!(bishop[0].hit.square, sq("d4"));
+    assert_eq!(bishop[0].hits().count(), 3);
+    // Пешка c5 — за конём на той же линии: слон её не бьёт.
+    assert_eq!(bishop.len(), 1);
     assert_eq!(hp(&pos, "e5"), pawn - spread);
     assert_eq!(hp(&pos, "c3"), Piece::new(Kind::Rook, Color::White).hp);
-    let mut game = Game::from_position(position("4k3/8/8/2p1p3/3n4/2R1B3/8/4K3 w - - 0 1"));
-    game.boost(Color::White);
+    let mut sparked = position("4k3/8/8/2p1p3/3n4/2R1B3/8/4K3 w - - 0 1");
+    sparked.set_spark(sq("e3"));
+    let mut game = Game::from_position(sparked);
     game.play(find(game.position(), "e1", "f1")).unwrap();
     assert!(game.end_turn());
     let record = game.history().last().unwrap();
@@ -2273,5 +2451,5 @@ fn boosted_games_against_random_moves_keep_the_rules() {
     }
     eprintln!("взрывов с уроном {blasts}, задетых молнией {sparks}");
     assert!(blasts > 20, "взрывов {blasts}");
-    assert!(sparks > 5, "молний {sparks}");
+    assert_eq!(sparks, 0, "с 0.41 электричества нет");
 }

@@ -21,16 +21,16 @@ use super::{
     ease_in_out, ease_out, ease_out_back,
 };
 use crate::assets::{
-    ARROW_HEAD, ARROW_SPACING, Aim, ArrowPart, BLESS_FRAME_TIME, BLESS_FRAMES, BURN_CARD_AT,
-    BURN_FRAME, BURN_FRAME_TIME, BURN_FRAMES, BUTTON, Button, CARD, COST_TINT, CardPic,
-    EMBLEM_ZOOM, FREEZE_CENTER, FREEZE_CLINK, FREEZE_DELAY, FREEZE_FRAME_TIME, FREEZE_FRAMES,
-    FrameSprite, GLYPH_HEIGHT, Glyph, POINTS_TINT, PORTAL_CENTER, PORTAL_FRAME, PORTAL_FRAME_TIME,
-    PORTAL_FRAMES, PORTAL_SCALE, PORTAL_SINK, SHADOW_SHIFT, Sprite, TARGET_PAD, TILE, Textures,
-    WAVE_CENTER, WAVE_FRAME, WAVE_FRAME_TIME, WAVE_FRAMES, cost_corner,
+    ANCHOR, ARROW_HEAD, ARROW_SPACING, Aim, ArrowPart, BLESS_FRAME_TIME, BLESS_FRAMES,
+    BURN_CARD_AT, BURN_FRAME, BURN_FRAME_TIME, BURN_FRAMES, BUTTON, Button, CARD, COST_TINT,
+    CardPic, EMBLEM_ZOOM, FREEZE_CENTER, FREEZE_CLINK, FREEZE_DELAY, FREEZE_FRAME_TIME,
+    FREEZE_FRAMES, FrameSprite, GLYPH_HEIGHT, Glyph, POINTS_TINT, PORTAL_CENTER, PORTAL_FRAME,
+    PORTAL_FRAME_TIME, PORTAL_FRAMES, PORTAL_SCALE, PORTAL_SINK, SHADOW_SHIFT, SPRITE, Sprite,
+    TARGET_PAD, TILE, Textures, WAVE_CENTER, WAVE_FRAME, WAVE_FRAME_TIME, WAVE_FRAMES, cost_corner,
 };
 use crate::game::{
-    Area, CardKind, CardPlay, Color, Event, Family, Heal, Piece, Points, Square, WaveHit, file_of,
-    rank_of,
+    Area, CardKind, CardPlay, Color, Event, Family, Heal, Kind, MoveKind, Piece, Points, Square,
+    WaveHit, file_of, rank_of,
 };
 use crate::sound::Sound;
 use crate::theme;
@@ -343,6 +343,19 @@ impl Seat {
 fn button_rect() -> Rect {
     Rect::from_min_size(BUTTON_AT.to_pos2(), BUTTON)
 }
+
+/// Запас взятых фигур («шведка», с 0.43): своя полоса — внизу слева, соперника —
+/// отражение через центр доски; ячейка на вид фигуры, пиксели арта.
+const RESERVE_AT: Vec2 = vec2(-90.0, 338.0);
+const RESERVE_SLOT: Vec2 = vec2(46.0, 72.0);
+const RESERVE_GAP: f32 = 3.0;
+/// Фигура в ячейке — на четверть мельче, чем на доске; основание — на столько ниже верха
+/// ячейки.
+const RESERVE_SCALE: f32 = 0.75;
+const RESERVE_GROUND: f32 = 50.0;
+
+/// С 0.40 карты убраны из интерфейса: колоды, руки и очки не рисуются.
+const SHOW_CARDS: bool = false;
 
 impl BattleChessApp {
     /// Чья рука на месте `seat`: своя сторона — та, что внизу доски.
@@ -1300,6 +1313,133 @@ impl BattleChessApp {
         }
     }
 
+    // ----- Запас взятых фигур -----
+
+    /// Ячейки запаса стороны на месте `seat`: вид, сколько готово, сколько ждёт, место
+    /// (пиксели арта).
+    fn reserve_slots(&self, seat: Seat) -> Vec<(Kind, u8, u8, Rect)> {
+        let reserve = self.game.position().reserve(self.seat_color(seat));
+        reserve
+            .into_iter()
+            .enumerate()
+            .map(|(i, (kind, ready, waiting))| {
+                let min = RESERVE_AT + vec2(i as f32 * (RESERVE_SLOT.x + RESERVE_GAP), 0.0);
+                let min = match seat {
+                    Seat::Near => min,
+                    Seat::Far => MID * 2.0 - min - RESERVE_SLOT,
+                };
+                (
+                    kind,
+                    ready,
+                    waiting,
+                    Rect::from_min_size(min.to_pos2(), RESERVE_SLOT),
+                )
+            })
+            .collect()
+    }
+
+    /// Ячейка запаса под курсором.
+    pub(super) fn reserve_under(&self, board: &BoardGeom, pointer: Pos2) -> Option<(Seat, Kind)> {
+        let at = board.to_art(pointer).to_pos2();
+        [Seat::Near, Seat::Far].into_iter().find_map(|seat| {
+            self.reserve_slots(seat)
+                .into_iter()
+                .find(|s| s.3.contains(at))
+                .map(|s| (seat, s.0))
+        })
+    }
+
+    /// Можно ли выставить фигуру `kind` из запаса на месте `seat` прямо сейчас.
+    pub(super) fn reserve_usable(&self, seat: Seat, kind: Kind) -> bool {
+        let pos = self.game.position();
+        self.human_to_move()
+            && self.seat_color(seat) == pos.side()
+            && self.aiming.is_none()
+            && pos
+                .legal_moves()
+                .iter()
+                .any(|m| m.kind == MoveKind::Drop(kind))
+    }
+
+    /// Запас обеих сторон: фигура, под ней — сколько готово (×N) и сколько ждёт (+N).
+    fn paint_reserve(&self, painter: &Painter, board: &BoardGeom, tex: &Textures) {
+        let s = board.scale;
+        for seat in [Seat::Near, Seat::Far] {
+            let color = self.seat_color(seat);
+            for (kind, ready, waiting, slot) in self.reserve_slots(seat) {
+                let rect = Rect::from_min_max(
+                    board.art_to_screen(slot.min.to_vec2()),
+                    board.art_to_screen(slot.max.to_vec2()),
+                );
+                let usable = self.reserve_usable(seat, kind);
+                let picked = usable && self.drop_pick == Some(kind);
+                let hovered = usable && self.reserve_hover == Some((seat, kind));
+                let shadow = rect.translate(vec2(2.0, 3.0) * s);
+                painter.rect_filled(shadow, CornerRadius::ZERO, Color32::from_black_alpha(77));
+                painter.rect_filled(
+                    rect,
+                    CornerRadius::ZERO,
+                    Color32::from_rgb(0x0d, 0x0f, 0x17),
+                );
+                let inner = rect.shrink(s);
+                let fill = if picked {
+                    Color32::from_rgb(0x2a, 0x45, 0x5d)
+                } else if hovered {
+                    Color32::from_rgb(0x2a, 0x35, 0x4d)
+                } else {
+                    Color32::from_rgb(0x18, 0x1c, 0x29)
+                };
+                painter.rect_filled(inner, CornerRadius::ZERO, fill);
+                let edge = if picked || hovered {
+                    Color32::from_rgb(0x9f, 0xb3, 0xd1)
+                } else if usable {
+                    Color32::from_rgb(0x5f, 0xc8, 0xe0)
+                } else {
+                    Color32::from_rgb(0x2a, 0x33, 0x45)
+                };
+                painter.rect_stroke(
+                    inner,
+                    CornerRadius::ZERO,
+                    Stroke::new(s, edge),
+                    StrokeKind::Inside,
+                );
+                let ground = rect.min + vec2(RESERVE_SLOT.x / 2.0, RESERVE_GROUND) * s;
+                let sprite = Rect::from_min_size(
+                    board.snap(ground - ANCHOR * s * RESERVE_SCALE),
+                    SPRITE * s * RESERVE_SCALE,
+                );
+                let tint = if ready > 0 {
+                    Color32::WHITE
+                } else {
+                    Color32::from_white_alpha(110)
+                };
+                painter.image(tex.body(color, kind), sprite, UV, tint);
+                let mut label = String::new();
+                if ready > 0 {
+                    label += &format!("×{ready}");
+                }
+                if waiting > 0 {
+                    if !label.is_empty() {
+                        label.push(' ');
+                    }
+                    label += &format!("+{waiting}");
+                }
+                let text = if ready > 0 {
+                    theme::TEXT_BRIGHT
+                } else {
+                    Color32::from_rgb(0x6c, 0x76, 0x8a)
+                };
+                painter.text(
+                    rect.min + vec2(RESERVE_SLOT.x / 2.0, RESERVE_SLOT.y - 9.0) * s,
+                    Align2::CENTER_CENTER,
+                    label,
+                    FontId::new(10.0 * s, theme::bold()),
+                    text,
+                );
+            }
+        }
+    }
+
     // ----- Кнопка «Конец хода» -----
 
     /// Курсор над кнопкой «Конец хода».
@@ -1350,8 +1490,9 @@ impl BattleChessApp {
         };
         let rect = Rect::from_min_size(board.art_to_screen(BUTTON_AT), size * board.scale);
         painter.image(tex.ui.button(look).id(), rect, UV, Color32::WHITE);
+        self.paint_reserve(painter, board, tex);
 
-        for seat in [Seat::Near, Seat::Far] {
+        for seat in [Seat::Near, Seat::Far].into_iter().filter(|_| SHOW_CARDS) {
             let color = self.seat_color(seat);
             let flying = self.draws.iter().filter(|d| d.color == color).count() as u8;
             if let Some(deck) = tex.cards.deck(color, pos.cards(color).deck_len() + flying) {

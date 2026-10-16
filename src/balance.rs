@@ -90,7 +90,7 @@ pub const RULES: [RuleDef; 7] = [
         min: 0,
         max: 9999,
         note: "усиленный компьютер: урон взрыва лавы каждой вашей фигуре вокруг пешки \
-               (свои фигуры взрыв не задевает)",
+               (свои фигуры взрыв не задевает), в тех же единицах, что атака",
     },
     RuleDef {
         key: "spark_percent",
@@ -284,6 +284,37 @@ pub const PARAMS: [ParamDef; 16] = [
     ),
 ];
 
+/// Единица здоровья и урона (с 0.44, просьба пользователя): правила считают в прежних числах
+/// (так не теряются доли — оборона, «воин», проценты карт), а игрок видит их делёнными на
+/// `UNIT` — на экране и в `balance.ini`.
+pub const UNIT: i32 = 300;
+
+/// Здоровье или урон так, как их видит игрок: делённые на `UNIT`, доля — вверх (раненая фигура
+/// с 100 из 900 — «1 из 3»).
+pub fn shown(value: i32) -> i32 {
+    (value.max(0) + UNIT - 1) / UNIT
+}
+
+/// Атака, здоровье и урон лавы в `balance.ini` — в единицах `UNIT`.
+pub fn to_file(value: i32) -> i32 {
+    if value % UNIT == 0 {
+        value / UNIT
+    } else {
+        value
+    }
+}
+
+/// Число из `balance.ini` во внутреннее: до 0.44 там стояли прежние числа (300, 900…) — такие
+/// (от 100) читаются как есть, чтобы старый файл не стал в 300 раз сильнее.
+pub fn from_file(n: i32) -> i32 {
+    if n < 100 { n * UNIT } else { n }
+}
+
+/// Правило в единицах `UNIT` (урон).
+pub fn rule_in_units(key: &str) -> bool {
+    key == "lava_damage"
+}
+
 /// Стандартные характеристики фигур по `Kind as usize`: пешка, конь, слон, ладья, ферзь, король.
 const DEFAULT_PIECES: [PieceNumbers; 6] = [
     PieceNumbers {
@@ -293,7 +324,7 @@ const DEFAULT_PIECES: [PieceNumbers; 6] = [
     },
     PieceNumbers {
         attack: 300,
-        hp: 600,
+        hp: 900,
         points: 3,
     },
     PieceNumbers {
@@ -485,7 +516,7 @@ impl Balance {
         match group {
             "rules" => match RULES.iter().position(|r| r.key == key) {
                 Some(i) if fits(RULES[i].min, RULES[i].max, warnings) => {
-                    self.rules[i] = n;
+                    self.rules[i] = if rule_in_units(key) { from_file(n) } else { n };
                     seen.insert(format!("rules.{key}"));
                 }
                 Some(_) => {}
@@ -498,11 +529,11 @@ impl Balance {
                 let piece = &mut self.pieces[kind as usize];
                 let ok = match key {
                     "attack" if fits(1, 9999, warnings) => {
-                        piece.attack = n;
+                        piece.attack = from_file(n);
                         true
                     }
                     "hp" if fits(1, 99999, warnings) => {
-                        piece.hp = n;
+                        piece.hp = from_file(n);
                         true
                     }
                     "points" if fits(0, 99, warnings) => {
@@ -596,6 +627,11 @@ impl Balance {
         );
         out.push_str("[rules]\n");
         for (rule, value) in RULES.iter().zip(self.rules) {
+            let value = if rule_in_units(rule.key) {
+                to_file(value)
+            } else {
+                value
+            };
             let _ = writeln!(out, "{} = {value}   ; {}", rule.key, rule.note);
         }
         for kind in Kind::ALL {
@@ -605,8 +641,8 @@ impl Balance {
                 "\n[piece.{kind:?}]   ; {}\nattack = {}   ; урон одного удара\nhp = {}   ; здоровье\n\
                  points = {}   ; очков победы убийце и очков жертвы хозяину\n",
                 kind.title(),
-                piece.attack,
-                piece.hp,
+                to_file(piece.attack),
+                to_file(piece.hp),
                 piece.points
             );
         }
@@ -723,6 +759,11 @@ fn install(new: Balance) {
     }
     let leaked: &'static Balance = Box::leak(Box::new(new));
     *CURRENT.write().unwrap_or_else(|e| e.into_inner()) = Some(leaked);
+}
+
+/// Стандартный баланс — действующий (сетевая партия: у обоих игроков одни числа).
+pub fn use_default() {
+    install(Balance::default());
 }
 
 /// `%APPDATA%\BattleChess\balance.ini` (на macOS — в `~/Library/Application Support`).
@@ -952,6 +993,19 @@ mod tests {
             assert_eq!(kind as usize, i);
         }
         assert_eq!(MAX_DECK, 64);
+    }
+
+    #[test]
+    fn attack_and_health_are_written_in_units_and_old_files_still_read() {
+        let text = Balance::default().to_ini();
+        assert!(text.contains("[piece.Knight]   ; Конь\nattack = 1   ;"));
+        assert!(text.contains("hp = 3   ; здоровье"));
+        assert!(text.contains("lava_damage = 1   ;"));
+        // Новый файл — в единицах, старый (до 0.44) — прежними числами: оба дают 900.
+        for hp in ["3", "900"] {
+            let (balance, _) = Balance::parse(&format!("[piece.Knight]\nhp = {hp}\n"));
+            assert_eq!(balance.piece(Kind::Knight).hp, 900, "hp = {hp}");
+        }
     }
 
     #[test]

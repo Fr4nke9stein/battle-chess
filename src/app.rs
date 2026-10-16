@@ -23,11 +23,12 @@ use crate::assets::{
     Glyph, LAVA_FRAME_TIME, LAVA_FRAMES, LAVA_HOLD, LAVA_IGNITE, LAVA_SPREAD, LAVA_WAVE_AT, Marker,
     PORTAL_CENTER, PORTAL_CUT, PORTAL_RADII, Pointer, SPRITE, TILE, Textures,
 };
-use crate::balance::{self, balance};
+use crate::balance::{self, shown};
 use crate::game::{
-    self, Color, Event, Game, Hit, Kind, Move, Outcome, Piece, Position, Record, Square, Status,
-    Strike,
+    self, Color, Event, Game, Hit, Kind, Move, MoveKind, Outcome, Piece, Position, Record, Square,
+    Status, Strike,
 };
+use crate::net;
 use crate::settings::{FrameRate, Settings};
 use crate::sound::{Sfx, Sound};
 use crate::theme::{self, rgba};
@@ -187,9 +188,9 @@ impl StrikeAnim {
         self.start + LUNGE_TIME
     }
 
-    /// Удар убил цель, а убийца ещё не дошёл до её клетки.
-    fn moving(&self, now: f64) -> bool {
-        self.strike.hit.killed && now < self.end()
+    /// Удар убил цель, а убийца ещё не дошёл до её клетки. С 0.40 убийца остаётся на месте.
+    fn moving(&self, _now: f64) -> bool {
+        false
     }
 
     /// Где убийца (в клетках доски): до удара — на своей клетке, потом идёт на клетку цели.
@@ -202,7 +203,7 @@ impl StrikeAnim {
     /// Сдвиг атакующего во время выпада к выжившей цели (в клетках).
     fn lunge(&self, now: f64) -> Vec2 {
         let u = (now - self.start) / LUNGE_TIME;
-        if self.strike.hit.killed || !(0.0..1.0).contains(&u) {
+        if !(0.0..1.0).contains(&u) {
             return Vec2::ZERO;
         }
         (center(self.strike.hit.square) - center(self.strike.from)) * (lunge_reach(u) * LUNGE_DEPTH)
@@ -534,6 +535,19 @@ pub struct BattleChessApp {
     /// Кнопка «Конец хода»: курсор над ней и нажата ли она.
     button_hover: bool,
     button_down: bool,
+
+    /// Мультиплеер: соединение с сервером, цвет соперника по сети (в сетевой партии), адрес
+    /// в поле ввода, строка состояния на экране подключения, заметка в партии (соперник ушёл,
+    /// связь потеряна) и ходы соперника, ждущие своей очереди.
+    net: Option<net::Link>,
+    remote: Option<Color>,
+    net_address: String,
+    net_status: String,
+    net_note: Option<String>,
+    net_queue: VecDeque<String>,
+    /// Фигура запаса под курсором и выбранная для выставления.
+    reserve_hover: Option<(Seat, Kind)>,
+    drop_pick: Option<Kind>,
     drag: Option<Drag>,
     promotion: Option<PendingPromotion>,
     anim: Option<MoveAnim>,
@@ -606,7 +620,7 @@ impl BattleChessApp {
             balance_warnings,
             deck_message: None,
             window_focused: true,
-            game: Game::new([settings.deck as usize; 2]),
+            game: Game::from_position(Position::start().without_cards()),
             art: Art::new(),
             sfx: Sfx::new(),
             setup,
@@ -635,6 +649,15 @@ impl BattleChessApp {
             ice_seen: (0, 0),
             button_hover: false,
             button_down: false,
+
+            reserve_hover: None,
+            net: None,
+            remote: None,
+            net_address: net::saved_address(),
+            net_status: String::new(),
+            net_note: None,
+            net_queue: VecDeque::new(),
+            drop_pick: None,
             drag: None,
             promotion: None,
             anim: None,
@@ -665,11 +688,13 @@ impl BattleChessApp {
     }
 
     fn new_game(&mut self, setup: Setup) {
+        // Своя партия — сетевая (если была) закончена.
+        self.leave_network();
         self.reload_balance();
         self.setup = setup;
         self.draft = setup;
-        // Выбранная в меню колода — у обеих сторон.
-        self.game = Game::new([self.settings.deck as usize; 2]);
+        // С 0.40 карт нет: колоды и руки пусты.
+        self.game = Game::from_position(Position::start().without_cards());
         self.computer = match setup.opponent {
             Opponent::Human => None,
             Opponent::Computer => Some(match setup.side {
@@ -716,6 +741,7 @@ impl BattleChessApp {
     /// Сбрасывает выделение, анимации и раздумья компьютера после смены позиции.
     fn reset_interaction(&mut self) {
         self.selected = None;
+        self.drop_pick = None;
         self.drag = None;
         self.promotion = None;
         self.anim = None;
@@ -739,9 +765,10 @@ impl BattleChessApp {
     }
 
     /// Отменяет ход целиком — до его начала; если ход только начался — предыдущий.
-    /// Против компьютера отменяется и его ход, чтобы снова ходил человек.
+    /// Против компьютера отменяется и его ход, чтобы снова ходил человек. В сетевой партии
+    /// отмены нет.
     fn undo(&mut self) {
-        if !self.game.undo() {
+        if self.remote.is_some() || !self.game.undo() {
             return;
         }
         loop {
@@ -759,33 +786,47 @@ impl BattleChessApp {
         if self.game.is_over() || !self.game.can_end_turn() || self.aiming_card() {
             return;
         }
-        let next = self.game.position().side().opponent();
+        let mover = self.game.position().side();
+        let next = mover.opponent();
         let hand = self.game.position().cards(next).hand().len();
         if self.game.end_turn() {
             self.selected = None;
             self.note_draw(next, hand, now);
+            self.send_own(mover, net::END_TURN.to_owned());
         }
     }
 
     fn human_to_move(&self) -> bool {
-        !self.game.is_over() && Some(self.game.position().side()) != self.computer
+        let side = Some(self.game.position().side());
+        !self.game.is_over() && side != self.computer && side != self.remote
+    }
+
+    /// В сетевой партии своё действие (не соперника) уходит сопернику.
+    fn send_own(&self, mover: Color, line: String) {
+        if let (Some(link), Some(remote)) = (&self.net, self.remote)
+            && mover != remote
+        {
+            link.send(&line);
+        }
     }
 
     fn has_move(&self, from: Square, to: Square) -> bool {
         self.game
             .legal_moves()
             .iter()
-            .any(|m| m.from == from && m.to == to)
+            .any(|m| m.from == from && m.to == to && !m.is_drop())
     }
 
     fn play(&mut self, mv: Move, drop: Option<Vec2>, now: f64) {
         self.advance_animation(now, true);
         self.finish_portals();
-        let next = self.game.position().side().opponent();
+        let mover = self.game.position().side();
+        let next = mover.opponent();
         let hand = self.game.position().cards(next).hand().len();
         let Some(outcome) = self.game.play(mv) else {
             return;
         };
+        self.send_own(mover, net::encode_move(mv));
         self.selected = None;
         self.promotion = None;
         // Вставшая в ледяную зону фигура (и ладья рокировки) замерзает, когда доедет.
@@ -796,6 +837,9 @@ impl BattleChessApp {
             .filter(|&sq| pos.piece(sq).is_some_and(|p| p.is_frozen()))
             .collect();
         let anim = MoveAnim::new(outcome, drop.unwrap_or(center(mv.from)), now);
+        if mv.is_drop() {
+            self.sfx.play(Sound::Notify);
+        }
         self.freeze_arrivals(&iced, now + anim.end());
         self.anim = Some(anim);
         // Новый ход начинается с карты из колоды.
@@ -1017,6 +1061,118 @@ impl BattleChessApp {
             self.sfx.play(Sound::Notify);
         }
         self.drive_computer(now);
+        self.drive_remote(now);
+    }
+
+    // ----- Мультиплеер -----
+
+    /// Подключение к серверу с экрана «Мультиплеер».
+    pub(super) fn connect(&mut self, ctx: &egui::Context) {
+        net::save_address(&self.net_address);
+        self.net_status = "Подключаемся…".to_owned();
+        self.net = Some(net::Link::connect(&self.net_address, ctx.clone()));
+    }
+
+    /// Закрывает соединение и выходит из сетевой партии.
+    pub(super) fn leave_network(&mut self) {
+        self.net = None;
+        self.remote = None;
+        self.net_note = None;
+        self.net_queue.clear();
+    }
+
+    /// События соединения: на экране подключения — состояние, в партии — ходы соперника и
+    /// заметки.
+    fn poll_net(&mut self) {
+        let Some(link) = &self.net else {
+            return;
+        };
+        let events: Vec<net::NetEvent> = link.rx.try_iter().collect();
+        for event in events {
+            match event {
+                net::NetEvent::Connected => {
+                    self.net_status = "Подключено. Ждём соперника…".to_owned();
+                }
+                net::NetEvent::Waiting => {
+                    self.net_status = "Подключено. Ждём второго игрока…".to_owned();
+                }
+                net::NetEvent::Start(color) => self.start_network_game(color),
+                net::NetEvent::Line(line) => {
+                    if let Some(version) = line.strip_prefix("VER ") {
+                        if version != env!("CARGO_PKG_VERSION") {
+                            self.net_note = Some(format!(
+                                "У соперника версия {version}, у вас {} — партия может разойтись",
+                                env!("CARGO_PKG_VERSION")
+                            ));
+                        }
+                    } else {
+                        self.net_queue.push_back(line);
+                    }
+                }
+                net::NetEvent::Left => {
+                    self.net_note = Some("Соперник отключился".to_owned());
+                    self.net_status = "Соперник отключился".to_owned();
+                    self.net = None;
+                }
+                net::NetEvent::Closed(reason) => {
+                    if self.remote.is_some() {
+                        self.net_note = Some(format!("Связь потеряна: {reason}"));
+                    }
+                    self.net_status = reason;
+                    self.net = None;
+                }
+            }
+            if self.net.is_none() {
+                break;
+            }
+        }
+    }
+
+    /// Сервер посадил за доску: наш цвет — `color`. Баланс — стандартный, чтобы обе игры
+    /// считали одинаково.
+    fn start_network_game(&mut self, color: Color) {
+        balance::use_default();
+        self.art.sync_costs();
+        self.game = Game::from_position(Position::start().without_cards());
+        self.computer = None;
+        self.remote = Some(color.opponent());
+        self.flipped = color == Color::Black;
+        self.net_note = None;
+        self.net_queue.clear();
+        self.reset_interaction();
+        self.screen = Screen::Game;
+        self.ended_at = None;
+        if let Some(link) = &self.net {
+            link.send(&net::version_line());
+        }
+        self.sfx.play(Sound::Notify);
+    }
+
+    /// Ходы соперника по сети — по одному, когда доиграли анимации, как у компьютера.
+    fn drive_remote(&mut self, now: f64) {
+        let Some(remote) = self.remote else {
+            return;
+        };
+        if self.game.is_over() || self.game.position().side() != remote {
+            return;
+        }
+        if self.anim.is_some() || !self.strikes.is_empty() {
+            return;
+        }
+        let Some(line) = self.net_queue.pop_front() else {
+            return;
+        };
+        if line == net::END_TURN {
+            if self.game.can_end_turn() {
+                self.end_turn(now);
+            } else {
+                self.net_note = Some("Партии разошлись: соперник закончил ход раньше".to_owned());
+            }
+        } else if let Some(mv) = net::decode_move(&line, self.game.legal_moves()) {
+            self.play(mv, None, now);
+        } else {
+            self.net_note = Some(format!("Партии разошлись: непонятный ход «{line}»"));
+        }
     }
 
     fn drive_computer(&mut self, now: f64) {
@@ -1109,10 +1265,16 @@ impl BattleChessApp {
             self.stats_for = None;
             self.deck_hover = None;
             self.button_hover = false;
+
+            self.reserve_hover = None;
             return;
         }
         // Кнопка «Конец хода» срабатывает, когда её отпускают, не уведя курсор.
         self.button_hover = pointer.is_some_and(|p| over_board && self.over_button(board, p));
+
+        self.reserve_hover = pointer
+            .filter(|_| over_board)
+            .and_then(|p| self.reserve_under(board, p));
         if released && std::mem::take(&mut self.button_down) && self.button_hover {
             self.end_turn(now);
         }
@@ -1172,6 +1334,20 @@ impl BattleChessApp {
             self.drag = None;
             return;
         }
+        if cancel {
+            self.drop_pick = None;
+        }
+        if pressed && let Some((seat, kind)) = self.reserve_hover {
+            self.drop_pick = if self.reserve_usable(seat, kind) && self.drop_pick != Some(kind) {
+                Some(kind)
+            } else {
+                None
+            };
+            self.selected = None;
+            self.drag = None;
+            return;
+        }
+
         if pressed && self.button_hover {
             self.button_down = self.button_active();
             self.drag = None;
@@ -1209,6 +1385,19 @@ impl BattleChessApp {
     }
 
     fn press(&mut self, sq: Square, pointer: Pos2, board: &BoardGeom, now: f64) {
+        // Выбрана фигура запаса: щелчок по подсвеченной клетке выставляет её, мимо — отменяет.
+        if let Some(kind) = self.drop_pick.take() {
+            let drop = self
+                .game
+                .legal_moves()
+                .iter()
+                .copied()
+                .find(|m| m.kind == MoveKind::Drop(kind) && m.to == sq);
+            if let Some(mv) = drop {
+                self.play(mv, None, now);
+                return;
+            }
+        }
         if let Some(from) = self.selected
             && from != sq
             && self.has_move(from, sq)
@@ -1290,7 +1479,7 @@ impl BattleChessApp {
             .legal_moves()
             .iter()
             .copied()
-            .filter(|m| m.from == from && m.to == to)
+            .filter(|m| m.from == from && m.to == to && !m.is_drop())
             .collect();
         match moves.as_slice() {
             [] => {}
@@ -1467,12 +1656,31 @@ impl BattleChessApp {
             }
         }
 
+        // Куда выставить фигуру из запаса.
+        if let Some(kind) = self.drop_pick
+            && self.human_to_move()
+        {
+            for mv in self.game.legal_moves() {
+                if mv.kind == MoveKind::Drop(kind) {
+                    mark(mv.to, Marker::Move, Color32::WHITE);
+                    if self.hovered == Some(mv.to) {
+                        mark(mv.to, Marker::Target, Color32::WHITE);
+                    }
+                }
+            }
+        }
+
         // Ходы выбранной фигуры — синим, клетка под курсором — в рамке.
         if let Some(from) = self.selected
             && self.human_to_move()
         {
             let mut marked = [false; 64];
-            for mv in self.game.legal_moves().iter().filter(|m| m.from == from) {
+            for mv in self
+                .game
+                .legal_moves()
+                .iter()
+                .filter(|m| m.from == from && !m.is_drop())
+            {
                 if std::mem::replace(&mut marked[mv.to as usize], true) {
                     continue;
                 }
@@ -1503,7 +1711,9 @@ impl BattleChessApp {
                 .strikes
                 .iter()
                 .any(|s| s.moving(now) && s.strike.hit.square == sq);
+            // Походившую фигуру, которую перехватит конь, пока везёт ход.
             if (pos.piece(sq).is_none() || killer_coming)
+                && !anim.is_some_and(|a| a.hides(sq))
                 && let Some(victim) = self.struck_piece(sq, now)
             {
                 figures.push(standing(sq, victim));
@@ -1578,7 +1788,8 @@ impl BattleChessApp {
 
         if let Some(a) = anim {
             let to = a.outcome.mv.to;
-            if let Some(piece) = pos.piece(to) {
+            // Перехваченная конём — прежняя, пока удар не дошёл.
+            if let Some(piece) = self.struck_piece(to, now).or(pos.piece(to)) {
                 figures.push(Figure {
                     shake: self.shake(to, now),
                     ice: self.ice(to, piece, now),
@@ -1859,12 +2070,12 @@ impl BattleChessApp {
         let hp_color = hp_color(piece.hp as f32 / piece.max_hp() as f32);
         let attack = [
             &[(Glyph::Sword, PIXEL_STEEL)][..],
-            &paint(&Glyph::digits(piece.attack()), PIXEL_WHITE),
+            &paint(&Glyph::digits(shown(piece.attack())), PIXEL_WHITE),
         ]
         .concat();
         let health = [
             &[(Glyph::Heart, hp_color)][..],
-            &paint(&Glyph::digits(piece.hp), hp_color),
+            &paint(&Glyph::digits(shown(piece.hp)), hp_color),
         ]
         .concat();
         for (text, left) in [(attack, true), (health, false)] {
@@ -1934,7 +2145,7 @@ impl BattleChessApp {
         } else {
             1.0 - (u - 0.65) / 0.35
         };
-        let amount = Glyph::digits(effect.amount);
+        let amount = Glyph::digits(shown(effect.amount));
         let (lead, color): (&[Glyph], Color32) = match effect.mark {
             _ if effect.killed => (&[Glyph::Skull, Glyph::Minus], PIXEL_RED),
             Mark::Hit => (&[Glyph::Minus], PIXEL_GOLD),
@@ -2001,6 +2212,14 @@ impl BattleChessApp {
                 Pointer::Card
             };
         }
+        if let Some((seat, kind)) = self.reserve_hover {
+            return if self.reserve_usable(seat, kind) {
+                Pointer::Hover
+            } else {
+                Pointer::Off
+            };
+        }
+
         if self.button_hover {
             return if self.button_active() {
                 Pointer::Hover
@@ -2179,6 +2398,13 @@ impl BattleChessApp {
     }
 
     fn role(&self, color: Color) -> String {
+        if let Some(remote) = self.remote {
+            return if remote == color {
+                "соперник по сети".to_owned()
+            } else {
+                "вы".to_owned()
+            };
+        }
         match self.computer {
             Some(computer) if computer == color => {
                 if self.game.position().boosted() == Some(color) {
@@ -2244,35 +2470,12 @@ impl BattleChessApp {
                         .map(|(_, p)| p.hp as i32)
                         .sum();
                     ui.label(
-                        RichText::new(format!("армия: {health} HP"))
+                        RichText::new(format!("армия: {} HP", shown(health)))
                             .size(12.5)
                             .color(theme::TEXT_DIM),
                     );
                 });
             });
-            let cards = pos.cards(color);
-            let mut text = format!(
-                "карты: {} в руке · {} в колоде",
-                cards.hand().len(),
-                cards.deck_len()
-            );
-            if active && pos.cards_played() > 0 {
-                text += &format!(
-                    " · сыграно {} из {}",
-                    pos.cards_played(),
-                    balance().cards_per_turn()
-                );
-            }
-            text += &format!(
-                "\nочки победы: {} · жертвы: {} · мана: {}",
-                pos.points(color, game::Points::Victory),
-                pos.points(color, game::Points::Sacrifice),
-                pos.points(color, game::Points::Mana)
-            );
-            if pos.blood_god(color) {
-                text += " · кровь Богу Крови";
-            }
-            ui.label(RichText::new(text).size(12.5).color(theme::TEXT_DIM));
             let mut kills = self.game.kills_by(color);
             if !kills.is_empty() {
                 kills.sort_by_key(|p| std::cmp::Reverse(p.kind as u8));
@@ -2340,8 +2543,9 @@ impl BattleChessApp {
                 0 => (format!("Ход {}", side.genitive()), theme::TEXT_BRIGHT),
                 danger => (
                     format!(
-                        "Ход {} · король под ударом (до −{danger} HP)",
-                        side.genitive()
+                        "Ход {} · король под ударом (до −{} HP)",
+                        side.genitive(),
+                        shown(danger)
                     ),
                     theme::ORANGE,
                 ),
@@ -2352,6 +2556,9 @@ impl BattleChessApp {
             }
         };
         ui.label(RichText::new(text).size(15.0).color(color));
+        if let Some(note) = &self.net_note {
+            ui.label(RichText::new(note).size(13.0).color(theme::ORANGE));
+        }
     }
 
     /// Список ходов в две колонки, как на lichess: в ячейке — ход фигурой и карта
@@ -2436,7 +2643,7 @@ impl BattleChessApp {
 
     fn controls(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            let can_undo = !self.game.history().is_empty();
+            let can_undo = !self.game.history().is_empty() && self.remote.is_none();
             if ui
                 .add_enabled(can_undo, egui::Button::new("↶ Ход назад"))
                 .on_hover_text("Отменить ход (Ctrl+Z)")
@@ -2481,6 +2688,7 @@ impl BattleChessApp {
                 .clicked()
             {
                 self.thinking = None;
+                self.leave_network();
                 self.screen = Screen::Menu;
             }
         });
@@ -2518,7 +2726,9 @@ impl BattleChessApp {
                     let stats = piece.kind.stats();
                     ui.label(format!(
                         "Атака {}  ·  HP {}/{}",
-                        stats.attack, piece.hp, stats.max_hp
+                        shown(stats.attack),
+                        shown(piece.hp),
+                        shown(stats.max_hp)
                     ));
                     hp_meter(ui, piece.hp, stats.max_hp);
                 });
@@ -2619,9 +2829,7 @@ impl BattleChessApp {
                     .selectable_value(&mut self.settings.boosted, true, "усиленные")
                     .on_hover_text(
                         "Лава: в начале вашего хода случайные пешки компьютера насыщаются \
-                         лавой и в конце его хода взрываются огненной волной по вашим фигурам.\n\
-                         Электричество: слоны компьютера с начала партии бьют молнией — урон \
-                         расходится на ваши фигуры по диагонали вокруг цели.",
+                         лавой и в конце его хода взрываются огненной волной по вашим фигурам.",
                     );
             });
         }
@@ -2655,8 +2863,12 @@ impl BattleChessApp {
                     piece_icon(ui, &self.art, Color::White, kind, 26.0);
                     ui.label(kind.title());
                     let stats = kind.stats();
-                    ui.label(RichText::new(stats.attack.to_string()).color(theme::TEXT_BRIGHT));
-                    ui.label(RichText::new(stats.max_hp.to_string()).color(theme::TEXT_BRIGHT));
+                    ui.label(
+                        RichText::new(shown(stats.attack).to_string()).color(theme::TEXT_BRIGHT),
+                    );
+                    ui.label(
+                        RichText::new(shown(stats.max_hp).to_string()).color(theme::TEXT_BRIGHT),
+                    );
                     ui.end_row();
                 }
             });
@@ -2735,6 +2947,7 @@ impl eframe::App for BattleChessApp {
         self.fps.record(now, work);
         self.sfx.enabled = self.settings.sound;
         self.sfx.volume = self.settings.volume;
+        self.poll_net();
         // Меню и выбор колоды — вместо партии; партия на это время стоит.
         if self.screen != Screen::Game {
             // Редактор в браузере сохранил файл или вернулись в окно (например, из Блокнота с
@@ -3095,7 +3308,7 @@ fn turn_job(turn: &[&Record], highlighted: bool, wrap: f32) -> LayoutJob {
         );
         if let Some(dealt) = notation.damage {
             job.append(
-                &format!(" −{dealt}"),
+                &format!(" −{}", shown(dealt)),
                 0.0,
                 TextFormat::simple(small.clone(), theme::RED),
             );
