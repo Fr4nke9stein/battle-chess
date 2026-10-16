@@ -151,7 +151,8 @@ fn a_piece_strikes_every_enemy_in_reach() {
     // Ферзь d4 бьёт и слона e5, и ладью d5, и пешку c5.
     let mut pos = position("4k3/8/8/2prb3/3Q4/8/8/4K3 w - - 0 1");
     pos.set_hp(sq("e5"), 300);
-    assert_eq!(strikes(&mut pos), ["d4-e5 300†", "d4-d5 300", "d4-c5 300"]);
+    // Сначала дороже: ладья, потом слон, потом пешка.
+    assert_eq!(strikes(&mut pos), ["d4-d5 300", "d4-e5 300†", "d4-c5 300"]);
     assert_eq!(pos.piece(sq("d4")).map(|p| p.kind), Some(Kind::Queen));
 }
 
@@ -259,6 +260,61 @@ fn killed_pieces_go_to_the_killers_reserve_and_drop_after_two_turns() {
             .iter()
             .any(|s| s.from == sq("d4") && s.hit.square == sq("c5"))
     );
+}
+
+#[test]
+fn with_advance_melee_killers_take_the_square_and_ranged_stay() {
+    // Конь b1 бьёт сначала ладью a3 (дороже), убивает, встаёт на a3 и пешку c3 не бьёт.
+    let fen = "4k3/8/8/8/8/r1p5/8/1N2K3 w - - 0 1";
+    let mut pos = position(fen).with_advance(true);
+    pos.set_hp(sq("c3"), 300);
+    pos.set_hp(sq("a3"), 300);
+    pos.make_move(find(&pos, "e1", "f1"));
+    let turn = pos.end_turn();
+    assert!(pos.piece(sq("b1")).is_none());
+    assert_eq!(pos.piece(sq("a3")).map(|p| p.kind), Some(Kind::Knight));
+    assert_eq!(hp(&pos, "c3"), 300, "после взятия больше не бьёт");
+    assert_eq!(turn.strikes.len(), 1);
+    assert!(turn.strikes[0].advanced);
+    // Из равных — сначала с меньшим здоровьем: раненая d2 раньше полной c3.
+    let mut pos = position("4k3/8/8/8/8/2p5/3p4/1N2K3 w - - 0 1").with_advance(true);
+    pos.set_hp(sq("d2"), 300);
+    pos.make_move(find(&pos, "e1", "f1"));
+    pos.end_turn();
+    assert_eq!(
+        pos.piece(sq("d2")).map(|p| (p.kind, p.color)),
+        Some((Kind::Knight, Color::White))
+    );
+    assert_eq!(hp(&pos, "c3"), 900, "полную пешку c3 не бил");
+    // Дальнобойная фигура, убив вплотную, тоже встаёт: ладья c2 добивает пешку c3.
+    let mut pos = position("4k3/8/8/8/8/2p5/2R5/4K3 w - - 0 1").with_advance(true);
+    pos.set_hp(sq("c3"), 300);
+    pos.make_move(find(&pos, "e1", "f1"));
+    pos.end_turn();
+    assert_eq!(pos.piece(sq("c3")).map(|p| p.kind), Some(Kind::Rook));
+    assert!(pos.piece(sq("c2")).is_none());
+    // Без перемещения — конь стоит.
+    let mut pos = position(fen);
+    pos.set_hp(sq("c3"), 300);
+    pos.make_move(find(&pos, "e1", "f1"));
+    pos.end_turn();
+    assert_eq!(pos.piece(sq("b1")).map(|p| p.kind), Some(Kind::Knight));
+    // Ладья бьёт издалека и стоит на месте.
+    let mut pos = position("4k3/8/8/8/2p5/8/2R5/4K3 w - - 0 1").with_advance(true);
+    pos.set_hp(sq("c4"), 300);
+    pos.make_move(find(&pos, "e1", "f1"));
+    pos.end_turn();
+    assert_eq!(pos.piece(sq("c2")).map(|p| p.kind), Some(Kind::Rook));
+    assert!(pos.piece(sq("c4")).is_none());
+    // Пешка, вставшая на последнюю горизонталь, — ферзь; второй раз в ход она не бьёт.
+    let mut pos = position("1n2k3/P7/8/8/8/8/8/4K3 w - - 0 1").with_advance(true);
+    pos.set_hp(sq("b8"), 300);
+    pos.make_move(find(&pos, "e1", "f1"));
+    let turn = pos.end_turn();
+    assert_eq!(turn.strikes.len(), 1);
+    assert_eq!(turn.strikes[0].promoted, Some(Kind::Queen));
+    assert_eq!(pos.piece(sq("b8")).map(|p| p.kind), Some(Kind::Queen));
+    assert!(pos.piece(sq("a7")).is_none());
 }
 
 #[test]
@@ -781,7 +837,7 @@ fn undo_restores_the_position() {
 
 #[test]
 fn notation_and_description_show_the_strikes() {
-    // Конь b1 ранит пешку c3, слон d2 бьёт пешку e3 и добивает c3.
+    // Конь b1 ранит пешку c3, слон d2 добивает её (из равных — раненую первой) и бьёт e3.
     let mut pos = position("4k3/8/8/8/8/2p1p3/3B4/1N2K3 w - - 0 1");
     pos.set_hp(sq("c3"), 400);
     let mut game = Game::from_position(pos);
@@ -791,7 +847,7 @@ fn notation_and_description_show_the_strikes() {
     assert_eq!(
         record.notation(),
         Notation {
-            text: "Кb1⚔c3, Сd2⚔e3, Сd2×c3".to_owned(),
+            text: "Кb1⚔c3, Сd2×c3, Сd2⚔e3".to_owned(),
             damage: Some(900),
             suffix: "",
         }

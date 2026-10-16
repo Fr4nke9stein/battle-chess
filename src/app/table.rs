@@ -117,8 +117,14 @@ const DECK_ICON: [Color32; 2] = [
 /// веер руки соперника (до −91 с тенью), справа — своя рука, сверху — колода соперника
 /// (−69), снизу — своя колода с тенью (408). 648×480: в развёрнутом окне 1920×1080 с обеими
 /// панелями — ровно вдвое (1296×960).
+#[allow(dead_code)] // раскладка стола с картами (тесты)
 pub const TABLE_MIN: Vec2 = vec2(-100.0, -70.0);
+#[allow(dead_code)]
 pub const TABLE_MAX: Vec2 = vec2(548.0, 410.0);
+/// Что вписывается в окно с 0.48, когда карт нет: доска с подписями, кнопка «Конец хода» и
+/// полосы запаса у углов доски (своя — слева внизу, соперника — справа вверху).
+pub const VIEW_MIN: Vec2 = vec2(-64.0, -34.0);
+pub const VIEW_MAX: Vec2 = vec2(530.0, 370.0);
 
 /// Место за столом: своё — внизу справа, соперника — вверху слева.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -346,13 +352,12 @@ fn button_rect() -> Rect {
 
 /// Запас взятых фигур («шведка», с 0.43): своя полоса — внизу слева, соперника —
 /// отражение через центр доски; ячейка на вид фигуры, пиксели арта.
-const RESERVE_AT: Vec2 = vec2(-90.0, 338.0);
-const RESERVE_SLOT: Vec2 = vec2(46.0, 72.0);
+const RESERVE_AT: Vec2 = vec2(-62.0, 310.0);
+const RESERVE_SLOT: Vec2 = vec2(40.0, 58.0);
 const RESERVE_GAP: f32 = 3.0;
-/// Фигура в ячейке — на четверть мельче, чем на доске; основание — на столько ниже верха
-/// ячейки.
-const RESERVE_SCALE: f32 = 0.75;
-const RESERVE_GROUND: f32 = 50.0;
+/// Фигура в ячейке — мельче, чем на доске; основание — на столько ниже верха ячейки.
+const RESERVE_SCALE: f32 = 0.6;
+const RESERVE_GROUND: f32 = 42.0;
 
 /// С 0.40 карты убраны из интерфейса: колоды, руки и очки не рисуются.
 const SHOW_CARDS: bool = false;
@@ -1430,10 +1435,10 @@ impl BattleChessApp {
                     Color32::from_rgb(0x6c, 0x76, 0x8a)
                 };
                 painter.text(
-                    rect.min + vec2(RESERVE_SLOT.x / 2.0, RESERVE_SLOT.y - 9.0) * s,
+                    rect.min + vec2(RESERVE_SLOT.x / 2.0, RESERVE_SLOT.y - 7.0) * s,
                     Align2::CENTER_CENTER,
                     label,
-                    FontId::new(10.0 * s, theme::bold()),
+                    FontId::new(8.0 * s, theme::bold()),
                     text,
                 );
             }

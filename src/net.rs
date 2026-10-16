@@ -18,6 +18,13 @@ use crate::game::{Color, Kind, Move, MoveKind};
 /// Порт сервера, если в адресе его нет.
 pub const DEFAULT_PORT: u16 = 47900;
 
+/// Пульс (с 0.49): игра шлёт серверу `PING` раз в `PING_EVERY`, сервер — игре раз в 20 с.
+/// Без него роутеры забывают «молчащее» соединение, пока соперник думает, и ход не доходит, а
+/// обе стороны считают соединение живым. Нет ничего от сервера `SILENCE` — связь потеряна.
+pub const PING: &str = "PING";
+const PING_EVERY: Duration = Duration::from_secs(15);
+const SILENCE: Duration = Duration::from_secs(60);
+
 /// Что пришло от сервера или соперника.
 #[derive(Debug, PartialEq, Eq)]
 pub enum NetEvent {
@@ -52,6 +59,10 @@ impl Link {
         let _ = std::thread::Builder::new()
             .name("multiplayer".into())
             .spawn(move || run(&address, &tx, &shared, &ctx));
+        let pulse = Arc::clone(&writer);
+        let _ = std::thread::Builder::new()
+            .name("multiplayer-ping".into())
+            .spawn(move || heartbeat(pulse));
         Link { rx, writer }
     }
 
@@ -95,14 +106,36 @@ fn run(
         Ok(reader) => reader,
         Err(e) => return event(NetEvent::Closed(format!("ошибка соединения: {e}"))),
     };
+    let _ = reader.set_read_timeout(Some(SILENCE));
     *writer.lock().unwrap_or_else(|e| e.into_inner()) = Some(stream);
     event(NetEvent::Connected);
-    for line in BufReader::new(reader).lines() {
-        let Ok(line) = line else {
-            break;
-        };
+    let reason = read_lines(reader, &event);
+    event(NetEvent::Closed(reason));
+}
+
+/// Читает строки сервера, пока соединение живо; возвращает, почему оно кончилось. Пульс
+/// сервера (`PING`) не передаётся дальше — он только продлевает ожидание.
+fn read_lines(reader: TcpStream, event: &impl Fn(NetEvent)) -> String {
+    let mut reader = BufReader::new(reader);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => return "соединение с сервером закрыто".into(),
+            Ok(_) => {}
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                return "сервер не отвечает больше минуты".into();
+            }
+            Err(e) => return format!("ошибка соединения: {e}"),
+        }
         let line = line.trim();
         event(match line {
+            PING => continue,
             "WAIT" => NetEvent::Waiting,
             "START white" => NetEvent::Start(Color::White),
             "START black" => NetEvent::Start(Color::Black),
@@ -110,7 +143,20 @@ fn run(
             _ => NetEvent::Line(line.to_owned()),
         });
     }
-    event(NetEvent::Closed("соединение с сервером закрыто".into()));
+}
+
+/// Шлёт серверу `PING`, пока соединение открыто (`Link::drop` забирает поток записи).
+fn heartbeat(writer: Arc<Mutex<Option<TcpStream>>>) {
+    loop {
+        std::thread::sleep(PING_EVERY);
+        let mut guard = writer.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(stream) = guard.as_mut() else {
+            return;
+        };
+        if stream.write_all(format!("{PING}\n").as_bytes()).is_err() {
+            return;
+        }
+    }
 }
 
 fn open(address: &str) -> Result<TcpStream, String> {
@@ -143,6 +189,20 @@ fn open(address: &str) -> Result<TcpStream, String> {
 
 /// Конец хода — кнопка «Конец хода».
 pub const END_TURN: &str = "E";
+
+/// Правила партии от белых (кто зашёл первым): перемещение при взятии.
+pub fn rules_line(advance: bool) -> String {
+    format!("RULES advance={}", u8::from(advance))
+}
+
+/// Правила из строки `rules_line`.
+pub fn parse_rules(line: &str) -> Option<bool> {
+    match line.strip_prefix("RULES ")?.trim() {
+        "advance=1" => Some(true),
+        "advance=0" => Some(false),
+        _ => None,
+    }
+}
 
 /// Версия игры: разные версии могут считать партию по-разному.
 pub fn version_line() -> String {
@@ -226,6 +286,10 @@ mod tests {
         assert_eq!(decode_move("M 12 40 0 0", &legal), None, "незаконный ход");
         assert_eq!(decode_move("мусор", &legal), None);
         assert_eq!(decode_move("M 1 2", &legal), None);
+        for advance in [false, true] {
+            assert_eq!(parse_rules(&rules_line(advance)), Some(advance));
+        }
+        assert_eq!(parse_rules("RULES что-то"), None);
     }
 
     /// Две игры через настоящий сервер играют одну партию случайными ходами: после каждого
@@ -258,7 +322,7 @@ mod tests {
             }
         }
         assert_ne!(colors[0], colors[1]);
-        let fresh = || Game::from_position(Position::start().without_cards());
+        let fresh = || Game::from_position(Position::start().without_cards().with_advance(true));
         let mut games = [fresh(), fresh()];
         let mut seed = 0x2545_F491_4F6C_DD1Du64;
         let started = Instant::now();

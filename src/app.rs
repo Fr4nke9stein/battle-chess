@@ -29,13 +29,13 @@ use crate::game::{
     Status, Strike,
 };
 use crate::net;
-use crate::settings::{FrameRate, Settings};
+use crate::settings::{FrameRate, Settings, ZOOM_MAX, ZOOM_MIN};
 use crate::sound::{Sfx, Sound};
 use crate::theme::{self, rgba};
 use menu::Screen;
 use table::{
-    Aiming, Bless, Burn, DRAW_DELAY, Draw, Freeze, Held, Portal, Returning, Seat, TABLE_MAX,
-    TABLE_MIN, Wave, ice_variant,
+    Aiming, Bless, Burn, DRAW_DELAY, Draw, Freeze, Held, Portal, Returning, Seat, VIEW_MAX,
+    VIEW_MIN, Wave, ice_variant,
 };
 
 /// Скольжение фигуры, как у lichess (секунды).
@@ -188,9 +188,10 @@ impl StrikeAnim {
         self.start + LUNGE_TIME
     }
 
-    /// Удар убил цель, а убийца ещё не дошёл до её клетки. С 0.40 убийца остаётся на месте.
-    fn moving(&self, _now: f64) -> bool {
-        false
+    /// Убийца встаёт на клетку цели (партия «с перемещением») и ещё не дошёл до неё — до
+    /// начала удара он стоит на своей клетке.
+    fn moving(&self, now: f64) -> bool {
+        self.strike.advanced && now < self.end()
     }
 
     /// Где убийца (в клетках доски): до удара — на своей клетке, потом идёт на клетку цели.
@@ -203,7 +204,7 @@ impl StrikeAnim {
     /// Сдвиг атакующего во время выпада к выжившей цели (в клетках).
     fn lunge(&self, now: f64) -> Vec2 {
         let u = (now - self.start) / LUNGE_TIME;
-        if !(0.0..1.0).contains(&u) {
+        if self.strike.advanced || !(0.0..1.0).contains(&u) {
             return Vec2::ZERO;
         }
         (center(self.strike.hit.square) - center(self.strike.from)) * (lunge_reach(u) * LUNGE_DEPTH)
@@ -545,6 +546,8 @@ pub struct BattleChessApp {
     net_status: String,
     net_note: Option<String>,
     net_queue: VecDeque<String>,
+    /// Сервер посадил нас за чёрных: партия начнётся, когда белые пришлют правила.
+    net_pending: Option<Color>,
     /// Фигура запаса под курсором и выбранная для выставления.
     reserve_hover: Option<(Seat, Kind)>,
     drop_pick: Option<Kind>,
@@ -657,6 +660,7 @@ impl BattleChessApp {
             net_status: String::new(),
             net_note: None,
             net_queue: VecDeque::new(),
+            net_pending: None,
             drop_pick: None,
             drag: None,
             promotion: None,
@@ -694,7 +698,11 @@ impl BattleChessApp {
         self.setup = setup;
         self.draft = setup;
         // С 0.40 карт нет: колоды и руки пусты.
-        self.game = Game::from_position(Position::start().without_cards());
+        self.game = Game::from_position(
+            Position::start()
+                .without_cards()
+                .with_advance(self.settings.advance),
+        );
         self.computer = match setup.opponent {
             Opponent::Human => None,
             Opponent::Computer => Some(match setup.side {
@@ -1079,6 +1087,7 @@ impl BattleChessApp {
         self.remote = None;
         self.net_note = None;
         self.net_queue.clear();
+        self.net_pending = None;
     }
 
     /// События соединения: на экране подключения — состояние, в партии — ходы соперника и
@@ -1096,18 +1105,35 @@ impl BattleChessApp {
                 net::NetEvent::Waiting => {
                     self.net_status = "Подключено. Ждём второго игрока…".to_owned();
                 }
-                net::NetEvent::Start(color) => self.start_network_game(color),
+                net::NetEvent::Start(color) => {
+                    // Правила выбирают белые (кто зашёл первым) и шлют их сразу, до ходов.
+                    if color == Color::White {
+                        let advance = self.settings.advance;
+                        if let Some(link) = &self.net {
+                            link.send(&net::rules_line(advance));
+                        }
+                        self.start_network_game(color, advance);
+                    } else {
+                        self.net_pending = Some(color);
+                        self.net_status = "Соперник найден, ждём его правила…".to_owned();
+                    }
+                }
                 net::NetEvent::Line(line) => {
-                    if let Some(version) = line.strip_prefix("VER ") {
+                    if let Some(advance) = net::parse_rules(&line) {
+                        if let Some(color) = self.net_pending.take() {
+                            self.start_network_game(color, advance);
+                        }
+                    } else if let Some(version) = line.strip_prefix("VER ") {
                         if version != env!("CARGO_PKG_VERSION") {
                             self.net_note = Some(format!(
                                 "У соперника версия {version}, у вас {} — партия может разойтись",
                                 env!("CARGO_PKG_VERSION")
                             ));
                         }
-                    } else {
+                    } else if line == net::END_TURN || line.starts_with("M ") {
                         self.net_queue.push_back(line);
                     }
+                    // Прочие строки (пульс старого сервера, незнакомое) не трогают партию.
                 }
                 net::NetEvent::Left => {
                     self.net_note = Some("Соперник отключился".to_owned());
@@ -1130,10 +1156,10 @@ impl BattleChessApp {
 
     /// Сервер посадил за доску: наш цвет — `color`. Баланс — стандартный, чтобы обе игры
     /// считали одинаково.
-    fn start_network_game(&mut self, color: Color) {
+    fn start_network_game(&mut self, color: Color, advance: bool) {
         balance::use_default();
         self.art.sync_costs();
-        self.game = Game::from_position(Position::start().without_cards());
+        self.game = Game::from_position(Position::start().without_cards().with_advance(advance));
         self.computer = None;
         self.remote = Some(color.opponent());
         self.flipped = color == Color::Black;
@@ -1532,21 +1558,35 @@ impl BattleChessApp {
         let avail = ui.available_rect_before_wrap();
         paint_backdrop(ui.painter(), ui.clip_rect());
         let ppp = ui.ctx().pixels_per_point();
-        // Доска со столом вокруг: колоды и руки, над дальним рядом — головы фигур.
-        let need = TABLE_MAX - TABLE_MIN;
-        let fit = (avail.width() / need.x).min(avail.height() / need.y) * ppp;
-        // Пиксель арта — целое число физических пикселей (на мониторе 1920×1080 в
-        // развёрнутом окне — ровно 2): сетка пикселей ровная. Целое берётся, даже если поле
-        // стола чуть (до 1%, это пустые поля) не влезает, и если доска от этого мельчает не
-        // больше чем на четверть; иначе — дробный масштаб.
+        // Карт нет (с 0.40): вписываются доска, кнопка и запас (`VIEW_MIN`…`VIEW_MAX`), а не
+        // стол с руками и колодами. Ctrl/⌘ + колесо над доской — свой масштаб (`Settings::zoom`).
+        let (view_min, view_max) = (VIEW_MIN, VIEW_MAX);
+        let need = view_max - view_min;
+        let wheel = ui.input(|i| i.modifiers.command.then(|| i.raw_scroll_delta.y));
+        if let Some(dy) = wheel.filter(|dy| *dy != 0.0)
+            && ui.rect_contains_pointer(avail)
+        {
+            let step = if dy > 0.0 { 10 } else { -10 };
+            self.settings.zoom = self
+                .settings
+                .zoom
+                .saturating_add_signed(step)
+                .clamp(ZOOM_MIN, ZOOM_MAX);
+        }
+        let fit = (avail.width() / need.x).min(avail.height() / need.y)
+            * ppp
+            * f32::from(self.settings.zoom)
+            / 100.0;
+        // Пиксель арта — целое число физических пикселей, если доска от этого мельчает не
+        // больше чем на 8% (сетка пикселей ровная); иначе — дробный масштаб на всё место.
         let whole = (fit + 0.01 * fit).floor();
-        let physical = if whole >= 1.0 && whole >= 0.75 * fit {
+        let physical = if whole >= 1.0 && whole >= 0.92 * fit {
             whole
         } else {
             fit.max(0.25)
         };
         let scale = physical / ppp;
-        let corner = avail.center() - need * scale / 2.0 - TABLE_MIN * scale;
+        let corner = avail.center() - need * scale / 2.0 - view_min * scale;
         let origin = pos2(
             (corner.x * ppp).round() / ppp,
             (corner.y * ppp).round() / ppp,
@@ -1720,11 +1760,12 @@ impl BattleChessApp {
             }
         }
         // Убийца идёт на клетку цели.
+        // До своего хода на клетку цели он делает выпады остальных своих ударов.
         for s in self.strikes.iter().filter(|s| s.moving(now)) {
             figures.push(self.dressed(
                 s.strike.hit.square,
                 s.strike.attacker,
-                s.killer_at(now),
+                s.killer_at(now) + self.strike_lunge(s.strike.from, now),
                 now,
             ));
         }
@@ -2556,6 +2597,13 @@ impl BattleChessApp {
             }
         };
         ui.label(RichText::new(text).size(15.0).color(color));
+        if pos.advance() {
+            ui.label(
+                RichText::new("Взятие с перемещением: пешка, конь и король встают на место убитой")
+                    .size(12.0)
+                    .color(theme::TEXT_DIM),
+            );
+        }
         if let Some(note) = &self.net_note {
             ui.label(RichText::new(note).size(13.0).color(theme::ORANGE));
         }
@@ -2806,6 +2854,17 @@ impl BattleChessApp {
             );
         }
         ui.checkbox(&mut self.settings.show_fps, "Показывать FPS (F3)");
+        option_label(ui, "Масштаб доски (Ctrl/⌘ + колесо над доской)");
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::Slider::new(&mut self.settings.zoom, ZOOM_MIN..=ZOOM_MAX)
+                    .suffix("%")
+                    .step_by(10.0),
+            );
+            if ui.button("по окну").clicked() {
+                self.settings.zoom = 100;
+            }
+        });
     }
 
     fn new_game_section(&mut self, ui: &mut egui::Ui) {
@@ -2833,6 +2892,17 @@ impl BattleChessApp {
                     );
             });
         }
+        option_label(ui, "Взятие");
+        // Короткие подписи: длинные не влезали в панель и раздували её (чёрная полоса).
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.settings.advance, false, "на месте");
+            let _ = ui
+                .selectable_value(&mut self.settings.advance, true, "с перемещением")
+                .on_hover_text(
+                    "Убив фигуру вблизи, фигура встаёт на её клетку и больше в этот ход не бьёт. \
+                     Цели бьются по важности, из равных — с меньшим здоровьем.",
+                );
+        });
         ui.add_space(8.0);
         let start = egui::Button::new(
             RichText::new("Начать партию")

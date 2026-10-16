@@ -16,8 +16,11 @@
 Строки (текст, по одной на строку):
     сервер → игрок:  WAIT            — ждём второго игрока
                      START white|black — партия началась, ваш цвет
-                     LEFT            — соперник отключился
+                                          LEFT            — соперник отключился
+                     PING            — пульс раз в 20 с (игра ждёт его не дольше минуты)
+    игрок → сервер:  PING            — пульс игры раз в 15 с, не пересылается
     игрок ↔ игрок:   всё остальное пересылается как есть (ходы — их формат знает игра).
+Пульс нужен, чтобы роутеры не забывали молчащее соединение, пока соперник думает.
 Шифрования нет.
 """
 
@@ -27,6 +30,9 @@ import sys
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 47900
 # Длинные строки — не наши: обрываем такое соединение.
 MAX_LINE = 4096
+PING = b"PING\n"
+PING_EVERY = 20
+
 
 waiting = None  # (reader, writer, future) первого игрока, ждущего соперника
 
@@ -44,18 +50,29 @@ async def send(writer, line):
 
 
 async def relay(reader, writer, name):
-    """Пересылает строки от `reader` к `writer`, пока одна из сторон не отвалится."""
+    """Пересылает строки от `reader` к `writer`, пока одна из сторон не отвалится; пульс
+    игрока не пересылается."""
     try:
         while True:
             line = await reader.readline()
             if not line or len(line) > MAX_LINE:
                 return
+            if line.strip() == PING.strip():
+                continue
             writer.write(line)
             await writer.drain()
     except (ConnectionError, OSError, asyncio.LimitOverrunError, ValueError):
         return
     finally:
         log(name, "отключился")
+
+
+async def pulse(*writers):
+    """Шлёт игрокам пульс, пока задачу не отменят."""
+    while True:
+        await asyncio.sleep(PING_EVERY)
+        for w in writers:
+            await send(w, PING.decode().strip())
 
 
 async def play(first, second):
@@ -65,8 +82,9 @@ async def play(first, second):
     log("партия:", peer(w1), "(белые) против", peer(w2), "(чёрные)")
     a = asyncio.create_task(relay(r1, w2, peer(w1)))
     b = asyncio.create_task(relay(r2, w1, peer(w2)))
+    beat = asyncio.create_task(pulse(w1, w2))
     done, pending = await asyncio.wait({a, b}, return_when=asyncio.FIRST_COMPLETED)
-    for task in pending:
+    for task in pending | {beat}:
         task.cancel()
     # Кто остался — узнаёт, что соперник ушёл.
     for w in (w1, w2):
@@ -80,10 +98,14 @@ def peer(writer):
 
 
 async def wait_eof(reader):
-    """Ждёт, пока ожидающий игрок отключится (обрыв — тоже)."""
+    """Ждёт, пока ожидающий игрок отключится (обрыв — тоже). Его пульс читается целыми
+    строками и выбрасывается — так в буфере не остаётся обрывков для будущей партии."""
     try:
-        await reader.read(1)
-    except (ConnectionError, OSError):
+        while True:
+            line = await reader.readline()
+            if not line:
+                return
+    except (ConnectionError, OSError, ValueError):
         pass
 
 
@@ -98,9 +120,11 @@ async def on_connect(reader, writer):
     paired = asyncio.get_running_loop().create_future()
     waiting = (reader, writer, paired)
     await send(writer, "WAIT")
-    # До START игрок ничего не шлёт: конец потока — значит, ушёл, не дождавшись.
+    # До START игрок шлёт только пульс: конец потока — значит, ушёл, не дождавшись.
     gone = asyncio.create_task(wait_eof(reader))
+    beat = asyncio.create_task(pulse(writer))
     await asyncio.wait({paired, gone}, return_when=asyncio.FIRST_COMPLETED)
+    beat.cancel()
     if not paired.done():
         paired.cancel()
         if waiting is not None and waiting[2] is paired:

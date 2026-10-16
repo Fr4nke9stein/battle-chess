@@ -66,7 +66,14 @@ pub struct Settings {
     pub deck: u8,
     /// Компьютер с усиленными фигурами: лава в пешках, электричество в слонах.
     pub boosted: bool,
+    /// Партия «с перемещением при взятии»: пешка, конь и король встают на клетку убитой.
+    pub advance: bool,
+    /// Масштаб доски в процентах от размера «по окну» (`ZOOM_MIN`…`ZOOM_MAX`).
+    pub zoom: u16,
 }
+
+pub const ZOOM_MIN: u16 = 50;
+pub const ZOOM_MAX: u16 = 250;
 
 impl Default for Settings {
     fn default() -> Settings {
@@ -77,6 +84,8 @@ impl Default for Settings {
             show_fps: false,
             deck: 0,
             boosted: false,
+            advance: false,
+            zoom: 100,
         }
     }
 }
@@ -123,6 +132,12 @@ impl Settings {
                 "show_fps" => settings.show_fps = value == "on",
                 "deck" => settings.deck = value.parse().unwrap_or(0),
                 "boosted" => settings.boosted = value == "on",
+                "advance" => settings.advance = value == "on",
+                "zoom" => {
+                    if let Ok(zoom) = value.parse::<u16>() {
+                        settings.zoom = zoom.clamp(ZOOM_MIN, ZOOM_MAX);
+                    }
+                }
                 _ => {}
             }
         }
@@ -132,13 +147,15 @@ impl Settings {
     fn to_text(&self) -> String {
         let on_off = |on: bool| if on { "on" } else { "off" };
         format!(
-            "volume={}\nsound={}\nframe_rate={}\nshow_fps={}\ndeck={}\nboosted={}\n",
+            "volume={}\nsound={}\nframe_rate={}\nshow_fps={}\ndeck={}\nboosted={}\nadvance={}\nzoom={}\n",
             self.volume,
             on_off(self.sound),
             self.frame_rate.key(),
             on_off(self.show_fps),
             self.deck,
             on_off(self.boosted),
+            on_off(self.advance),
+            self.zoom,
         )
     }
 }
@@ -175,6 +192,8 @@ mod tests {
                 show_fps: true,
                 deck: 3,
                 boosted: true,
+                advance: true,
+                zoom: 140,
             };
             assert_eq!(Settings::parse(&settings.to_text()), settings);
         }

@@ -377,6 +377,8 @@ pub struct Strike {
     /// Слон с электричеством: тот же удар по чужим фигурам по диагонали вокруг цели (их не
     /// больше трёх — четвёртая диагональ ведёт к самому слону).
     pub splash: [Option<Hit>; 3],
+    /// Убив цель вблизи, атакующий встал на её клетку (партия «с перемещением»).
+    pub advanced: bool,
 }
 
 impl Strike {
@@ -516,6 +518,16 @@ fn strike_steps(piece: Piece) -> &'static [(i8, i8)] {
     }
 }
 
+/// Удар вблизи — после него, убив, фигура встаёт на клетку цели: у пешки, коня и короля
+/// любой, у слона, ладьи и ферзя — только по соседней клетке.
+fn close_strike(kind: Kind, from: Square, to: Square) -> bool {
+    matches!(kind, Kind::Pawn | Kind::Knight | Kind::King)
+        || (file_of(from) - file_of(to))
+            .abs()
+            .max((rank_of(from) - rank_of(to)).abs())
+            == 1
+}
+
 /// Место клетки в очереди ударов: a8, a7, …, a1, b8, …, h1.
 #[allow(dead_code)] // карты убраны из интерфейса (0.40)
 pub fn strike_order(sq: Square) -> u8 {
@@ -584,6 +596,8 @@ pub struct Position {
     reserve: [[[[u8; MAX_REBIRTHS as usize]; 3]; 6]; 2],
     /// Король стороны погиб — она проиграла (с 0.44).
     king_lost: [bool; 2],
+    /// Партия «с перемещением при взятии» (с 0.46): ближники встают на клетку убитой.
+    advance: bool,
 }
 
 /// Сколько начал своих ходов ждать, прежде чем выставить взятую фигуру.
@@ -1288,6 +1302,7 @@ impl Position {
 
             reserve: [[[[0; MAX_REBIRTHS as usize]; 3]; 6]; 2],
             king_lost: [false; 2],
+            advance: false,
         };
         position.deal();
         Ok(position)
@@ -1313,6 +1328,17 @@ impl Position {
         }
         self.deal();
         self
+    }
+
+    /// Та же позиция, но с перемещением при взятии или без (правило партии).
+    pub fn with_advance(mut self, on: bool) -> Position {
+        self.advance = on;
+        self
+    }
+
+    /// Ближники встают на клетку убитой.
+    pub fn advance(&self) -> bool {
+        self.advance
     }
 
     /// Та же позиция без карт: колоды и руки пусты (с 0.40 карты убраны из интерфейса).
@@ -2181,27 +2207,40 @@ impl Position {
 
     /// Удары в конце хода (с 0.40): каждая свободная (не замёрзшая) фигура стороны, которая
     /// ходит, по очереди a8, a7, …, a1, b8, …, h1 бьёт всех чужих в досягаемости
-    /// (`strike_steps`) и остаётся на месте. Фигуры в барьере соперника недосягаемы.
-    /// Убитая цель даёт очки, «воин» после убийства лечится целиком и бьёт сильнее, удар
-    /// «Воина из Льда» замораживает выжившую цель.
+    /// (`strike_steps`) — сначала самую дорогую (`Kind::points`), из равных — с меньшим
+    /// здоровьем, потом первую по очереди — и остаётся на месте. Фигуры в барьере соперника
+    /// недосягаемы. Убитая цель даёт очки, «воин» после убийства лечится целиком и бьёт
+    /// сильнее, удар «Воина из Льда» замораживает выжившую цель.
+    ///
+    /// В партии «с перемещением» (с 0.46): убив цель вблизи (`close_strike`), фигура встаёт на
+    /// её клетку и остальных в этот ход не бьёт (`advance_to`); второй раз она не бьёт и с
+    /// новой клетки.
     fn strike_all(&mut self) -> Vec<Strike> {
         let us = self.side;
         let wall = self.wall(us);
         let mut strikes = Vec::new();
+        // Клетки, куда встали убийцы: второй раз они в этот ход не бьют.
+        let mut done = 0u64;
         for from in strike_queue() {
+            if done & 1 << from != 0 {
+                continue;
+            }
             let Some(mut attacker) =
                 self.board[from as usize].filter(|p| p.color == us && !p.is_frozen() && !p.fresh)
             else {
                 continue;
             };
-            let targets: Vec<Square> = strike_steps(attacker)
+            let mut targets: Vec<(Square, Piece)> = strike_steps(attacker)
                 .iter()
                 .filter(|&&step| self.line_clear(from, attacker, step, wall))
                 .filter_map(|&(df, dr)| square(file_of(from) + df, rank_of(from) + dr))
                 .filter(|&sq| wall & 1 << sq == 0)
-                .filter(|&sq| self.board[sq as usize].is_some_and(|p| p.color != us))
+                .filter_map(|sq| Some((sq, self.board[sq as usize].filter(|p| p.color != us)?)))
                 .collect();
-            for sq in targets {
+            targets.sort_by_key(|&(sq, p)| {
+                (std::cmp::Reverse(p.kind.points()), p.hp, strike_order(sq))
+            });
+            for (sq, _) in targets {
                 // Цель могла погибнуть от молнии предыдущего удара.
                 let Some(target) = self.board[sq as usize].filter(|p| p.color != us) else {
                     continue;
@@ -2209,13 +2248,48 @@ impl Position {
                 if let Some(me) = self.board[from as usize] {
                     attacker = me;
                 }
-                strikes.push(self.strike(from, attacker, sq, target, wall));
+                let mut strike = self.strike(from, attacker, sq, target, wall);
+                let advance = self.advance
+                    && strike.hit.killed
+                    && close_strike(attacker.kind, from, sq)
+                    && self.board[sq as usize].is_none();
+                if advance {
+                    self.advance_to(from, &mut strike);
+                    done |= 1 << sq;
+                }
+                strikes.push(strike);
+                if advance {
+                    break;
+                }
             }
         }
         if !strikes.is_empty() {
             self.halfmove_clock = 0;
         }
         strikes
+    }
+
+    /// Перемещение при взятии: убийца встаёт на клетку цели; пешка на последней горизонтали
+    /// становится ферзём, в ледяной зоне фигура замерзает.
+    fn advance_to(&mut self, from: Square, strike: &mut Strike) {
+        let Some(piece) = self.board[from as usize] else {
+            return;
+        };
+        let landing = strike.hit.square;
+        let us = piece.color;
+        self.relocate(from, landing);
+        self.castling &= !rights_lost_at(from);
+        if piece.kind == Kind::King {
+            self.kings[us as usize] = Some(landing);
+        }
+        if piece.kind == Kind::Pawn && rank_of(landing) == us.last_rank() {
+            self.board[landing as usize] = Some(Piece::new(Kind::Queen, us));
+            strike.promoted = Some(Kind::Queen);
+        }
+        if self.on_ice(landing) {
+            self.freeze_at(landing);
+        }
+        strike.advanced = true;
     }
 
     /// Один удар фигуры `attacker` с клетки `from` по `target` на `sq`.
@@ -2283,6 +2357,7 @@ impl Position {
             },
             feast,
             chilled,
+            advanced: false,
         }
     }
 
@@ -3119,12 +3194,17 @@ fn strike_description(strike: &Strike) -> String {
     let verb_end = if attacker.is_feminine() { "а" } else { "" };
     let mut text = if hit.killed {
         format!(
-            " {} {} убил{verb_end} {} на {} (−{} HP).",
+            " {} {} убил{verb_end} {} на {} (−{} HP){}.",
             attacker.title(),
             square_name(strike.from),
             hit.target.kind.accusative(),
             square_name(hit.square),
-            shown(hit.damage)
+            shown(hit.damage),
+            if strike.advanced {
+                format!(" и встал{verb_end} на её место")
+            } else {
+                String::new()
+            }
         )
     } else {
         format!(

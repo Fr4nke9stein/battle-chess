@@ -58,6 +58,8 @@ enum Choice {
     Disconnect,
     /// Компьютер с обычными или усиленными фигурами.
     Boost,
+    /// Взятие с перемещением или без.
+    Advance,
     Decks,
     Collection,
     Balance,
@@ -177,6 +179,7 @@ impl BattleChessApp {
             }
             Some(Choice::Decks) => self.screen = Screen::Decks,
             Some(Choice::Boost) => self.settings.boosted = !self.settings.boosted,
+            Some(Choice::Advance) => self.settings.advance = !self.settings.advance,
             Some(Choice::Balance) => {
                 if let Err(e) = crate::editor::open(ctx) {
                     self.balance_warnings.insert(0, e);
@@ -239,15 +242,28 @@ impl BattleChessApp {
         let entered = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         let mut picked = None;
         let x = (FIELD.x - BUTTON.x) / 2.0;
+        // Правила сетевой партии выбирает тот, кто зашёл первым (играет белыми).
+        let rule = advance_label(self.settings.advance);
+        if self.plate(
+            painter,
+            field,
+            vec2(x, 92.0),
+            BUTTON,
+            rule,
+            pointer,
+            !connecting,
+        ) {
+            picked = Some(Choice::Advance);
+        }
         let (label, action) = if connecting {
             ("Отменить", Choice::Disconnect)
         } else {
             ("Подключиться", Choice::Connect)
         };
-        if self.button(painter, field, vec2(x, 94.0), label, pointer) {
+        if self.button(painter, field, vec2(x, 120.0), label, pointer) {
             picked = Some(action);
         }
-        if self.button(painter, field, vec2(x, 120.0), "Назад", pointer) {
+        if self.button(painter, field, vec2(x, 146.0), "Назад", pointer) {
             picked = Some(Choice::Back);
         }
         if entered && !connecting {
@@ -255,7 +271,7 @@ impl BattleChessApp {
             self.connect(&ui.ctx().clone());
         }
         painter.text(
-            field.at(vec2(FIELD.x / 2.0, 160.0)),
+            field.at(vec2(FIELD.x / 2.0, 182.0)),
             Align2::CENTER_CENTER,
             &self.net_status,
             FontId::proportional(7.0 * field.scale),
@@ -271,7 +287,7 @@ impl BattleChessApp {
         painter.text(
             field.at(vec2(FIELD.x / 2.0, 210.0)),
             Align2::CENTER_CENTER,
-            "Первый подключившийся играет белыми, второй — чёрными.",
+            "Первый подключившийся играет белыми и выбирает правила взятия.",
             FontId::proportional(5.5 * field.scale),
             theme::TEXT_DIM,
         );
@@ -302,13 +318,14 @@ impl BattleChessApp {
             ("Начать играть", Choice::Play),
             ("Мультиплеер", Choice::Multiplayer),
             (strength, Choice::Boost),
+            (advance_label(self.settings.advance), Choice::Advance),
             ("Править баланс", Choice::Balance),
             ("Выйти", Choice::Quit),
         ];
         // С 0.40 карт в игре нет: выбор колоды и коллекция скрыты.
         let mut picked = None;
         for (k, (label, choice)) in buttons.into_iter().enumerate() {
-            let min = vec2((FIELD.x - BUTTON.x) / 2.0, 70.0 + k as f32 * 24.0);
+            let min = vec2((FIELD.x - BUTTON.x) / 2.0, 62.0 + k as f32 * 23.0);
             if self.button(painter, field, min, label, pointer) {
                 picked = Some(choice);
             }
@@ -326,7 +343,7 @@ impl BattleChessApp {
             .collect();
         for (k, line) in lines.iter().enumerate() {
             painter.text(
-                field.at(vec2(FIELD.x / 2.0, 222.0 + k as f32 * 8.0)),
+                field.at(vec2(FIELD.x / 2.0, 228.0 + k as f32 * 7.0)),
                 Align2::CENTER_CENTER,
                 line,
                 FontId::proportional(5.5 * field.scale),
@@ -651,6 +668,15 @@ impl BattleChessApp {
             self.pointer = Pointer::Hover;
         }
         hovered
+    }
+}
+
+/// Подпись переключателя «перемещение при взятии».
+fn advance_label(on: bool) -> &'static str {
+    if on {
+        "Взятие: с перемещением"
+    } else {
+        "Взятие: без перемещения"
     }
 }
 
