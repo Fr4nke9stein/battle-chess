@@ -405,12 +405,35 @@ pub struct TurnEnd {
     pub blasts: Vec<Blast>,
     /// Пешки усиленной стороны, насытившиеся лавой к ходу соперника.
     pub charged: Vec<Square>,
+    /// Rogue-like: фигуры новой волны соперника, вышедшие к следующему ходу.
+    pub spawned: Vec<(Square, Kind)>,
+    /// Rogue-like: шаги фигур волн вперёд (откуда, куда) — до ударов.
+    pub marched: Vec<(Square, Square)>,
+}
+
+/// Rogue-like режим (с 0.50, просьба пользователя): у соперника нет своих фигур — они
+/// волнами выходят на его крайнюю горизонталь в конце каждого его хода («туман войны» — на
+/// будущее) и шагают вперёд (`march`); игрок за свой ход
+/// делает до `Rule::RogueMoves` ходов разными фигурами; «шведки» нет, зато в запасе с начала
+/// две пешки, слон и конь. Отбил все волны — победа.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Rogue {
+    /// Сторона игрока; волны — у соперника.
+    pub player: Color,
+    /// Сколько волн уже вышло и сколько всего.
+    pub wave: u8,
+    pub waves: u8,
+    /// Случайность волн этой партии.
+    seed: u64,
 }
 
 impl TurnEnd {
     /// Никого не задело: в списке ходов такой конец хода не пишется.
     pub fn is_quiet(&self) -> bool {
-        self.strikes.is_empty() && self.blasts.iter().all(|b| b.hits.is_empty())
+        self.strikes.is_empty()
+            && self.blasts.iter().all(|b| b.hits.is_empty())
+            && self.spawned.is_empty()
+            && self.marched.is_empty()
     }
 }
 
@@ -598,6 +621,12 @@ pub struct Position {
     king_lost: [bool; 2],
     /// Партия «с перемещением при взятии» (с 0.46): ближники встают на клетку убитой.
     advance: bool,
+    /// Rogue-like режим: волны фигур соперника.
+    rogue: Option<Rogue>,
+    /// Сколько ходов фигурой сторона сделала в этом ходу и клетки фигур, которые уже ходили
+    /// (в rogue-like игрок ходит несколько раз — каждый раз другой фигурой).
+    moves_made: u8,
+    used: u64,
 }
 
 /// Сколько начал своих ходов ждать, прежде чем выставить взятую фигуру.
@@ -1303,6 +1332,9 @@ impl Position {
             reserve: [[[[0; MAX_REBIRTHS as usize]; 3]; 6]; 2],
             king_lost: [false; 2],
             advance: false,
+            rogue: None,
+            moves_made: 0,
+            used: 0,
         };
         position.deal();
         Ok(position)
@@ -1387,7 +1419,7 @@ impl Position {
             self.kills[killer as usize] = self.kills[killer as usize].saturating_add(1);
             // Убитая фигура (кроме короля) уходит в запас убийце — если ещё не исчерпала
             // возвращения.
-            if victim.kind != Kind::King && victim.reborn < MAX_REBIRTHS {
+            if victim.kind != Kind::King && victim.reborn < MAX_REBIRTHS && self.rogue.is_none() {
                 let slot = &mut self.reserve[killer as usize][victim.kind as usize][RESERVE_WAIT]
                     [victim.reborn as usize];
                 *slot = slot.saturating_add(1);
@@ -1456,6 +1488,140 @@ impl Position {
     /// сыграть карту или закончить ход.
     pub fn moved(&self) -> bool {
         self.moved
+    }
+
+    /// Сколько ходов фигурой сторона, которая ходит, делает за свой ход: игрок в rogue-like —
+    /// `Rule::RogueMoves`, остальные — один.
+    pub fn moves_per_turn(&self) -> u8 {
+        match self.rogue {
+            Some(r) if r.player == self.side => balance().rule(Rule::RogueMoves).clamp(1, 64) as u8,
+            _ => 1,
+        }
+    }
+
+    /// Сколько ходов фигурой у стороны, которая ходит, ещё осталось в этом ходу.
+    pub fn moves_left(&self) -> u8 {
+        self.moves_per_turn().saturating_sub(self.moves_made)
+    }
+
+    /// Фигура на `sq` уже ходила в этом ходу (rogue-like: каждый ход — другой фигурой).
+    pub fn used(&self, sq: Square) -> bool {
+        self.used & 1 << sq != 0
+    }
+
+    /// Rogue-like: волны соперника; `None` — обычная партия.
+    pub fn rogue(&self) -> Option<Rogue> {
+        self.rogue
+    }
+
+    /// Проиграла ли сторона `color`: нет фигур или погиб король. В rogue-like соперник
+    /// проигрывает, только когда вышли все волны и фигур не осталось.
+    pub fn defeated(&self, color: Color) -> bool {
+        match self.rogue {
+            Some(r) if r.player != color => r.wave >= r.waves && !self.has_pieces(color),
+            _ => !self.has_pieces(color) || self.king_lost(color) || self.breached(),
+        }
+    }
+
+    /// Rogue-like: фигура волны дошла до первой горизонтали игрока — он проиграл.
+    pub fn breached(&self) -> bool {
+        let Some(r) = self.rogue else {
+            return false;
+        };
+        let home = r.player.home_rank();
+        (0..8).any(|file| {
+            square(file, home)
+                .and_then(|sq| self.board[sq as usize])
+                .is_some_and(|p| p.color != r.player)
+        })
+    }
+
+    /// Начало rogue-like партии: у игрока (белые) обычная армия и в запасе две пешки, слон и
+    /// конь; у соперника фигур нет — сразу выходит первая волна. `seed` — случайность волн.
+    pub fn rogue_start(seed: u64) -> Position {
+        let mut pos = Position::from_fen("8/8/8/8/8/8/PPPPPPPP/RNBQKBNR w KQ - 0 1")
+            .expect("начало rogue-like")
+            .without_cards();
+        let player = Color::White;
+        let ready = &mut pos.reserve[player as usize];
+        ready[Kind::Pawn as usize][0][0] = 2;
+        ready[Kind::Bishop as usize][0][0] = 1;
+        ready[Kind::Knight as usize][0][0] = 1;
+        pos.rogue = Some(Rogue {
+            player,
+            wave: 0,
+            waves: balance().rule(Rule::RogueWaves).clamp(1, 255) as u8,
+            seed: seed | 1,
+        });
+        pos.spawn_wave();
+        pos
+    }
+
+    /// Следующая волна соперника выходит на его крайнюю горизонталь: от `Rule::RogueWaveMin`
+    /// до `Rule::RogueWaveMax` фигур (сколько поместится на свободные клетки), вид — по весам
+    /// `Rule::RogueWeight*` (дорогие — реже). Не поместилась ни одна — волна ждёт следующего
+    /// хода и не считается. Случайность — от зерна партии и ключа позиции: при отмене и в
+    /// переборе волна та же.
+    fn spawn_wave(&mut self) -> Vec<(Square, Kind)> {
+        let Some(mut r) = self.rogue.filter(|r| r.wave < r.waves) else {
+            return Vec::new();
+        };
+        let enemy = r.player.opponent();
+        let mut state =
+            r.seed ^ self.key() ^ (u64::from(r.wave) + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let mut next = move |n: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % n.max(1)
+        };
+        let rule = |rule: Rule| balance().rule(rule).max(0) as u64;
+        let min = rule(Rule::RogueWaveMin).max(1);
+        let max = rule(Rule::RogueWaveMax).max(min);
+        let count = min + next(max - min + 1);
+        let weights = [
+            (Kind::Pawn, rule(Rule::RogueWeightPawn)),
+            (Kind::Knight, rule(Rule::RogueWeightKnight)),
+            (Kind::Bishop, rule(Rule::RogueWeightBishop)),
+            (Kind::Rook, rule(Rule::RogueWeightRook)),
+            (Kind::Queen, rule(Rule::RogueWeightQueen)),
+        ];
+        let total: u64 = weights.iter().map(|w| w.1).sum();
+        let wall = self.wall(enemy);
+        let back = enemy.home_rank();
+        let mut spawned = Vec::new();
+        for _ in 0..count {
+            let kind = if total == 0 {
+                Kind::Pawn
+            } else {
+                let mut roll = next(total);
+                weights
+                    .iter()
+                    .find(|&&(_, w)| {
+                        let hit = roll < w;
+                        roll = roll.saturating_sub(w);
+                        hit
+                    })
+                    .map_or(Kind::Pawn, |&(kind, _)| kind)
+            };
+            let free: Vec<Square> = (0..8)
+                .filter_map(|file| square(file, back))
+                .filter(|&sq| self.open(sq, wall))
+                .collect();
+            if free.is_empty() {
+                break;
+            }
+            let sq = free[next(free.len() as u64) as usize];
+            self.board[sq as usize] = Some(Piece::new(kind, enemy));
+            spawned.push((sq, kind));
+        }
+        if spawned.is_empty() {
+            return spawned;
+        }
+        r.wave += 1;
+        self.rogue = Some(r);
+        spawned.sort_unstable_by_key(|&(sq, _)| sq);
+        spawned
     }
 
     /// Может ли сторона, которая ходит, сыграть карту: до `cards_per_turn` карт за ход и
@@ -2070,6 +2236,15 @@ impl Position {
         let us = self.side;
         let strikes = self.strike_all();
         let blasts = self.lava_blasts();
+        // Rogue-like: фигуры волн сами не ходят — в конце хода сначала бьют, потом шагают
+        // вперёд; новая волна выходит после шага и в этот ход не бьёт.
+        let marched = self.march();
+        // Rogue-like: в конце хода соперника на его крайнюю горизонталь выходит новая волна.
+        let spawned = if self.rogue.is_some_and(|r| r.player != us) {
+            self.spawn_wave()
+        } else {
+            Vec::new()
+        };
         self.thaw(us);
         // Сыгранные «Они множатся» возвращаются в руку (в полной руке — наверх колоды).
         for _ in 0..std::mem::take(&mut self.returning[us as usize]) {
@@ -2091,6 +2266,8 @@ impl Position {
         self.ice[self.side as usize] = std::mem::take(&mut self.ice_later[self.side as usize]);
         self.barrier[self.side as usize] = 0;
         self.moved = false;
+        self.moves_made = 0;
+        self.used = 0;
         self.cards_played = 0;
         self.draw_card(self.side);
         self.gain_mana();
@@ -2103,7 +2280,56 @@ impl Position {
             strikes,
             blasts,
             charged,
+            spawned,
+            marched,
         }
+    }
+
+    /// Rogue-like: все свободные (не замёрзшие) фигуры волн стороны, которая ходит, шагают
+    /// на клетку вперёд — к игроку, освобождая дальние горизонтали под следующую волну.
+    /// Первыми шагают передние, за ними задние встают на освободившиеся клетки; занятая
+    /// клетка, барьер или край доски — фигура стоит. Вставшая в ледяную зону замерзает.
+    fn march(&mut self) -> Vec<(Square, Square)> {
+        let Some(r) = self.rogue else {
+            return Vec::new();
+        };
+        let us = self.side;
+        if us == r.player {
+            return Vec::new();
+        }
+        let wall = self.wall(us);
+        let dir = us.forward();
+        // Передние — ближе к игроку: у чёрных — с младших горизонталей.
+        let ranks: Vec<i8> = match us {
+            Color::Black => (0..8).collect(),
+            Color::White => (0..8).rev().collect(),
+        };
+        let mut marched = Vec::new();
+        for rank in ranks {
+            for file in 0..8 {
+                let Some(from) = square(file, rank) else {
+                    continue;
+                };
+                let Some(piece) = self.board[from as usize].filter(|p| p.color == us) else {
+                    continue;
+                };
+                if piece.is_frozen() {
+                    continue;
+                }
+                let Some(to) = square(file, rank + dir).filter(|&to| self.open(to, wall)) else {
+                    continue;
+                };
+                self.relocate(from, to);
+                if piece.kind == Kind::King {
+                    self.kings[us as usize] = Some(to);
+                }
+                if self.on_ice(to) {
+                    self.freeze_at(to);
+                }
+                marched.push((from, to));
+            }
+        }
+        marched
     }
 
     /// Усиливает фигуры стороны `color` (компьютер): пешки насыщаются лавой в начале каждого
@@ -2470,6 +2696,8 @@ impl Position {
         self.barrier.hash(&mut hasher);
 
         self.reserve.hash(&mut hasher);
+        self.rogue.hash(&mut hasher);
+        self.used.hash(&mut hasher);
         hasher.finish()
     }
 
@@ -2542,7 +2770,11 @@ impl Position {
     /// Ходы фигурой в `out` — те же, что `legal_moves`, но без своего вектора (для
     /// перебора). Сходившая сторона фигурой больше не ходит, замороженные фигуры — тоже.
     pub fn pseudo_moves(&self, out: &mut Vec<Move>) {
-        if self.moved {
+        if self.moves_made >= self.moves_per_turn() {
+            return;
+        }
+        // Rogue-like: фигуры волн сами не ходят — они шагают вперёд в конце хода (`march`).
+        if self.rogue.is_some_and(|r| r.player != self.side) {
             return;
         }
         let us = self.side;
@@ -2550,7 +2782,7 @@ impl Position {
             let Some(piece) = self.board[from as usize] else {
                 continue;
             };
-            if piece.color != us || piece.is_frozen() {
+            if piece.color != us || piece.is_frozen() || self.used(from) {
                 continue;
             }
             match piece.kind {
@@ -2817,6 +3049,8 @@ impl Position {
             outcome.frozen = self.on_ice(mv.to) && self.freeze_at(mv.to);
             self.halfmove_clock = 0;
             self.moved = true;
+            self.moves_made += 1;
+            self.used |= 1 << mv.to;
             outcome.reactions = self.intercept(mv.to, None);
             return outcome;
         }
@@ -2858,6 +3092,11 @@ impl Position {
             self.halfmove_clock + 1
         };
         self.moved = true;
+        self.moves_made += 1;
+        self.used |= 1 << mv.to;
+        if let Some((_, rook)) = outcome.rook {
+            self.used |= 1 << rook;
+        }
         // Двойной ход пешки проходит через клетку — там её бьют на проходе.
         let passed = (piece.kind == Kind::Pawn && rank_of(mv.from).abs_diff(rank_of(mv.to)) == 2)
             .then(|| (mv.from + mv.to) / 2);
@@ -3078,6 +3317,13 @@ impl Record {
                         .filter(|b| !b.hits.is_empty())
                         .map(|b| format!("Лава {}", square_name(b.center))),
                 );
+                if !turn.marched.is_empty() {
+                    text.insert(0, format!("Волна ↓{}", turn.marched.len()));
+                }
+                if !turn.spawned.is_empty() {
+                    let wave = self.before.rogue().map_or(0, |r| r.wave) + 1;
+                    text.push(format!("Волна {wave}"));
+                }
                 let dealt = turn.strikes.iter().flat_map(Strike::hits).map(|h| h.damage);
                 let burnt = turn.blasts.iter().flat_map(|b| &b.hits).map(|h| h.damage);
                 (text.join(", "), dealt.chain(burnt).sum())
@@ -3093,8 +3339,16 @@ impl Record {
     /// Подробное описание действия.
     pub fn description(&self) -> String {
         let encircled = matches!(&self.event, Event::Card(play) if play.kind == CardKind::Encircle);
+        // Rogue-like: волна прорвалась к первой горизонтали игрока.
+        let breach = matches!(&self.event, Event::EndTurn(_, turn)
+            if self.before.rogue().is_some_and(|r| turn.marched.iter().any(|&(_, to)| rank_of(to) == r.player.home_rank())));
         let ending = self.loser.map_or_else(String::new, |loser| {
-            if encircled {
+            if breach {
+                format!(
+                    " Волна дошла до первой горизонтали {} — поражение!",
+                    loser.genitive()
+                )
+            } else if encircled {
                 format!(" {} окружены и сломлены — победа!", loser.name())
             } else {
                 format!(" У {} не осталось фигур!", loser.genitive())
@@ -3105,6 +3359,18 @@ impl Record {
             Event::Card(play) => return card_description(play, &self.before) + &ending,
             Event::EndTurn(color, turn) => {
                 let mut text = format!("{} закончили ход.", color.name());
+                if !turn.marched.is_empty() {
+                    let steps: Vec<String> = turn
+                        .marched
+                        .iter()
+                        .map(|&(from, to)| {
+                            let name =
+                                self.before.piece(from).map_or("фигура", |p| p.kind.name());
+                            format!("{name} {}–{}", square_name(from), square_name(to))
+                        })
+                        .collect();
+                    text += &format!(" Волны шагнули вперёд: {}.", steps.join(", "));
+                }
                 for strike in &turn.strikes {
                     text += &strike_description(strike);
                 }
@@ -3120,6 +3386,17 @@ impl Record {
                     let squares: Vec<String> =
                         turn.charged.iter().map(|&sq| square_name(sq)).collect();
                     text += &format!(" Лавой насытились пешки {}.", squares.join(", "));
+                }
+                if !turn.spawned.is_empty() {
+                    let rogue = self.before.rogue();
+                    let wave = rogue.map_or(0, |r| r.wave) + 1;
+                    let waves = rogue.map_or(0, |r| r.waves);
+                    let pieces: Vec<String> = turn
+                        .spawned
+                        .iter()
+                        .map(|&(sq, kind)| format!("{} {}", kind.name(), square_name(sq)))
+                        .collect();
+                    text += &format!(" Вышла волна {wave} из {waves}: {}.", pieces.join(", "));
                 }
                 return text + &ending;
             }
@@ -3506,7 +3783,7 @@ impl Game {
     /// Можно ли закончить ход: фигурой уже сходили или ходить нечем (фигуры заморожены
     /// или заперты) — тогда ход фигурой пропускается.
     pub fn can_end_turn(&self) -> bool {
-        !self.is_over() && self.legal.is_empty()
+        !self.is_over() && (self.legal.is_empty() || self.position.moved())
     }
 
     /// Ходит фигурой, если ход законен. Если карту в этом ходу уже не сыграть, ход
@@ -3525,7 +3802,8 @@ impl Game {
             loser: None,
         });
         self.refresh();
-        if !self.note_victory() && !self.position.any_card_playable() {
+        // Ходы в этом ходу ещё есть (rogue-like) — ход ждёт кнопку.
+        if !self.note_victory() && !self.position.any_card_playable() && self.legal.is_empty() {
             self.finish_turn();
         }
         Some(outcome)
@@ -3672,14 +3950,15 @@ impl Game {
         // нечем, тот пропускает ход фигурой.
         let wiped = [side, side.opponent()]
             .into_iter()
-            .find(|&color| !self.position.has_pieces(color) || self.position.king_lost(color));
+            .find(|&color| self.position.defeated(color));
         self.status = if let Some(loser) = wiped {
             Status::Victory {
                 winner: loser.opponent(),
             }
         } else if let Some(winner) = self.position.encircled_by() {
             Status::Encircled { winner }
-        } else if self.position.moved() {
+        } else if self.position.moved() || self.position.rogue().is_some() {
+            // Посреди хода ничьих нет; в rogue-like их нет вовсе — волны идут.
             Status::Ongoing
         } else if self.position.halfmove_clock() >= 100 {
             Status::FiftyMoves

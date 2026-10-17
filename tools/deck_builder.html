@@ -352,7 +352,16 @@ const BALANCE = {
     { key: "max_hand", value: 7, min: 1, max: 10, note: "больше карт в руке не бывает: с полной рукой карта остаётся в колоде" },
     { key: "lava_pawns", value: 3, min: 0, max: 16, note: "усиленный компьютер: сколько его случайных пешек в начале вашего хода насыщается лавой (в конце хода компьютера они взрываются огненной волной)" },
     { key: "lava_damage", value: 1, min: 0, max: 9999, note: "усиленный компьютер: урон взрыва лавы каждой вашей фигуре вокруг пешки (свои фигуры взрыв не задевает), в тех же единицах, что атака" },
-    { key: "spark_percent", value: 100, min: 0, max: 1000, note: "усиленный компьютер: сколько процентов атаки слона с электричеством достаётся каждой вашей фигуре по диагонали вокруг его цели" }
+    { key: "spark_percent", value: 100, min: 0, max: 1000, note: "усиленный компьютер: сколько процентов атаки слона с электричеством достаётся каждой вашей фигуре по диагонали вокруг его цели" },
+    { key: "rogue_waves", value: 10, min: 1, max: 99, note: "rogue-like: сколько волн фигур соперника выйдет за партию; отбил все — победа" },
+    { key: "rogue_wave_min", value: 2, min: 1, max: 16, note: "rogue-like: меньше всего фигур в волне" },
+    { key: "rogue_wave_max", value: 4, min: 1, max: 16, note: "rogue-like: больше всего фигур в волне (если меньше наименьшего — берётся наименьшее)" },
+    { key: "rogue_moves", value: 4, min: 1, max: 16, note: "rogue-like: сколько ходов подряд делает игрок за свой ход — каждый другой фигурой" },
+    { key: "rogue_weight_pawn", value: 10, min: 0, max: 100, note: "rogue-like: вес пешки при выборе фигур волны — чем больше, тем чаще" },
+    { key: "rogue_weight_knight", value: 5, min: 0, max: 100, note: "rogue-like: вес коня в волне" },
+    { key: "rogue_weight_bishop", value: 5, min: 0, max: 100, note: "rogue-like: вес слона в волне" },
+    { key: "rogue_weight_rook", value: 3, min: 0, max: 100, note: "rogue-like: вес ладьи в волне" },
+    { key: "rogue_weight_queen", value: 1, min: 0, max: 100, note: "rogue-like: вес ферзя в волне" }
   ],
   pieces: [
     { id: "King", title: "Король", attack: 1, hp: 5, points: 9 },

@@ -2509,3 +2509,265 @@ fn boosted_games_against_random_moves_keep_the_rules() {
     assert!(blasts > 20, "взрывов {blasts}");
     assert_eq!(sparks, 0, "с 0.41 электричества нет");
 }
+
+/// Фигуры стороны `color`: (клетка, вид).
+fn army(pos: &Position, color: Color) -> Vec<(Square, Kind)> {
+    pos.pieces()
+        .filter(|(_, p)| p.color == color)
+        .map(|(sq, p)| (sq, p.kind))
+        .collect()
+}
+
+#[test]
+fn rogue_like_starts_with_the_first_wave_and_a_reserve() {
+    let pos = Position::rogue_start(7);
+    let rogue = pos.rogue().unwrap();
+    assert_eq!(
+        (rogue.player, rogue.wave, rogue.waves),
+        (Color::White, 1, 10)
+    );
+    assert_eq!(army(&pos, Color::White).len(), 16);
+    let wave = army(&pos, Color::Black);
+    assert!(
+        (2..=4).contains(&wave.len()),
+        "волна — от 2 до 4 фигур: {wave:?}"
+    );
+    for (sq, kind) in wave {
+        assert_ne!(kind, Kind::King);
+        assert_eq!(
+            rank_of(sq),
+            7,
+            "волна выходит на крайнюю горизонталь соперника"
+        );
+    }
+    let ready = |kind: Kind| pos.reserve[Color::White as usize][kind as usize][0][0];
+    assert_eq!(
+        [Kind::Pawn, Kind::Bishop, Kind::Knight, Kind::Rook].map(ready),
+        [2, 1, 1, 0]
+    );
+    assert_eq!(pos.moves_per_turn(), 4);
+}
+
+#[test]
+fn rogue_like_player_moves_four_different_pieces() {
+    let mut game = Game::from_position(Position::rogue_start(7));
+    assert!(!game.can_end_turn());
+    for (from, to) in [("e2", "e4"), ("d2", "d4"), ("g1", "f3"), ("b1", "c3")] {
+        assert_eq!(game.position().side(), Color::White);
+        game.play(find(game.position(), from, to)).unwrap();
+        // Сходившая фигура больше не ходит.
+        assert!(!has_move(game.position(), to, "a6"));
+        assert!(game.legal_moves().iter().all(|m| m.from != sq(to)));
+    }
+    // Четыре хода сделаны — ход кончился сам.
+    assert_eq!(game.position().side(), Color::Black);
+
+    // Закончить ход можно и раньше — после первого хода.
+    let mut early = Game::from_position(Position::rogue_start(7));
+    early.play(find(early.position(), "e2", "e4")).unwrap();
+    assert_eq!(early.position().side(), Color::White);
+    assert!(early.can_end_turn());
+    assert!(early.end_turn());
+    assert_eq!(early.position().side(), Color::Black);
+}
+
+#[test]
+fn rogue_like_has_no_reserve_for_kills_and_a_wave_comes_every_turn() {
+    let mut game = Game::from_position(Position::rogue_start(11));
+    let waves = game.position().rogue().unwrap().waves;
+    for wave in 1..=waves {
+        assert_eq!(game.position().rogue().unwrap().wave, wave);
+        // Волны убиты (без «шведки» — запас не растёт).
+        let reserve = game.position.reserve;
+        for (sq, kind) in army(&game.position, Color::Black) {
+            game.position.board[sq as usize] = None;
+            game.position
+                .score_kill(Piece::new(kind, Color::Black), Color::White);
+        }
+        assert_eq!(game.position.reserve, reserve, "шведки нет");
+        game.refresh();
+        if wave == waves {
+            assert_eq!(
+                game.status(),
+                Status::Victory {
+                    winner: Color::White
+                },
+                "все волны отбиты"
+            );
+            return;
+        }
+        assert_eq!(game.status(), Status::Ongoing, "волны ещё идут");
+        game.play(game.legal_moves()[0]).unwrap();
+        if game.position().side() == Color::White {
+            assert!(game.end_turn());
+        }
+        // Соперник сам не ходит; в конце его хода выходит следующая волна — на крайнюю
+        // горизонталь.
+        assert!(game.legal_moves().is_empty());
+        assert!(game.end_turn());
+        let record = game.history().last().unwrap();
+        let spawned = &record.turn_end().unwrap().spawned;
+        assert!((2..=4).contains(&spawned.len()));
+        assert!(spawned.iter().all(|&(sq, _)| rank_of(sq) == 7));
+        assert!(record.description().contains("Вышла волна"));
+    }
+    unreachable!("победа после последней волны");
+}
+
+#[test]
+fn rogue_like_waves_keep_coming_while_the_last_ones_live() {
+    let mut game = Game::from_position(Position::rogue_start(3));
+    for wave in 1..=3 {
+        assert_eq!(game.position().rogue().unwrap().wave, wave);
+        let mv = game.legal_moves()[0];
+        game.play(mv).unwrap();
+        if game.position().side() == Color::White {
+            assert!(game.end_turn());
+        }
+        if game.is_over() {
+            return;
+        }
+        assert!(game.end_turn());
+    }
+    assert_eq!(
+        game.position().rogue().unwrap().wave,
+        4,
+        "волна — каждый ход"
+    );
+}
+
+#[test]
+fn rogue_like_random_games_keep_the_rules() {
+    let mut seed = 0x0B0B_5EED_1234_5678u64;
+    let mut next = move |n: usize| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed % n as u64) as usize
+    };
+    let (mut wins, mut losses) = (0, 0);
+    for g in 0..40 {
+        let mut game = Game::from_position(Position::rogue_start(g * 7 + 1));
+        for _ in 0..600 {
+            if game.is_over() {
+                break;
+            }
+            let moves = game.legal_moves().to_vec();
+            if moves.is_empty() || game.position().moved() && next(3) == 0 {
+                assert!(game.end_turn());
+                continue;
+            }
+            let mv = moves[next(moves.len())];
+            assert!(!game.position().used(mv.from));
+            game.play(mv).unwrap();
+            let pos = game.position();
+            assert!(pos.king_square(Color::Black).is_none());
+            let r = pos.rogue().unwrap();
+            assert!(r.wave <= r.waves);
+        }
+        match game.status() {
+            Status::Victory {
+                winner: Color::White,
+            } => {
+                wins += 1;
+                let r = game.position().rogue().unwrap();
+                assert_eq!(r.wave, r.waves);
+            }
+            Status::Victory { .. } => losses += 1,
+            _ => {}
+        }
+    }
+    eprintln!("rogue-like: побед {wins}, поражений {losses}");
+    assert!(wins + losses > 0);
+}
+
+#[test]
+fn rogue_like_waves_step_forward_and_free_the_back_ranks() {
+    // Пешка g6 упирается в белого коня g5; ладья g8 и пешка g7 за ней — тоже стоят; конь b8
+    // и пешка e7 шагают вперёд.
+    let mut pos = Position::rogue_start(5);
+    for sq in 32..64u8 {
+        pos.board[sq as usize] = None;
+    }
+    for (name, piece) in [
+        ("g5", Piece::new(Kind::Knight, Color::White)),
+        ("g6", Piece::new(Kind::Pawn, Color::Black)),
+        ("g7", Piece::new(Kind::Pawn, Color::Black)),
+        ("g8", Piece::new(Kind::Rook, Color::Black)),
+        ("b8", Piece::new(Kind::Knight, Color::Black)),
+        ("e7", Piece::new(Kind::Pawn, Color::Black)),
+    ] {
+        pos.board[sq(name) as usize] = Some(piece);
+    }
+    pos.end_turn();
+    assert!(pos.legal_moves().is_empty(), "фигуры волн сами не ходят");
+    let turn = pos.end_turn();
+    let mut steps: Vec<String> = turn
+        .marched
+        .iter()
+        .map(|&(f, t)| format!("{}-{}", square_name(f), square_name(t)))
+        .collect();
+    steps.sort();
+    assert_eq!(steps, ["b8-b7", "e7-e6"]);
+    assert_eq!(pos.piece(sq("b7")).unwrap().kind, Kind::Knight);
+    assert_eq!(
+        pos.piece(sq("g8")).unwrap().kind,
+        Kind::Rook,
+        "колонна стоит за пешкой"
+    );
+    // Колонна шагает целиком, когда впереди пусто.
+    pos.board[sq("g5") as usize] = None;
+    pos.end_turn();
+    let turn = pos.end_turn();
+    assert!(turn.marched.contains(&(sq("g6"), sq("g5"))));
+    assert!(turn.marched.contains(&(sq("g8"), sq("g7"))));
+}
+
+#[test]
+fn rogue_like_waves_strike_before_they_step() {
+    // Чёрная пешка e4 бьёт коня f3 со своей клетки и только потом шагает на e3 (иначе с e3
+    // она ударила бы пешку f2).
+    let mut pos = Position::rogue_start(5);
+    for sq in 16..64u8 {
+        pos.board[sq as usize] = None;
+    }
+    pos.board[sq("e4") as usize] = Some(Piece::new(Kind::Pawn, Color::Black));
+    pos.board[sq("f3") as usize] = Some(Piece::new(Kind::Knight, Color::White));
+    pos.end_turn();
+    let turn = pos.end_turn();
+    assert_eq!(turn.strikes.len(), 1);
+    assert_eq!(turn.strikes[0].from, sq("e4"));
+    assert_eq!(turn.strikes[0].hit.square, sq("f3"));
+    assert!(turn.marched.contains(&(sq("e4"), sq("e3"))));
+    // Новая волна выходит после ударов — её фигуры в этот ход не били.
+    assert!(
+        turn.spawned
+            .iter()
+            .all(|&(s, _)| turn.strikes.iter().all(|st| st.from != s))
+    );
+}
+
+#[test]
+fn rogue_like_is_lost_when_a_wave_reaches_the_first_rank() {
+    let mut pos = Position::rogue_start(5);
+    for sq in 16..64u8 {
+        pos.board[sq as usize] = None;
+    }
+    pos.board[sq("a1") as usize] = None;
+    pos.board[sq("a2") as usize] = Some(Piece::new(Kind::Rook, Color::Black));
+    let mut game = Game::from_position(pos);
+    assert!(!game.position().breached());
+    game.play(find(game.position(), "h2", "h3")).unwrap();
+    assert!(game.end_turn());
+    assert!(game.legal_moves().is_empty());
+    assert!(game.end_turn());
+    assert!(game.position().breached());
+    assert_eq!(
+        game.status(),
+        Status::Victory {
+            winner: Color::Black
+        }
+    );
+    let record = game.history().last().unwrap();
+    assert!(record.description().contains("дошла до первой горизонтали"));
+}

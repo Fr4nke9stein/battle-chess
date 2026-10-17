@@ -36,6 +36,15 @@ pub enum Rule {
     LavaPawns,
     LavaDamage,
     SparkPercent,
+    RogueWaves,
+    RogueWaveMin,
+    RogueWaveMax,
+    RogueMoves,
+    RogueWeightPawn,
+    RogueWeightKnight,
+    RogueWeightBishop,
+    RogueWeightRook,
+    RogueWeightQueen,
 }
 
 pub struct RuleDef {
@@ -46,8 +55,12 @@ pub struct RuleDef {
     pub note: &'static str,
 }
 
+/// Строки `[rules]` прежних версий, которых больше нет: в старом файле они не предупреждение.
+/// `rogue_wave_turns` — с 0.52 волна rogue-like выходит каждый ход.
+const RETIRED_RULES: [&str; 1] = ["rogue_wave_turns"];
+
 /// В порядке `Rule`.
-pub const RULES: [RuleDef; 7] = [
+pub const RULES: [RuleDef; 16] = [
     RuleDef {
         key: "mana_per_turn",
         default: 2,
@@ -99,6 +112,69 @@ pub const RULES: [RuleDef; 7] = [
         max: 1000,
         note: "усиленный компьютер: сколько процентов атаки слона с электричеством достаётся \
                каждой вашей фигуре по диагонали вокруг его цели",
+    },
+    RuleDef {
+        key: "rogue_waves",
+        default: 10,
+        min: 1,
+        max: 99,
+        note: "rogue-like: сколько волн фигур соперника выйдет за партию; отбил все — победа",
+    },
+    RuleDef {
+        key: "rogue_wave_min",
+        default: 2,
+        min: 1,
+        max: 16,
+        note: "rogue-like: меньше всего фигур в волне",
+    },
+    RuleDef {
+        key: "rogue_wave_max",
+        default: 4,
+        min: 1,
+        max: 16,
+        note: "rogue-like: больше всего фигур в волне (если меньше наименьшего — берётся наименьшее)",
+    },
+    RuleDef {
+        key: "rogue_moves",
+        default: 4,
+        min: 1,
+        max: 16,
+        note: "rogue-like: сколько ходов подряд делает игрок за свой ход — каждый другой фигурой",
+    },
+    RuleDef {
+        key: "rogue_weight_pawn",
+        default: 10,
+        min: 0,
+        max: 100,
+        note: "rogue-like: вес пешки при выборе фигур волны — чем больше, тем чаще",
+    },
+    RuleDef {
+        key: "rogue_weight_knight",
+        default: 5,
+        min: 0,
+        max: 100,
+        note: "rogue-like: вес коня в волне",
+    },
+    RuleDef {
+        key: "rogue_weight_bishop",
+        default: 5,
+        min: 0,
+        max: 100,
+        note: "rogue-like: вес слона в волне",
+    },
+    RuleDef {
+        key: "rogue_weight_rook",
+        default: 3,
+        min: 0,
+        max: 100,
+        note: "rogue-like: вес ладьи в волне",
+    },
+    RuleDef {
+        key: "rogue_weight_queen",
+        default: 1,
+        min: 0,
+        max: 100,
+        note: "rogue-like: вес ферзя в волне",
     },
 ];
 
@@ -520,6 +596,8 @@ impl Balance {
                     seen.insert(format!("rules.{key}"));
                 }
                 Some(_) => {}
+                // Числа прежних версий, которых больше нет, — молча пропускаются.
+                None if RETIRED_RULES.contains(&key) => {}
                 None => spot.unknown(warnings),
             },
             "piece" => {

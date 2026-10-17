@@ -52,6 +52,8 @@ pub enum Screen {
 #[allow(dead_code)] // колоды и коллекция скрыты (0.40)
 enum Choice {
     Play,
+    /// Rogue-like режим: фигуры соперника приходят волнами.
+    Rogue,
     /// Экран мультиплеера, подключиться, отменить подключение.
     Multiplayer,
     Connect,
@@ -166,6 +168,10 @@ impl BattleChessApp {
         match choice {
             Some(Choice::Play) => {
                 self.new_game(self.draft);
+                self.screen = Screen::Game;
+            }
+            Some(Choice::Rogue) => {
+                self.new_rogue_game();
                 self.screen = Screen::Game;
             }
             Some(Choice::Multiplayer) => {
@@ -316,6 +322,7 @@ impl BattleChessApp {
         };
         let buttons = [
             ("Начать играть", Choice::Play),
+            ("Rogue-like режим", Choice::Rogue),
             ("Мультиплеер", Choice::Multiplayer),
             (strength, Choice::Boost),
             (advance_label(self.settings.advance), Choice::Advance),
@@ -325,7 +332,7 @@ impl BattleChessApp {
         // С 0.40 карт в игре нет: выбор колоды и коллекция скрыты.
         let mut picked = None;
         for (k, (label, choice)) in buttons.into_iter().enumerate() {
-            let min = vec2((FIELD.x - BUTTON.x) / 2.0, 62.0 + k as f32 * 23.0);
+            let min = vec2((FIELD.x - BUTTON.x) / 2.0, 60.0 + k as f32 * 22.0);
             if self.button(painter, field, min, label, pointer) {
                 picked = Some(choice);
             }

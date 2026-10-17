@@ -46,6 +46,8 @@ const LUNGE_TIME: f64 = 0.3;
 const LUNGE_IMPACT: f64 = 0.35;
 /// Насколько глубоко фигура «влетает» в клетку цели при выпаде (в клетках).
 const LUNGE_DEPTH: f32 = 0.42;
+/// Фигура новой волны (rogue-like) проявляется за столько секунд.
+const APPEAR_TIME: f64 = 0.6;
 /// Удары в конце хода идут по очереди через столько секунд.
 const STRIKE_GAP: f64 = 0.22;
 /// Сколько живут всплывающие цифры урона.
@@ -558,6 +560,10 @@ pub struct BattleChessApp {
     strikes: Vec<StrikeAnim>,
     /// Лава в пешках усиленного компьютера: насыщение и взрывы.
     lavas: Vec<LavaAnim>,
+    /// Rogue-like: фигуры волны проявляются на своих клетках (клетка, когда начали).
+    appears: Vec<(Square, f64)>,
+    /// Rogue-like: шаги фигур волн вперёд (откуда, куда, когда начали).
+    marches: Vec<(Square, Square, f64)>,
     /// Когда слоны усиленного компьютера насытились электричеством.
     spark_since: f64,
     /// Время текущего кадра.
@@ -667,6 +673,8 @@ impl BattleChessApp {
             anim: None,
             strikes: Vec::new(),
             lavas: Vec::new(),
+            appears: Vec::new(),
+            marches: Vec::new(),
             spark_since: 0.0,
             now: 0.0,
             shown_history: 0,
@@ -725,6 +733,61 @@ impl BattleChessApp {
         self.sfx.play(Sound::Notify);
     }
 
+    /// Rogue-like партия: игрок — белые, у компьютера фигуры приходят волнами
+    /// (`Position::rogue_start`); первая волна проявляется на глазах.
+    pub(super) fn new_rogue_game(&mut self) {
+        self.leave_network();
+        self.reload_balance();
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0x5EED, |d| d.as_nanos() as u64);
+        self.game =
+            Game::from_position(Position::rogue_start(seed).with_advance(self.settings.advance));
+        self.computer = Some(Color::Black);
+        self.flipped = false;
+        self.reset_interaction();
+        let now = self.now;
+        let wave: Vec<Square> = self
+            .game
+            .position()
+            .pieces()
+            .filter(|(_, p)| p.color == Color::Black)
+            .map(|(sq, _)| sq)
+            .collect();
+        self.appears = wave.into_iter().map(|sq| (sq, now)).collect();
+        self.sfx.play(Sound::Notify);
+    }
+
+    /// Сдвиг фигуры на `sq`, которая ещё шагает туда с прошлой клетки (rogue-like волна): до
+    /// начала шага — на прежней клетке.
+    /// Откуда шагает фигура, стоящая на `sq` (rogue-like волна), — там её удары до шага.
+    fn march_origin(&self, sq: Square) -> Square {
+        self.marches
+            .iter()
+            .find(|&&(_, to, _)| to == sq)
+            .map_or(sq, |&(from, _, _)| from)
+    }
+
+    fn march_shift(&self, sq: Square, now: f64) -> Vec2 {
+        self.marches.iter().find(|&&(_, to, _)| to == sq).map_or(
+            Vec2::ZERO,
+            |&(from, to, start)| {
+                let u = ((now - start) / SLIDE_TIME).clamp(0.0, 1.0) as f32;
+                (center(from) - center(to)) * (1.0 - ease_in_out(u))
+            },
+        )
+    }
+
+    /// Насколько проявилась фигура на `sq` (rogue-like волна): 0 — ещё в тумане, 1 — вся.
+    fn appear_alpha(&self, sq: Square, now: f64) -> f32 {
+        self.appears
+            .iter()
+            .find(|&&(s, _)| s == sq)
+            .map_or(1.0, |&(_, start)| {
+                ((now - start) / APPEAR_TIME).clamp(0.0, 1.0) as f32
+            })
+    }
+
     /// Начало партии с усиленным компьютером: слоны насыщаются электричеством, пешки с
     /// лавой — трещинами (с этого кадра).
     fn show_boost(&mut self) {
@@ -768,6 +831,8 @@ impl BattleChessApp {
         self.thinking = None;
         self.strikes.clear();
         self.lavas.clear();
+        self.appears.clear();
+        self.marches.clear();
         self.shown_history = self.game.history().len();
         self.ended_at = None;
     }
@@ -894,6 +959,7 @@ impl BattleChessApp {
         }
         let mut chilled = Vec::new();
         for record in &history[self.shown_history..] {
+            let struck = !record.strikes().is_empty();
             for &strike in record.strikes() {
                 let anim = StrikeAnim {
                     strike,
@@ -948,6 +1014,24 @@ impl BattleChessApp {
                     start: blasts_end,
                     blast: false,
                 });
+            }
+            // Rogue-like: волны сначала бьют, потом шагают вперёд; новая волна проявляется
+            // после шага.
+            let mut march_end = blasts_end;
+            if !turn.marched.is_empty() {
+                let march_at = if struck {
+                    blasts_end + LUNGE_TIME - STRIKE_GAP
+                } else {
+                    blasts_end
+                };
+                for &(from, to) in &turn.marched {
+                    self.marches.push((from, to, march_at));
+                }
+                march_end = march_at + SLIDE_TIME;
+                start = start.max(march_end);
+            }
+            for &(square, _) in &turn.spawned {
+                self.appears.push((square, march_end));
             }
         }
         self.shown_history = history.len();
@@ -1062,6 +1146,9 @@ impl BattleChessApp {
         self.queue_strikes(now);
         self.advance_strikes(now);
         self.lavas.retain(|a| now < a.start + a.length());
+        self.appears.retain(|&(_, start)| now < start + APPEAR_TIME);
+        self.marches
+            .retain(|&(_, _, start)| now < start + SLIDE_TIME);
         self.effects.retain(|e| now - e.start < EFFECT_TIME);
         self.tick_cards(now);
         if self.anim.is_none() && self.game.is_over() && self.ended_at.is_none() {
@@ -1432,8 +1519,10 @@ impl BattleChessApp {
             return;
         }
         let pos = self.game.position();
-        // Фигурой ходят раз за ход; замёрзшая фигура не ходит.
-        if !pos.moved()
+        // Фигурой ходят раз за ход (в rogue-like — несколько ходов разными фигурами);
+        // замёрзшая фигура не ходит.
+        if pos.moves_left() > 0
+            && !pos.used(sq)
             && pos
                 .piece(sq)
                 .is_some_and(|p| p.color == pos.side() && !p.is_frozen())
@@ -1813,14 +1902,14 @@ impl BattleChessApp {
                 piece = before;
             }
             // Бьющая фигура делает выпад к цели.
-            let shift = self.strike_lunge(sq, now);
+            let shift = self.strike_lunge(self.march_origin(sq), now) + self.march_shift(sq, now);
             // Исцеляющий слон — с крыльями и ореолом.
             let bless = (piece.kind == Kind::Bishop)
                 .then(|| self.bless_frame(sq, piece.color, now))
                 .flatten();
             figures.push(Figure {
                 shake: self.shake(sq, now),
-                alpha: if dragged == Some(sq) { 0.3 } else { 1.0 },
+                alpha: (if dragged == Some(sq) { 0.3 } else { 1.0 }) * self.appear_alpha(sq, now),
                 bless,
                 ice: self.ice(sq, piece, now),
                 ..self.dressed(sq, piece, center(sq) + shift, now)
@@ -2286,7 +2375,7 @@ impl BattleChessApp {
         }
         let pos = self.game.position();
         let own = pos.piece(sq).filter(|p| p.color == pos.side());
-        if !pos.moved() && own.is_some_and(|p| !p.is_frozen()) {
+        if pos.moves_left() > 0 && !pos.used(sq) && own.is_some_and(|p| !p.is_frozen()) {
             Pointer::Hover
         } else if own.is_some_and(|p| p.is_frozen()) {
             // Замёрзшая своя фигура не ходит.
@@ -2385,7 +2474,7 @@ impl BattleChessApp {
             return;
         }
         let alpha = (age / 0.25).min((BANNER_TIME - age) / 0.5).min(1.0) as f32;
-        let (title, subtitle) = result_text(self.game.status());
+        let (title, subtitle) = result_text(self.game.status(), self.game.position());
         let unit = board.unit();
         let rect = Rect::from_center_size(board.rect().center(), vec2(unit * 5.4, unit * 1.7));
         painter.rect_filled(rect, CornerRadius::same(8), rgba(22, 21, 18, 0.9 * alpha));
@@ -2445,6 +2534,11 @@ impl BattleChessApp {
             } else {
                 "вы".to_owned()
             };
+        }
+        if let Some(r) = self.game.position().rogue()
+            && r.player != color
+        {
+            return format!("волны из тумана · {} из {}", r.wave, r.waves);
         }
         match self.computer {
             Some(computer) if computer == color => {
@@ -2558,6 +2652,18 @@ impl BattleChessApp {
             Status::Ongoing if self.aiming_card() => {
                 (self.aim_hint().to_owned(), theme::TEXT_BRIGHT)
             }
+            Status::Ongoing
+                if pos.moved() && self.human_to_move() && !self.game.legal_moves().is_empty() =>
+            {
+                (
+                    format!(
+                        "Ход {} · ещё ходов: {} (другими фигурами) — или закончите ход",
+                        side.genitive(),
+                        pos.moves_left()
+                    ),
+                    theme::TEXT_BRIGHT,
+                )
+            }
             Status::Ongoing if pos.moved() && self.human_to_move() => (
                 format!("Ход {} · сыграйте карту или закончите ход", side.genitive()),
                 theme::TEXT_BRIGHT,
@@ -2592,7 +2698,7 @@ impl BattleChessApp {
                 ),
             },
             status => {
-                let (title, subtitle) = result_text(status);
+                let (title, subtitle) = result_text(status, self.game.position());
                 (format!("{title}. {subtitle}"), theme::TEXT_BRIGHT)
             }
         };
@@ -2671,7 +2777,7 @@ impl BattleChessApp {
         if self.game.is_over() {
             ui.add_space(8.0);
             let status = self.game.status();
-            let (title, subtitle) = result_text(status);
+            let (title, subtitle) = result_text(status, self.game.position());
             ui.vertical_centered(|ui| {
                 ui.label(
                     RichText::new(score_text(status))
@@ -3073,6 +3179,8 @@ impl eframe::App for BattleChessApp {
         // Лава в пешках и молнии вокруг слонов усиленного компьютера движутся всю партию.
         if self.anim.is_some()
             || !self.strikes.is_empty()
+            || !self.marches.is_empty()
+            || !self.appears.is_empty()
             || !self.lavas.is_empty()
             || self.game.position().boosted().is_some()
             || !self.effects.is_empty()
@@ -3392,7 +3500,24 @@ fn turn_job(turn: &[&Record], highlighted: bool, wrap: f32) -> LayoutJob {
     }
     job
 }
-fn result_text(status: Status) -> (&'static str, String) {
+fn result_text(status: Status, pos: &Position) -> (&'static str, String) {
+    match (status, pos.rogue()) {
+        (Status::Victory { winner }, Some(r)) if winner == r.player => {
+            ("Победа", format!("Все {} волн отбиты", r.waves))
+        }
+        (Status::Victory { .. }, Some(_)) if pos.breached() => (
+            "Поражение",
+            "Волна дошла до вашей первой горизонтали".to_owned(),
+        ),
+        (Status::Victory { .. }, Some(r)) => (
+            "Поражение",
+            format!("Волны одолели — дошли до волны {} из {}", r.wave, r.waves),
+        ),
+        _ => result_text_plain(status),
+    }
+}
+
+fn result_text_plain(status: Status) -> (&'static str, String) {
     match status {
         Status::Victory { winner } => (
             "Победа",

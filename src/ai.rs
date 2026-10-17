@@ -145,9 +145,9 @@ impl Search<'_> {
 /// ходит; чем раньше выигрыш, тем он дороже.
 fn decided(pos: &Position, ply: i32) -> Option<i32> {
     let us = pos.side();
-    if !pos.has_pieces(us) || pos.king_lost(us) {
+    if pos.defeated(us) {
         Some(-MATE + ply)
-    } else if !pos.has_pieces(us.opponent()) || pos.king_lost(us.opponent()) {
+    } else if pos.defeated(us.opponent()) {
         Some(MATE - ply)
     } else {
         None
