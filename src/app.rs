@@ -21,12 +21,12 @@ use crate::assets::{
     ANCHOR, Art, BLESS_ANCHOR, BLESS_FIGURE, BOARD, CURSOR, CURSOR_HOTSPOT, ELECTRIC_ANCHOR,
     ELECTRIC_FLASH, ELECTRIC_FRAME_TIME, ELECTRIC_LOOP, FREEZE_CENTER, FREEZE_FROST, GLYPH_HEIGHT,
     Glyph, LAVA_FRAME_TIME, LAVA_FRAMES, LAVA_HOLD, LAVA_IGNITE, LAVA_SPREAD, LAVA_WAVE_AT, Marker,
-    PORTAL_CENTER, PORTAL_CUT, PORTAL_RADII, Pointer, SPRITE, TILE, Textures,
+    PORTAL_CENTER, PORTAL_CUT, PORTAL_RADII, Pointer, SPRITE, TILE, Textures, WIND_LOOP,
 };
 use crate::balance::{self, shown};
 use crate::game::{
-    self, Color, Event, Game, Hit, Kind, Move, MoveKind, Outcome, Piece, Position, Record, Square,
-    Status, Strike,
+    self, Color, Event, Game, Hit, Kind, Move, Outcome, Piece, Position, Record, Square, Status,
+    Stock, Strike,
 };
 use crate::net;
 use crate::settings::{FrameRate, Settings, ZOOM_MAX, ZOOM_MIN};
@@ -34,8 +34,8 @@ use crate::sound::{Sfx, Sound};
 use crate::theme::{self, rgba};
 use menu::Screen;
 use table::{
-    Aiming, Bless, Burn, DRAW_DELAY, Draw, Freeze, Held, Portal, Returning, Seat, VIEW_MAX,
-    VIEW_MIN, Wave, ice_variant,
+    Aiming, Bless, Burn, DRAW_DELAY, Draw, Freeze, Held, Portal, Returning, Seat, ShopSpot,
+    VIEW_MAX, VIEW_MIN, Wave, ice_variant,
 };
 
 /// Скольжение фигуры, как у lichess (секунды).
@@ -48,6 +48,11 @@ const LUNGE_IMPACT: f64 = 0.35;
 const LUNGE_DEPTH: f32 = 0.42;
 /// Фигура новой волны (rogue-like) проявляется за столько секунд.
 const APPEAR_TIME: f64 = 0.6;
+/// Клетка-цель под курсором (с 0.58): рамка «дышит» с этим периодом, секунды, от
+/// `TARGET_DIM` до полной яркости; на ней — призрак фигуры с прозрачностью `GHOST_ALPHA`.
+const TARGET_PULSE: f64 = 0.9;
+const TARGET_DIM: f32 = 0.55;
+const GHOST_ALPHA: f32 = 0.45;
 /// Удары в конце хода идут по очереди через столько секунд.
 const STRIKE_GAP: f64 = 0.22;
 /// Сколько живут всплывающие цифры урона.
@@ -296,6 +301,8 @@ struct Figure {
     /// Кадр пешки с лавой и слона с электричеством (усиленный компьютер).
     lava: Option<usize>,
     spark: Option<usize>,
+    /// Кадр вихря воздушной фигуры (rogue-like).
+    wind: Option<usize>,
     /// Лёд на фигуре: кадр заморозки (иней и глыба), вариант глыбы и сколько льда
     /// осталось — оттаивая, он тает.
     ice: Option<Ice>,
@@ -321,6 +328,7 @@ impl Figure {
             bless: None,
             lava: None,
             spark: None,
+            wind: None,
             ice: None,
         }
     }
@@ -551,8 +559,12 @@ pub struct BattleChessApp {
     /// Сервер посадил нас за чёрных: партия начнётся, когда белые пришлют правила.
     net_pending: Option<Color>,
     /// Фигура запаса под курсором и выбранная для выставления.
-    reserve_hover: Option<(Seat, Kind)>,
-    drop_pick: Option<Kind>,
+    reserve_hover: Option<(Seat, Stock)>,
+    /// Rogue-like: место магазина под курсором.
+    shop_hover: Option<ShopSpot>,
+    /// Rogue-like: фигура запаса, которую несут в зону продажи, и где курсор.
+    sell_drag: Option<(Stock, Pos2)>,
+    drop_pick: Option<Stock>,
     drag: Option<Drag>,
     promotion: Option<PendingPromotion>,
     anim: Option<MoveAnim>,
@@ -660,6 +672,8 @@ impl BattleChessApp {
             button_down: false,
 
             reserve_hover: None,
+            shop_hover: None,
+            sell_drag: None,
             net: None,
             remote: None,
             net_address: net::saved_address(),
@@ -846,7 +860,11 @@ impl BattleChessApp {
         }
         loop {
             let pos = self.game.position();
-            let mid_turn = pos.moved() || pos.cards_played() > 0;
+            // «Выиграть раунд» отменяется вместе с концом хода после него.
+            let win = self.game.history().last().is_some_and(|r| {
+                matches!(r.event, Event::Rogue(game::RogueAction::WinRound { .. }))
+            });
+            let mid_turn = pos.moved() || pos.cards_played() > 0 || win;
             if !(mid_turn || self.computer == Some(pos.side())) || !self.game.undo() {
                 break;
             }
@@ -888,6 +906,50 @@ impl BattleChessApp {
             .legal_moves()
             .iter()
             .any(|m| m.from == from && m.to == to && !m.is_drop())
+    }
+
+    /// Подсвеченная клетка, куда сейчас можно пойти выбранной фигурой или выставить фигуру
+    /// запаса.
+    fn is_target(&self, sq: Square) -> bool {
+        match (self.drop_pick, self.selected) {
+            (Some(stock), _) => self
+                .game
+                .legal_moves()
+                .iter()
+                .any(|m| m.kind == stock.drop_kind() && m.to == sq),
+            (None, Some(from)) => from != sq && self.has_move(from, sq),
+            (None, None) => false,
+        }
+    }
+
+    /// Rogue-like: магазин открыт, и показывать его уже можно — удары, шаги и ход доиграли.
+    fn shop_ready(&self) -> bool {
+        self.game.position().shop_open()
+            && self.anim.is_none()
+            && self.strikes.is_empty()
+            && self.marches.is_empty()
+            && self.lavas.is_empty()
+    }
+
+    /// Клетка-цель под курсором, когда ходит человек.
+    fn hovered_target(&self) -> Option<Square> {
+        self.hovered
+            .filter(|&sq| self.promotion.is_none() && self.human_to_move() && self.is_target(sq))
+    }
+
+    /// Призрак на клетке-цели под курсором: выбранная фигура или фигура запаса. На клетке со
+    /// своей фигурой (обмен при расстановке) призрака нет.
+    fn ghost(&self) -> Option<(Square, Piece)> {
+        let sq = self.hovered_target()?;
+        let pos = self.game.position();
+        if pos.piece(sq).is_some() {
+            return None;
+        }
+        let piece = match self.drop_pick {
+            Some(stock) => stock.piece(pos.side()),
+            None => pos.piece(self.selected?)?,
+        };
+        Some((sq, piece))
     }
 
     fn play(&mut self, mv: Move, drop: Option<Vec2>, now: f64) {
@@ -1007,6 +1069,21 @@ impl BattleChessApp {
                 blasts_end = ignite + (LAVA_FRAMES - LAVA_IGNITE) as f64 * LAVA_FRAME_TIME;
                 start += 2.0 * STRIKE_GAP;
             }
+            // Огненные фигуры (rogue-like) после взрыва снова насыщаются огнём.
+            for blast in &turn.blasts {
+                if self
+                    .game
+                    .position()
+                    .piece(blast.center)
+                    .is_some_and(|p| p.fire)
+                {
+                    self.lavas.push(LavaAnim {
+                        square: blast.center,
+                        start: blasts_end,
+                        blast: false,
+                    });
+                }
+            }
             // Новые пешки насыщаются лавой, когда взрывы догорели.
             for &square in &turn.charged {
                 self.lavas.push(LavaAnim {
@@ -1017,14 +1094,15 @@ impl BattleChessApp {
             }
             // Rogue-like: волны сначала бьют, потом шагают вперёд; новая волна проявляется
             // после шага.
+            // Фигуры игрока к расстановке возвращаются на места начала уровня так же.
             let mut march_end = blasts_end;
-            if !turn.marched.is_empty() {
+            if !turn.marched.is_empty() || !turn.returned.is_empty() {
                 let march_at = if struck {
                     blasts_end + LUNGE_TIME - STRIKE_GAP
                 } else {
                     blasts_end
                 };
-                for &(from, to) in &turn.marched {
+                for &(from, to) in turn.marched.iter().chain(&turn.returned) {
                     self.marches.push((from, to, march_at));
                 }
                 march_end = march_at + SLIDE_TIME;
@@ -1067,10 +1145,11 @@ impl BattleChessApp {
             .map(|(_, h)| h.target)
     }
 
-    /// Кадр лавы пешки на `sq`: взрыв идёт — кадры разгорания, впереди — ожидание; лава
-    /// насыщается — растут трещины (до начала — обычная пешка); лава есть — ожидание.
+    /// Кадр лавы фигуры на `sq`: взрыв идёт — кадры разгорания, впереди — ожидание; лава
+    /// насыщается — растут трещины (до начала — обычная фигура); лава есть или фигура
+    /// огненная (rogue-like) — ожидание.
     fn lava_frame(&self, sq: Square, piece: Piece, now: f64) -> Option<usize> {
-        if piece.kind != Kind::Pawn {
+        if !piece.lava && !piece.fire && self.lavas.iter().all(|a| a.square != sq) {
             return None;
         }
         let hold = || {
@@ -1097,13 +1176,28 @@ impl BattleChessApp {
         {
             return (now >= charge.start).then(|| elapsed(charge.start));
         }
-        piece.lava.then(hold)
+        (piece.lava || piece.fire).then(hold)
+    }
+
+    /// Кадр вихря воздушной фигуры: вступление с начала партии, потом повтор (у разных фигур
+    /// сдвинут по клетке).
+    fn wind_frame(&self, sq: Square, piece: Piece, now: f64) -> Option<usize> {
+        if !piece.wind {
+            return None;
+        }
+        let f = ((now - self.spark_since).max(0.0) / ELECTRIC_FRAME_TIME) as usize;
+        let [from, to] = WIND_LOOP;
+        Some(if f < from {
+            f
+        } else {
+            from + (f - from + sq as usize * 7) % (to - from)
+        })
     }
 
     /// Кадр электричества слона: вступление со вспышкой с начала партии, потом повтор; во
     /// время своего удара — снова вспышка.
     fn spark_frame(&self, sq: Square, piece: Piece, now: f64) -> Option<usize> {
-        if !piece.spark || piece.kind != Kind::Bishop {
+        if !piece.spark {
             return None;
         }
         let striking = self.strikes.iter().find(|s| {
@@ -1116,10 +1210,12 @@ impl BattleChessApp {
         }
         let f = ((now - self.spark_since).max(0.0) / ELECTRIC_FRAME_TIME) as usize;
         let [from, to] = ELECTRIC_LOOP;
+        // Повтор у разных фигур сдвинут по клетке, чтобы разряды не шли хором.
+        let phase = sq as usize * 11;
         Some(if f < from {
             f
         } else {
-            from + (f - from) % (to - from)
+            from + (f - from + phase) % (to - from)
         })
     }
 
@@ -1128,6 +1224,7 @@ impl BattleChessApp {
         Figure {
             lava: self.lava_frame(sq, piece, now),
             spark: self.spark_frame(sq, piece, now),
+            wind: self.wind_frame(sq, piece, now),
             ..Figure::new(at, piece)
         }
     }
@@ -1382,6 +1479,59 @@ impl BattleChessApp {
             self.reserve_hover = None;
             return;
         }
+        // Rogue-like: пока открыт магазин, щелчки — только по нему; пока доигрывают удары,
+        // магазина ещё нет, и щелчки не нужны вовсе.
+        self.shop_hover = None;
+        if self.game.position().shop_open() && !self.shop_ready() {
+            self.hovered = None;
+            self.stats_for = None;
+            self.reserve_hover = None;
+            self.button_hover = false;
+            self.drag = None;
+            return;
+        }
+        if self.game.position().shop_open() && self.human_to_move() {
+            self.shop_hover = pointer
+                .filter(|_| over_board)
+                .and_then(|p| self.shop_under(board, p));
+            // Фигуру своего запаса можно взять и перенести в зону продажи.
+            self.reserve_hover = pointer
+                .filter(|_| over_board)
+                .and_then(|p| self.reserve_under(board, p))
+                .filter(|&(seat, stock)| self.reserve_sellable(seat, stock));
+            if let (Some(sell), Some(p)) = (&mut self.sell_drag, pointer) {
+                sell.1 = p;
+            }
+            self.hovered = None;
+            self.stats_for = None;
+            self.button_hover = false;
+            self.card_hover = None;
+            self.deck_hover = None;
+            self.drag = None;
+            if released && let Some((stock, _)) = self.sell_drag.take() {
+                if self.shop_hover == Some(ShopSpot::Sell) && self.game.sell(stock) {
+                    self.sfx.play(Sound::Kill);
+                }
+                return;
+            }
+            if pressed && let (Some((_, stock)), Some(p)) = (self.reserve_hover, pointer) {
+                self.sell_drag = Some((stock, p));
+                return;
+            }
+            if pressed && let Some(spot) = self.shop_hover.filter(|&s| self.shop_usable(s)) {
+                let done = match spot {
+                    ShopSpot::Offer(i) => self.game.buy(i),
+                    ShopSpot::Reroll => self.game.reroll(),
+                    ShopSpot::Leave => self.game.leave_shop(),
+                    ShopSpot::Sell => false,
+                };
+                if done {
+                    self.sfx.play(Sound::Move);
+                }
+            }
+            return;
+        }
+        self.sell_drag = None;
         // Кнопка «Конец хода» срабатывает, когда её отпускают, не уведя курсор.
         self.button_hover = pointer.is_some_and(|p| over_board && self.over_button(board, p));
 
@@ -1450,9 +1600,9 @@ impl BattleChessApp {
         if cancel {
             self.drop_pick = None;
         }
-        if pressed && let Some((seat, kind)) = self.reserve_hover {
-            self.drop_pick = if self.reserve_usable(seat, kind) && self.drop_pick != Some(kind) {
-                Some(kind)
+        if pressed && let Some((seat, stock)) = self.reserve_hover {
+            self.drop_pick = if self.reserve_usable(seat, stock) && self.drop_pick != Some(stock) {
+                Some(stock)
             } else {
                 None
             };
@@ -1499,13 +1649,13 @@ impl BattleChessApp {
 
     fn press(&mut self, sq: Square, pointer: Pos2, board: &BoardGeom, now: f64) {
         // Выбрана фигура запаса: щелчок по подсвеченной клетке выставляет её, мимо — отменяет.
-        if let Some(kind) = self.drop_pick.take() {
+        if let Some(stock) = self.drop_pick.take() {
             let drop = self
                 .game
                 .legal_moves()
                 .iter()
                 .copied()
-                .find(|m| m.kind == MoveKind::Drop(kind) && m.to == sq);
+                .find(|m| m.kind == stock.drop_kind() && m.to == sq);
             if let Some(mv) = drop {
                 self.play(mv, None, now);
                 return;
@@ -1521,8 +1671,7 @@ impl BattleChessApp {
         let pos = self.game.position();
         // Фигурой ходят раз за ход (в rogue-like — несколько ходов разными фигурами);
         // замёрзшая фигура не ходит.
-        if pos.moves_left() > 0
-            && !pos.used(sq)
+        if pos.can_move(sq)
             && pos
                 .piece(sq)
                 .is_some_and(|p| p.color == pos.side() && !p.is_frozen())
@@ -1561,8 +1710,18 @@ impl BattleChessApp {
     }
 
     /// Клетка под курсором. Фигуры выше своих клеток и закрывают дальние клетки, поэтому
-    /// сначала проверяются они — от ближних к дальним, потом ромбы клеток.
+    /// сначала проверяются они — от ближних к дальним (по хитбоксам `Art::hits`: силуэт чуть
+    /// меньше видимого, у короля — без верха), потом ромбы клеток.
     fn square_under(&self, board: &BoardGeom, pointer: Pos2) -> Option<Square> {
+        // Клетка-цель выбранной фигуры или фигуры запаса важнее фигур, которые её загораживают
+        // (с 0.57, просьба пользователя): ходят только на пустые клетки, ошибки не будет.
+        if self.promotion.is_none()
+            && self.human_to_move()
+            && let Some(sq) = board.square_at(pointer)
+            && self.is_target(sq)
+        {
+            return Some(sq);
+        }
         let mut figures: Vec<(Square, Piece)> = match &self.promotion {
             Some(pending) => {
                 let color = self.game.position().side();
@@ -1582,7 +1741,7 @@ impl BattleChessApp {
             .into_iter()
             .find(|&(sq, piece)| {
                 let at = (pointer - board.sprite_rect(board.ground(sq), 1.0).min) / board.scale;
-                self.art.covers(piece.color, piece.kind, at)
+                self.art.hits(piece.color, piece.kind, at)
             })
             .map(|(sq, _)| sq)
             .or_else(|| board.square_at(pointer))
@@ -1733,7 +1892,14 @@ impl BattleChessApp {
         }
 
         // Последний ход: откуда пошла фигура и где встала.
-        let last_move = self.game.history().iter().rev().find_map(|r| r.outcome());
+        // Rogue-like: фигуры вернулись к расстановке — прежний последний ход не показывается.
+        let last_move = self
+            .game
+            .history()
+            .iter()
+            .rev()
+            .take_while(|r| r.turn_end().is_none_or(|t| t.planning.is_none()))
+            .find_map(|r| r.outcome());
         if let Some(o) = last_move {
             mark(o.mv.from, Marker::LastMove, Color32::WHITE);
             mark(o.mv.to, Marker::LastMove, Color32::WHITE);
@@ -1762,6 +1928,7 @@ impl BattleChessApp {
         if let Some(sq) = self.selected {
             mark(sq, Marker::Selected, Color32::WHITE);
         }
+        let target_tint = target_tint(now);
 
         // Карта ждёт цель: свои фигуры, на которые её можно сыграть, а у карты на поле —
         // клетки, на которые она ляжет вокруг клетки под курсором.
@@ -1786,14 +1953,14 @@ impl BattleChessApp {
         }
 
         // Куда выставить фигуру из запаса.
-        if let Some(kind) = self.drop_pick
+        if let Some(stock) = self.drop_pick
             && self.human_to_move()
         {
             for mv in self.game.legal_moves() {
-                if mv.kind == MoveKind::Drop(kind) {
+                if mv.kind == stock.drop_kind() {
                     mark(mv.to, Marker::Move, Color32::WHITE);
                     if self.hovered == Some(mv.to) {
-                        mark(mv.to, Marker::Target, Color32::WHITE);
+                        mark(mv.to, Marker::Target, target_tint);
                     }
                 }
             }
@@ -1815,7 +1982,7 @@ impl BattleChessApp {
                 }
                 mark(mv.to, Marker::Move, Color32::WHITE);
                 if self.hovered == Some(mv.to) {
-                    mark(mv.to, Marker::Target, Color32::WHITE);
+                    mark(mv.to, Marker::Target, target_tint);
                 }
             }
         }
@@ -1840,8 +2007,11 @@ impl BattleChessApp {
                 .strikes
                 .iter()
                 .any(|s| s.moving(now) && s.strike.hit.square == sq);
-            // Походившую фигуру, которую перехватит конь, пока везёт ход.
-            if (pos.piece(sq).is_none() || killer_coming)
+            // Походившую фигуру, которую перехватит конь, пока везёт ход. На клетку убитой
+            // могла шагнуть фигура волны (или вернуться к расстановке фигура игрока) — она
+            // ещё в пути, а убитая до касания стоит.
+            let taken = self.march_origin(sq) != sq;
+            if (pos.piece(sq).is_none() || taken || killer_coming)
                 && !anim.is_some_and(|a| a.hides(sq))
                 && let Some(victim) = self.struck_piece(sq, now)
             {
@@ -1897,8 +2067,11 @@ impl BattleChessApp {
             if let Some(hit) = victims.iter().find(|h| h.square == sq) {
                 piece = hit.target;
             }
-            // Пока удар не долетел, у цели прежнее здоровье.
-            if let Some(before) = self.struck_piece(sq, now) {
+            // Пока удар не долетел, у цели прежнее здоровье. Пришедшая на клетку цели фигура
+            // (шаг волны, возвращение к расстановке) — не цель.
+            if self.march_origin(sq) == sq
+                && let Some(before) = self.struck_piece(sq, now)
+            {
                 piece = before;
             }
             // Бьющая фигура делает выпад к цели.
@@ -1913,6 +2086,17 @@ impl BattleChessApp {
                 bless,
                 ice: self.ice(sq, piece, now),
                 ..self.dressed(sq, piece, center(sq) + shift, now)
+            });
+        }
+
+        // Призрак фигуры на клетке-цели под курсором — куда она встанет.
+        if dragged.is_none()
+            && let Some((sq, piece)) = self.ghost()
+        {
+            figures.push(Figure {
+                alpha: GHOST_ALPHA,
+                shadow: false,
+                ..self.dressed(sq, piece, center(sq), now)
             });
         }
 
@@ -2002,8 +2186,19 @@ impl BattleChessApp {
             // Усиленный компьютер: слон в электричестве — в своём кадре вокруг точки опоры,
             // пешка с лавой — кадр вместо спрайта. Замёрзшие — во льду, как все.
             if f.ice.is_none() {
+                if let Some(frame) = f.wind
+                    && let Some(sprite) = tex.ui.wind(f.piece.color, f.piece.kind, frame)
+                {
+                    let origin = ground(f) - ELECTRIC_ANCHOR * board.scale;
+                    let rect = Rect::from_min_size(
+                        origin + sprite.at * board.scale,
+                        sprite.size * board.scale,
+                    );
+                    painter.image(sprite.texture, rect, UV, tint(f));
+                    continue;
+                }
                 if let Some(frame) = f.spark
-                    && let Some(sprite) = tex.ui.electric(f.piece.color, frame)
+                    && let Some(sprite) = tex.ui.electric(f.piece.color, f.piece.kind, frame)
                 {
                     let origin = ground(f) - ELECTRIC_ANCHOR * board.scale;
                     let rect = Rect::from_min_size(
@@ -2014,7 +2209,7 @@ impl BattleChessApp {
                     continue;
                 }
                 if let Some(frame) = f.lava
-                    && let Some(sprite) = tex.ui.lava(f.piece.color, frame)
+                    && let Some(sprite) = tex.ui.lava(f.piece.color, f.piece.kind, frame)
                 {
                     let body = board.sprite_rect(ground(f), f.grow);
                     let px = body.width() / SPRITE.x;
@@ -2342,8 +2537,18 @@ impl BattleChessApp {
                 Pointer::Card
             };
         }
-        if let Some((seat, kind)) = self.reserve_hover {
-            return if self.reserve_usable(seat, kind) {
+        if let Some(spot) = self.shop_hover {
+            return if self.shop_usable(spot) {
+                Pointer::Hover
+            } else {
+                Pointer::Off
+            };
+        }
+        if self.sell_drag.is_some() {
+            return Pointer::Move;
+        }
+        if let Some((seat, stock)) = self.reserve_hover {
+            return if self.reserve_usable(seat, stock) || self.reserve_sellable(seat, stock) {
                 Pointer::Hover
             } else {
                 Pointer::Off
@@ -2375,7 +2580,7 @@ impl BattleChessApp {
         }
         let pos = self.game.position();
         let own = pos.piece(sq).filter(|p| p.color == pos.side());
-        if pos.moves_left() > 0 && !pos.used(sq) && own.is_some_and(|p| !p.is_frozen()) {
+        if pos.can_move(sq) && own.is_some_and(|p| !p.is_frozen()) {
             Pointer::Hover
         } else if own.is_some_and(|p| p.is_frozen()) {
             // Замёрзшая своя фигура не ходит.
@@ -2518,6 +2723,10 @@ impl BattleChessApp {
                 self.player_card(ui, top.opponent());
                 ui.add_space(8.0);
                 self.controls(ui);
+                if self.game.position().rogue().is_some() && self.remote.is_none() {
+                    ui.add_space(6.0);
+                    self.rogue_controls(ui);
+                }
                 ui.add_space(8.0);
                 self.info_card(ui);
             });
@@ -2538,7 +2747,16 @@ impl BattleChessApp {
         if let Some(r) = self.game.position().rogue()
             && r.player != color
         {
-            return format!("волны из тумана · {} из {}", r.wave, r.waves);
+            if r.shop {
+                return format!("магазин перед уровнем {}", r.level + 1);
+            }
+            if r.planning {
+                return format!("расстановка перед уровнем {}", r.level + 1);
+            }
+            return format!(
+                "уровень {} из {} · волна {} из {}",
+                r.level, r.levels, r.wave, r.waves
+            );
         }
         match self.computer {
             Some(computer) if computer == color => {
@@ -2652,6 +2870,21 @@ impl BattleChessApp {
             Status::Ongoing if self.aiming_card() => {
                 (self.aim_hint().to_owned(), theme::TEXT_BRIGHT)
             }
+            Status::Ongoing if pos.shop_open() => (
+                "Магазин: покупайте фигуры в запас за золото, продавайте — перетащив из \
+                 запаса в «Продажу»; «Обновить» — другие фигуры, «Уйти» — к расстановке"
+                    .to_owned(),
+                theme::GOLD,
+            ),
+            Status::Ongoing if pos.planning() => (
+                format!(
+                    "Расстановка перед уровнем {} · двигайте и меняйте фигуры местами на двух \
+                     первых горизонталях, потом \
+                     «Начать раунд»",
+                    pos.rogue().map_or(0, |r| r.level + 1)
+                ),
+                theme::TEXT_BRIGHT,
+            ),
             Status::Ongoing
                 if pos.moved() && self.human_to_move() && !self.game.legal_moves().is_empty() =>
             {
@@ -2846,6 +3079,23 @@ impl BattleChessApp {
                 self.screen = Screen::Menu;
             }
         });
+    }
+
+    /// Rogue-like: кнопка «Выиграть раунд» — сразу победить волны этого уровня.
+    fn rogue_controls(&mut self, ui: &mut egui::Ui) {
+        let can = self.human_to_move()
+            && self.game.position().can_win_round()
+            && self.anim.is_none()
+            && self.strikes.is_empty();
+        if ui
+            .add_enabled(can, egui::Button::new("Выиграть раунд"))
+            .on_hover_text("Сразу победить волны этого уровня — золото за фигуры на доске")
+            .clicked()
+            && self.game.win_round()
+        {
+            self.reset_interaction();
+            self.sfx.play(Sound::Notify);
+        }
     }
 
     /// Атака и здоровье фигуры под курсором (или выбранной).
@@ -3189,6 +3439,7 @@ impl eframe::App for BattleChessApp {
             || self.cards_moving()
             || self.card_rising(now)
             || self.settings.show_fps
+            || self.hovered_target().is_some()
         {
             ctx.request_repaint();
         } else if self.thinking.is_some() {
@@ -3477,6 +3728,7 @@ fn turn_job(turn: &[&Record], highlighted: bool, wrap: f32) -> LayoutJob {
         let text_color = match record.event {
             Event::Card(_) => theme::ORANGE,
             Event::EndTurn(..) => theme::SALMON,
+            Event::Rogue(_) => theme::GOLD,
             Event::Move(_) => color,
         };
         job.append(
@@ -3503,7 +3755,7 @@ fn turn_job(turn: &[&Record], highlighted: bool, wrap: f32) -> LayoutJob {
 fn result_text(status: Status, pos: &Position) -> (&'static str, String) {
     match (status, pos.rogue()) {
         (Status::Victory { winner }, Some(r)) if winner == r.player => {
-            ("Победа", format!("Все {} волн отбиты", r.waves))
+            ("Победа", format!("Все {} уровней пройдены", r.levels))
         }
         (Status::Victory { .. }, Some(_)) if pos.breached() => (
             "Поражение",
@@ -3511,7 +3763,10 @@ fn result_text(status: Status, pos: &Position) -> (&'static str, String) {
         ),
         (Status::Victory { .. }, Some(r)) => (
             "Поражение",
-            format!("Волны одолели — дошли до волны {} из {}", r.wave, r.waves),
+            format!(
+                "Волны одолели на уровне {} — волна {} из {}",
+                r.level, r.wave, r.waves
+            ),
         ),
         _ => result_text_plain(status),
     }
@@ -3571,6 +3826,13 @@ fn plural(n: i32, one: &'static str, few: &'static str, many: &'static str) -> &
         2..=4 => few,
         _ => many,
     }
+}
+
+/// Оттенок рамки клетки-цели: она «дышит» от `TARGET_DIM` до полной яркости.
+fn target_tint(now: f64) -> Color32 {
+    let wave = 0.5 + 0.5 * (now * std::f64::consts::TAU / TARGET_PULSE).cos() as f32;
+    let k = TARGET_DIM + (1.0 - TARGET_DIM) * wave;
+    Color32::from_white_alpha((k * 255.0).round() as u8)
 }
 
 fn center(sq: Square) -> Vec2 {

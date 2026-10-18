@@ -1,8 +1,8 @@
 """Электрические дуги вокруг слона «в духе Супер Саяна 2» — в стиле Into the Breach.
 
 Слон заряжается: по телу пробегают искорки, от основания поднимается золотая
-аура-пламя, вспышка — и от слона во все стороны расходятся молнии, по земле бежит
-электрическое кольцо. Потом держится состояние: аура колышется, вокруг тела
+аура-пламя, вспышка — и от слона во все стороны расходятся молнии. Потом держится
+состояние: аура колышется, вокруг тела
 трещат голубые дуги, изредка молния бьёт наружу или в землю. В конце аура опадает,
 последние искры гаснут.
 
@@ -12,10 +12,11 @@
 крутить сколько нужно), концовка — [LOOP_END, FRAMES).
 
 `py tools/breach_arcs.py [папка]` — по умолчанию assets/breach/effects:
-electric_<w|b>B.png (кадры в ряд), electric_hold_<w|b>B.png (не гаснет: вступление и
+electric_<цвет><фигура>.png (кадры в ряд, все 12 фигур), electric_hold_<цвет><фигура>.png (не гаснет: вступление и
 повтор, без концовки — после кадра LOOP_END − 1 идёт снова LOOP_START), preview_electric.gif
 (вступление, повтор дважды, концовка, слоны на доске), preview_electric_hold.gif
-(вступление и повтор 10 раз), preview_electric_frames.png.
+(вступление и повтор 10 раз), preview_electric_frames.png, preview_electric_all.gif
+(остальные фигуры).
 """
 import math
 import os
@@ -165,9 +166,9 @@ def ground_point(r, ang):
     return FAX + math.cos(ang) * r, FAY + math.sin(ang) * r * 0.5
 
 
-def render(color, seed=7):
+def render(code, seed=7):
     rng = np.random.default_rng(seed)
-    sprite = np.array(Image.open(os.path.join(fw.art.ROOT, "assets", "breach", "pieces", f"{color}B.png")).convert("RGBA"))
+    sprite = np.array(Image.open(os.path.join(fw.art.ROOT, "assets", "breach", "pieces", f"{code}.png")).convert("RGBA"))
     canvas = np.zeros((FH, FW, 4), np.uint8)
     canvas[SY : SY + sprite.shape[0], SX : SX + sprite.shape[1]] = sprite
     sil = canvas[..., 3] > 0
@@ -266,19 +267,10 @@ def render(color, seed=7):
             pts = np.argwhere(aura & ~outer)
             for y, x in pts[rng.choice(len(pts), size=min(5, len(pts)), replace=False)]:
                 img[max(0, y - 1) : y + 1, x] = (*GOLD[0], 255)
-        # ---- задние молнии и земляное кольцо на вспышке
+        # ---- задние молнии (кольца по земле на вспышке нет с 2026-10-18 — просьба пользователя)
         back = np.zeros((FH, FW, 4), np.uint8)
         front_l = np.zeros((FH, FW, 4), np.uint8)
         paint_bolts(back, [b for b in bolts if not b.front])
-        if FLASH <= f < FLASH + 6:
-            t = (f - FLASH) / 5
-            r = 10 + 30 * (1 - (1 - t) ** 2)
-            ell = np.hypot((xx + 0.5 - FAX) / r, (yy + 0.5 - FAY) / (r * 0.5))
-            ring = (np.abs(ell - 1) < 1.2 / r * 1.6) & (n > 0.25 + 0.3 * t)  # рвётся к концу
-            for part, layer in ((yy < FAY, back), (yy >= FAY, front_l)):
-                layer[ring & part] = (*CYAN[1 if t < 0.4 else 3], 255)
-                glow = burn.neighbours_any(ring & part) & ~ring & part & (layer[..., 3] == 0)
-                layer[glow] = (*CYAN[4], 160)
         m = back[..., 3] > 0
         img[m] = back[m]
         # ---- слон: подсветка контура аурой, на вспышке — бело-голубой
@@ -375,17 +367,225 @@ def save_preview(all_frames, out):
     sheet.resize((sheet.width * 2, sheet.height * 2), Image.NEAREST).save(os.path.join(out, "preview_electric_frames.png"))
 
 
+# ---------------------------------------------------------------- спокойный вариант
+# Повтор нынешней анимации мерцает каждый кадр и всё время двигает большую ауру — отвлекает.
+# Спокойный (просьба пользователя): вступление и вспышка те же, потом аура опадает (кадры
+# концовки) и идёт долгий тихий повтор: аура — кайма в 1–2 пикселя по контуру, медленно
+# «дышит»; изредка короткая искорка; раз за повтор — разряд из нескольких дуг (как сейчас:
+# белое ядро, одна молния в землю), кайма на миг ярче.
+CALM_SETTLE = list(range(LOOP_END, FRAMES))  # кадры концовки — аура опадает до каймы
+CALM_LOOP_START = LOOP_START + len(CALM_SETTLE)  # 14
+CALM_LOOP = 48  # 2,9 с
+CALM_FRAMES = CALM_LOOP_START + CALM_LOOP  # 62
+CALM_SPARKS = (8, 19)  # кадры повтора с искоркой
+CALM_DISCHARGE = 30  # кадр повтора с разрядом
+
+
+def render_calm(code, seed, base):
+    """Кадры спокойного варианта: base — кадры обычной анимации этой фигуры."""
+    rng = np.random.default_rng(seed + 100)
+    sprite = np.array(Image.open(os.path.join(art.ROOT, "assets", "breach", "pieces", f"{code}.png")).convert("RGBA"))
+    canvas = np.zeros((FH, FW, 4), np.uint8)
+    canvas[SY : SY + sprite.shape[0], SX : SX + sprite.shape[1]] = sprite
+    sil = canvas[..., 3] > 0
+    ys, xs = np.nonzero(sil)
+    cx, cy = xs.mean(), (ys.min() + ys.max()) / 2
+    base_y = ys.max()
+    d = distance(sil, 3)
+    rim = burn.boundary(sil & ~burn.boundary(sil))
+
+    def halo(img, f):
+        """Кайма ауры вокруг фигуры: f — кадр повтора (дыхание и разряд)."""
+        breath = 0.5 + 0.5 * math.sin(2 * math.pi * f / CALM_LOOP)
+        burst = max(0.0, 1 - abs(f - CALM_DISCHARGE - 0.5) / 2.5)  # ярче на разряде
+        a1 = int(110 + 70 * breath + 70 * burst)
+        a2 = int(40 + 35 * breath + 90 * burst)
+        ring2 = (d == 2) & (img[..., 3] == 0)
+        ring1 = (d == 1) & (img[..., 3] == 0)
+        img[ring2] = (*GOLD[2], min(a2, 255))
+        img[ring1] = (*GOLD[1], min(a1, 255))
+        if burst > 0.6:
+            img[(d == 3) & (img[..., 3] == 0)] = (*GOLD[2], 60)
+        return breath, burst
+
+    def body(img, breath, burst):
+        b = canvas.copy()
+        rgb = b[..., :3].astype(float)
+        k = 0.18 + 0.12 * breath
+        rgb[rim] = rgb[rim] * (1 - k) + np.array(GOLD[0], float) * k
+        if burst > 0.6:
+            inner = sil & ~burn.boundary(sil)
+            rgb[inner] = rgb[inner] * 0.8 + np.array(CYAN[1], float) * 0.2
+        b[..., :3] = rgb.astype(np.uint8)
+        img[sil] = b[sil]
+
+    def hug(length):
+        a = rng.uniform(0, 2 * math.pi)
+        oy = rng.uniform(-14, 14)
+        p = edge_point(sil, cx, cy + oy, a)
+        q = edge_point(sil, cx, cy + oy + rng.uniform(-6, 6), a + length)
+        return Bolt(bolt_points(p, q, rng, 0.3, bow=-rng.uniform(0.3, 0.6)), rng.random() < 0.55, life=2)
+
+    frames = [f.copy() for f in base[:LOOP_START]]
+    # опадание: кадры концовки, под ними уже проступает кайма
+    for f in CALM_SETTLE:
+        img = base[f].copy()
+        under = np.zeros((FH, FW, 4), np.uint8)
+        halo(under, 0)
+        m = img[..., 3] == 0
+        img[m] = under[m]
+        frames.append(img)
+    bolts, sparks = [], burn.Particles()
+    for f in range(CALM_LOOP):
+        for b in bolts:
+            b.age += 1
+        bolts = [b for b in bolts if b.age < b.life]
+        if f in CALM_SPARKS:
+            bolts.append(hug(rng.uniform(0.35, 0.6)))
+        if f == CALM_DISCHARGE:
+            for _ in range(3):
+                bolts.append(hug(rng.uniform(0.7, 1.2)))
+            a = rng.uniform(0, 2 * math.pi)
+            p = edge_point(sil, cx, base_y - 6, a)
+            q = ground_point(rng.uniform(18, 24), a)
+            for _ in range(3):
+                sparks.items.append(dict(x=q[0], y=q[1], vx=rng.uniform(-1.2, 1.2), vy=rng.uniform(-1.6, -0.4),
+                                         drag=0.85, life=int(rng.integers(2, 5)), age=0))
+            bolts.append(Bolt(bolt_points(p, q, rng, 0.3), front=q[1] > cy + 4, life=2))
+        if f == CALM_DISCHARGE + 1:
+            bolts.append(hug(rng.uniform(0.5, 0.9)))
+        img = np.zeros((FH, FW, 4), np.uint8)
+        back = np.zeros((FH, FW, 4), np.uint8)
+        paint_bolts(back, [b for b in bolts if not b.front])
+        m = back[..., 3] > 0
+        img[m] = back[m]
+        breath, burst = halo(img, f)
+        body(img, breath, burst)
+        front = np.zeros((FH, FW, 4), np.uint8)
+        paint_bolts(front, [b for b in bolts if b.front])
+        m = front[..., 3] > 0
+        img[m] = front[m]
+        for p in sparks.items:
+            x, y = int(p["x"]), int(p["y"])
+            if 0 <= x < FW and 0 <= y < FH:
+                img[y, x] = (*CYAN[[0, 2, 4][min(p["age"], 2)]], 255)
+        sparks.step()
+        frames.append(img)
+    return frames
+
+
+def save_calm_preview(all_frames, calm_frames, out, scale=2):
+    """Сравнение: слева нынешний повтор, справа спокойный; белый и чёрный слоны."""
+    from PIL import ImageDraw, ImageFont
+    crop = (55, 0, 245, 200)
+    n = 4 + CALM_LOOP_START + CALM_LOOP * 3
+
+    def calm_at(f):
+        return f if f < CALM_LOOP_START else CALM_LOOP_START + (f - CALM_LOOP_START) % CALM_LOOP
+
+    def now_at(f):
+        return f if f < LOOP_START else LOOP_START + (f - LOOP_START) % (LOOP_END - LOOP_START)
+
+    cols = []
+    for frames_of, at_frame in ((all_frames, now_at), (calm_frames, calm_at)):
+        col = []
+        for code, pos in (("wB", {(4, 3): "wB", (5, 4): "bP", (3, 4): "bN"}),
+                          ("bB", {(4, 3): "bB", (5, 4): "wP", (3, 4): "wN"})):
+            tiles, shadows, _, at = fw.board_scene(pos, (4, 3))
+            rest = {sq: c for sq, c in pos.items() if sq != (4, 3)}
+            back = fw.board_scene({sq: c for sq, c in rest.items() if sq[0] + 7 - sq[1] < 8}, (4, 3))[2]
+            front = fw.board_scene({sq: c for sq, c in rest.items() if sq[0] + 7 - sq[1] >= 8}, (4, 3))[2]
+            cell = (at[0] + fw.CX, at[1] + fw.CY)
+            still = Image.open(os.path.join(art.ROOT, "assets", "breach", "pieces", f"{code}.png")).convert("RGBA")
+            seq = []
+            for k in range(n):
+                im = tiles.copy()
+                im.alpha_composite(shadows)
+                im.alpha_composite(back)
+                if k < 4:
+                    im.alpha_composite(still, (cell[0] - art.AX, cell[1] - art.AY))
+                else:
+                    fr = frames_of[code][at_frame(k - 4)]
+                    im.alpha_composite(Image.fromarray(fr, "RGBA"), (cell[0] - FAX, cell[1] - FAY))
+                im.alpha_composite(front)
+                seq.append(im.convert("RGB").crop(crop))
+            col.append(seq)
+        cols.append(col)
+    cw, ch = crop[2] - crop[0], crop[3] - crop[1]
+    head = 14
+    try:
+        font = ImageFont.truetype("segoeuib.ttf", 11)
+    except OSError:
+        font = ImageFont.load_default()
+    frames = []
+    for k in range(n):
+        im = Image.new("RGB", (2 * cw + 4, head + 2 * ch + 4), (27, 30, 39))
+        dr = ImageDraw.Draw(im)
+        for c, title in enumerate(("сейчас", "спокойно")):
+            dr.text((c * (cw + 4) + cw // 2, 2), title, font=font, fill=(230, 230, 230), anchor="mt")
+            for r in range(2):
+                im.paste(cols[c][r][k], (c * (cw + 4), head + r * (ch + 4)))
+        frames.append(im.resize((im.width * scale, im.height * scale), Image.NEAREST))
+    allpix = Image.new("RGB", (frames[0].width, frames[0].height * 6))
+    for i, k in enumerate((8, 12, 20, 40, 48, 50)):
+        allpix.paste(frames[k], (0, i * frames[0].height))
+    pal = allpix.quantize(colors=255, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
+    gif = [q.quantize(palette=pal, dither=Image.Dither.NONE) for q in frames]
+    gif[0].save(os.path.join(out, "preview_electric_calm.gif"), save_all=True, append_images=gif[1:],
+                duration=FRAME_MS, loop=0, disposal=1)
+
+
+# зерно по виду фигуры (у белых и чёрных одинаковые молнии); у слона — прежнее 7, его кадры уже в игре
+SEEDS = {"B": 7, "P": 11, "N": 13, "R": 17, "Q": 19, "K": 23}
+
+
+def save_all_preview(all_frames, out, hold, scale=2):
+    """Остальные фигуры, каждая на своём куске доски: верхний ряд — белые, нижний — чёрные."""
+    crop = (55, 0, 245, 200)
+    rows = []
+    for color in "wb":
+        enemy = "b" if color == "w" else "w"
+        row = []
+        for k in "PNRQK":
+            code = color + k
+            pos = {(4, 3): code, (5, 4): enemy + "P"}
+            row.append([im.crop(crop) for im in scene_frames(all_frames[code], code, (4, 3), pos, hold)])
+        rows.append(row)
+    cw, ch = crop[2] - crop[0], crop[3] - crop[1]
+    frames = []
+    for n in range(len(rows[0][0])):
+        im = Image.new("RGB", (5 * cw + 4 * 4, 2 * ch + 4), (27, 30, 39))
+        for r, row in enumerate(rows):
+            for c, scene in enumerate(row):
+                im.paste(scene[n], (c * (cw + 4), r * (ch + 4)))
+        frames.append(im.resize((im.width * scale, im.height * scale), Image.NEAREST))
+    allpix = Image.new("RGB", (frames[0].width, frames[0].height * 6))
+    for i, k in enumerate((6, 9, 12, 16, 20, 26)):
+        allpix.paste(frames[k], (0, i * frames[0].height))
+    pal = allpix.quantize(colors=255, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
+    gif = [p.quantize(palette=pal, dither=Image.Dither.NONE) for p in frames]
+    name = "preview_electric_all_hold.gif" if hold else "preview_electric_all.gif"
+    gif[0].save(os.path.join(out, name), save_all=True, append_images=gif[1:], duration=FRAME_MS, loop=0, disposal=1)
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     all_frames = {}
-    for color in "wb":
-        frames = render(color)
-        all_frames[color + "B"] = frames
-        Image.fromarray(np.concatenate(frames, axis=1), "RGBA").save(os.path.join(OUT, f"electric_{color}B.png"))
+    for code in (c + k for c in "wb" for k in "PNBRQK"):
+        frames = render(code, SEEDS[code[1]])
+        all_frames[code] = frames
+        Image.fromarray(np.concatenate(frames, axis=1), "RGBA").save(os.path.join(OUT, f"electric_{code}.png"))
         # версия, которая не гаснет: вступление и повтор, концовки нет
         Image.fromarray(np.concatenate(frames[:LOOP_END], axis=1), "RGBA").save(
-            os.path.join(OUT, f"electric_hold_{color}B.png"))
+            os.path.join(OUT, f"electric_hold_{code}.png"))
+    calm_frames = {}
+    for code, frames in all_frames.items():
+        calm_frames[code] = render_calm(code, SEEDS[code[1]], frames)
+        Image.fromarray(np.concatenate(calm_frames[code], axis=1), "RGBA").save(
+            os.path.join(OUT, f"electric_calm_{code}.png"))
     save_preview(all_frames, OUT)
+    save_all_preview(all_frames, OUT, hold=False)
+    save_calm_preview(all_frames, calm_frames, OUT)
     print("done", OUT)
 
 

@@ -218,6 +218,9 @@ pub fn encode_move(mv: Move) -> String {
         MoveKind::CastleShort => 1,
         MoveKind::CastleLong => 2,
         MoveKind::Drop(k) => 10 + k as u8,
+        MoveKind::FireDrop(k) => 20 + k as u8,
+        MoveKind::SparkDrop(k) => 30 + k as u8,
+        MoveKind::WindDrop(k) => 40 + k as u8,
     };
     let promotion = mv.promotion.map_or(0, |k| 1 + k as u8);
     format!("M {} {} {kind} {promotion}", mv.from, mv.to)
@@ -233,6 +236,9 @@ pub fn decode_move(line: &str, legal: &[Move]) -> Option<Move> {
         0 => MoveKind::Quiet,
         1 => MoveKind::CastleShort,
         2 => MoveKind::CastleLong,
+        n @ 40.. => MoveKind::WindDrop(kind_of(n - 40)?),
+        n @ 30.. => MoveKind::SparkDrop(kind_of(n - 30)?),
+        n @ 20.. => MoveKind::FireDrop(kind_of(n - 20)?),
         n => MoveKind::Drop(kind_of(n.checked_sub(10)?)?),
     };
     let promotion = match promotion {

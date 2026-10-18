@@ -172,7 +172,7 @@ pub fn evaluate(pos: &Position) -> i32 {
         let stock: i32 = pos
             .reserve(color)
             .iter()
-            .map(|&(kind, ready, waiting)| value(kind) * i32::from(ready + waiting) / 2)
+            .map(|&(stock, ready, waiting)| value(stock.kind) * i32::from(ready + waiting) / 2)
             .sum();
         score += if color == Color::White { stock } else { -stock };
     }

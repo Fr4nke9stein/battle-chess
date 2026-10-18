@@ -21,6 +21,8 @@ pub const RED: Color32 = Color32::from_rgb(0xe0, 0x4a, 0x38);
 pub const ORANGE: Color32 = Color32::from_rgb(0xe6, 0x8a, 0x2e);
 /// Ответный удар.
 pub const SALMON: Color32 = Color32::from_rgb(0xff, 0x8a, 0x6e);
+/// Золото rogue-like: магазин и монеты (средний тон монеты `tools/breach_coin.py`).
+pub const GOLD: Color32 = Color32::from_rgb(0xf5, 0xb6, 0x38);
 
 /// Цвет как в CSS: `rgba(r, g, b, a)`.
 pub fn rgba(r: u8, g: u8, b: u8, a: f32) -> Color32 {

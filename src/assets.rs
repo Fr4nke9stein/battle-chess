@@ -21,6 +21,12 @@ pub const BOARD: Vec2 = vec2(448.0, 368.0);
 /// Холст фигуры и точка на нём, которая ставится в центр клетки.
 pub const SPRITE: Vec2 = vec2(64.0, 84.0);
 pub const ANCHOR: Vec2 = vec2(32.0, 66.0);
+/// Хитбокс фигуры (с 0.56, просьба пользователя) — силуэт, сжатый на столько пикселей арта со
+/// всех сторон: на вид фигура та же, а соседние клетки ловят курсор у самого её края.
+const HIT_SHRINK: usize = 2;
+/// Строка холста, выше которой король не ловит курсор (с 0.56): высокий король закрывал
+/// клетку позади по диагонали (на экране — прямо над ним, её центр — на строке 24).
+const KING_HIT_TOP: usize = 38;
 
 macro_rules! breach {
     ($($name:literal),* $(,)?) => {
@@ -123,12 +129,12 @@ pub use cards::{
 };
 pub use ui::{
     ARROW_HEAD, ARROW_SPACING, Aim, ArrowPart, BLESS_ANCHOR, BLESS_FIGURE, BLESS_FRAME_TIME,
-    BLESS_FRAMES, BUTTON, Button, ELECTRIC_ANCHOR, ELECTRIC_FLASH, ELECTRIC_FRAME_TIME,
-    ELECTRIC_LOOP, FREEZE_CENTER, FREEZE_CLINK, FREEZE_DELAY, FREEZE_FRAME_TIME, FREEZE_FRAMES,
-    FREEZE_FROST, FrameSprite, LAVA_FRAME_TIME, LAVA_FRAMES, LAVA_HOLD, LAVA_IGNITE, LAVA_SPREAD,
-    LAVA_WAVE_AT, PORTAL_CENTER, PORTAL_CUT, PORTAL_FRAME, PORTAL_FRAME_TIME, PORTAL_FRAMES,
-    PORTAL_RADII, PORTAL_SCALE, PORTAL_SINK, TARGET_PAD, WAVE_CENTER, WAVE_FRAME, WAVE_FRAME_TIME,
-    WAVE_FRAMES,
+    BLESS_FRAMES, BUTTON, Button, COIN, COIN_SMALL, ELECTRIC_ANCHOR, ELECTRIC_FLASH,
+    ELECTRIC_FRAME_TIME, ELECTRIC_LOOP, FREEZE_CENTER, FREEZE_CLINK, FREEZE_DELAY,
+    FREEZE_FRAME_TIME, FREEZE_FRAMES, FREEZE_FROST, FrameSprite, LAVA_FRAME_TIME, LAVA_FRAMES,
+    LAVA_HOLD, LAVA_IGNITE, LAVA_SPREAD, LAVA_WAVE_AT, PORTAL_CENTER, PORTAL_CUT, PORTAL_FRAME,
+    PORTAL_FRAME_TIME, PORTAL_FRAMES, PORTAL_RADII, PORTAL_SCALE, PORTAL_SINK, TARGET_PAD,
+    WAVE_CENTER, WAVE_FRAME, WAVE_FRAME_TIME, WAVE_FRAMES, WIND_LOOP,
 };
 
 /// Значки в панелях увеличены вдвое: так они остаются резкими и в крупной карточке фигуры.
@@ -136,6 +142,25 @@ const ICON_SCALE: usize = 2;
 
 fn index(color: Color, kind: Kind) -> usize {
     color as usize * 6 + kind as usize
+}
+
+/// Хитбокс фигуры: непрозрачные пиксели, у которых всё вокруг на `HIT_SHRINK` тоже
+/// непрозрачно; у короля — только ниже `KING_HIT_TOP`.
+fn hitbox(body: &Pixels, king: bool) -> Vec<bool> {
+    let r = HIT_SHRINK as isize;
+    let solid = |x: isize, y: isize| {
+        (0..body.width as isize).contains(&x)
+            && (0..body.height as isize).contains(&y)
+            && body.alpha(x as usize, y as usize) > 0
+    };
+    let top = if king { KING_HIT_TOP } else { 0 };
+    (0..body.height)
+        .flat_map(|y| (0..body.width).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            y >= top
+                && (-r..=r).all(|dy| (-r..=r).all(|dx| solid(x as isize + dx, y as isize + dy)))
+        })
+        .collect()
 }
 
 /// Подсветка клетки: полупрозрачный ромб с пиксельной рамкой, как в Into the Breach.
@@ -183,7 +208,9 @@ impl Marker {
             // песке синий при 95 выходит серым.
             Marker::Move => (0x2f8fe0, 0x7fd4ff, 125, 2.0, 2.0),
             Marker::Attack => (0xe0452f, 0xff9a6b, 110, 2.0, 2.0),
-            Marker::Target => (0xffffff, 0xffffff, 0, 1.0, 1.0),
+            // С 0.58 (просьба пользователя) — толстая рамка и светлая заливка: тонкую линию на
+            // синих клетках не было видно.
+            Marker::Target => (0xffffff, 0xffffff, 110, 0.0, 3.0),
             Marker::Check => (0xff2a1a, 0xffb08a, 140, 1.0, 2.0),
             Marker::Threat => (0xe68a2e, 0xffc35a, 100, 2.0, 2.0),
             Marker::Fill => (0xffffff, 0xffffff, 255, 0.0, 0.0),
@@ -719,6 +746,8 @@ pub struct Art {
     frost_rims: Vec<Pixels>,
     frost_crests: Vec<Pixels>,
     shadows: Vec<Pixels>,
+    /// Хитбоксы фигур (`hitbox`): какие пиксели холста ловят курсор.
+    hitboxes: Vec<Vec<bool>>,
     boards: [Pixels; 2],
     markers: Vec<Pixels>,
     font: Vec<Pixels>,
@@ -743,6 +772,11 @@ impl Art {
             frost_rims: bodies.iter().map(|body| frost_edge(body, false)).collect(),
             frost_crests: bodies.iter().map(|body| frost_edge(body, true)).collect(),
             shadows: SHADOWS.iter().map(|png| Pixels::decode(png)).collect(),
+            hitboxes: bodies
+                .iter()
+                .enumerate()
+                .map(|(i, body)| hitbox(body, i % 6 == Kind::King as usize))
+                .collect(),
             boards: [board_image(&tiles, false), board_image(&tiles, true)],
             markers: Marker::ALL.iter().map(|m| m.image()).collect(),
             font: FONT.iter().map(|&c| glyph(c, 0xffffff, 0xb4b4b4)).collect(),
@@ -849,6 +883,14 @@ impl Art {
         self.bodies[index(color, kind)].alpha(at.x as usize, at.y as usize) > 0
     }
 
+    /// Ловит ли фигура курсор в точке `at` своего холста (в пикселях арта) — по хитбоксу.
+    pub fn hits(&self, color: Color, kind: Kind, at: Vec2) -> bool {
+        if at.x < 0.0 || at.y < 0.0 || at.x >= SPRITE.x || at.y >= SPRITE.y {
+            return false;
+        }
+        self.hitboxes[index(color, kind)][at.y as usize * SPRITE.x as usize + at.x as usize]
+    }
+
     /// Часть стрелки прицеливания, повёрнутая на `degrees` (кратно 5) по часовой стрелке.
     pub fn arrow(
         &self,
@@ -952,6 +994,33 @@ mod tests {
             let (x, y) = (CURSOR_HOTSPOT.x as usize, CURSOR_HOTSPOT.y as usize);
             assert_eq!(image.alpha(x, y), 255);
             assert_eq!(image.alpha(image.width - 1, 0), 0);
+        }
+    }
+
+    #[test]
+    fn hitboxes_are_inside_the_sprites_and_the_king_is_cut() {
+        for (i, png) in BODIES.iter().enumerate() {
+            let body = Pixels::decode(png);
+            let king = i % 6 == Kind::King as usize;
+            let hit = hitbox(&body, king);
+            let at = |x: usize, y: usize| y * body.width + x;
+            let (inside, all) = (0..body.height)
+                .flat_map(|y| (0..body.width).map(move |x| (x, y)))
+                .fold((0, 0), |(inside, all), (x, y)| {
+                    let solid = body.alpha(x, y) > 0;
+                    assert!(!hit[at(x, y)] || solid, "хитбокс — внутри силуэта");
+                    (
+                        inside + usize::from(hit[at(x, y)]),
+                        all + usize::from(solid),
+                    )
+                });
+            assert!(inside > all / 3 && inside < all, "{i}: {inside} из {all}");
+            // Основание фигуры ловит курсор.
+            assert!(hit[at(ANCHOR.x as usize, ANCHOR.y as usize)], "{i}");
+            if king {
+                let top = (0..body.height).find(|&y| (0..body.width).any(|x| hit[at(x, y)]));
+                assert!(top >= Some(KING_HIT_TOP), "клетка позади короля свободна");
+            }
         }
     }
 

@@ -14,6 +14,10 @@ use crate::game::{Color, Kind};
 
 /// Кнопка «Конец хода» без тени; тень лежит в картинке справа и снизу.
 pub const BUTTON: Vec2 = vec2(53.0, 35.0);
+/// Монета из арт-проекта (`tools/breach_coin.py`): большая — счётчик золота rogue-like,
+/// маленькая — цены в магазине.
+pub const COIN: Vec2 = vec2(32.0, 32.0);
+pub const COIN_SMALL: Vec2 = vec2(16.0, 16.0);
 /// Кадр огненной волны и центр верхней грани клетки фигуры в нём.
 pub const WAVE_FRAME: Vec2 = vec2(184.0, 168.0);
 pub const WAVE_CENTER: Vec2 = vec2(92.0, 98.0);
@@ -90,15 +94,28 @@ pub const ELECTRIC_FIGURE: Vec2 = vec2(120.0, 120.0);
 pub const ELECTRIC_ANCHOR: Vec2 = vec2(60.0, 92.0);
 pub const ELECTRIC_FLASH: usize = 5;
 pub const ELECTRIC_LOOP: [usize; 2] = [8, 24];
+/// Вихрь воздушной фигуры (`tools/breach_wind.py`, с 0.67): кадр 120×120 с той же точкой
+/// опоры, что у электричества, 60 мс; вступление [0, 8), повтор [8, 40).
+pub const WIND_FRAMES: usize = 40;
+pub const WIND_LOOP: [usize; 2] = [8, 40];
 
-/// Состояния кнопки в порядке `Button`.
-const BUTTONS: [&[u8]; 5] = breach!(
+/// Состояния кнопки в порядке `Button`: «Конец хода», потом «Начать раунд» (rogue-like,
+/// расстановка перед уровнем, с 0.59).
+const BUTTONS: [&[u8]; 10] = breach!(
     "ui/end_turn_normal.png",
     "ui/end_turn_hover.png",
     "ui/end_turn_pressed.png",
     "ui/end_turn_disabled.png",
     "ui/end_turn_ready.png",
+    "ui/start_round_normal.png",
+    "ui/start_round_hover.png",
+    "ui/start_round_pressed.png",
+    "ui/start_round_disabled.png",
+    "ui/start_round_ready.png",
 );
+const BUTTON_STATES: usize = 5;
+/// Монеты: большая и маленькая.
+const COINS: [&[u8]; 2] = breach!("ui/coin_32.png", "ui/coin_16.png");
 /// Звенья s, m, l и наконечник — по состояниям `Aim` (idle, enemy, ally).
 const ARROW: [&[u8]; 12] = breach!(
     "ui/arrow_seg_s_idle.png",
@@ -167,11 +184,52 @@ const FREEZE_BLOCKS: [&[u8]; 24] = breach!(
     "effects/freeze_block_K_2.png",
     "effects/freeze_block_K_3.png",
 );
-/// Лава в пешке и электричество в слоне — белых и чёрных.
-const LAVA_PNG: [&[u8]; 2] = breach!("effects/lava_crack_wP.png", "effects/lava_crack_bP.png");
-const ELECTRIC_PNG: [&[u8]; 2] = breach!(
+/// Лава в фигурах (с 0.63 — всех видов, из арт-проекта: огненные фигуры rogue-like) в
+/// порядке `super::index`, электричество в слоне — белых и чёрных.
+const LAVA_PNG: [&[u8]; 12] = breach!(
+    "effects/lava_crack_wP.png",
+    "effects/lava_crack_wN.png",
+    "effects/lava_crack_wB.png",
+    "effects/lava_crack_wR.png",
+    "effects/lava_crack_wQ.png",
+    "effects/lava_crack_wK.png",
+    "effects/lava_crack_bP.png",
+    "effects/lava_crack_bN.png",
+    "effects/lava_crack_bB.png",
+    "effects/lava_crack_bR.png",
+    "effects/lava_crack_bQ.png",
+    "effects/lava_crack_bK.png",
+);
+/// Электричество — с 0.64 у всех видов (из арт-проекта: электрические фигуры rogue-like), с
+/// 0.66 — последняя версия `electric_hold_*` без кольца по земле во вспышке (просьба
+/// пользователя; спокойный `electric_calm_*` из 0.65 не подошёл), в порядке `super::index`.
+const WIND_PNG: [&[u8]; 12] = breach!(
+    "effects/wind_wP.png",
+    "effects/wind_wN.png",
+    "effects/wind_wB.png",
+    "effects/wind_wR.png",
+    "effects/wind_wQ.png",
+    "effects/wind_wK.png",
+    "effects/wind_bP.png",
+    "effects/wind_bN.png",
+    "effects/wind_bB.png",
+    "effects/wind_bR.png",
+    "effects/wind_bQ.png",
+    "effects/wind_bK.png",
+);
+const ELECTRIC_PNG: [&[u8]; 12] = breach!(
+    "effects/electric_hold_wP.png",
+    "effects/electric_hold_wN.png",
     "effects/electric_hold_wB.png",
-    "effects/electric_hold_bB.png"
+    "effects/electric_hold_wR.png",
+    "effects/electric_hold_wQ.png",
+    "effects/electric_hold_wK.png",
+    "effects/electric_hold_bP.png",
+    "effects/electric_hold_bN.png",
+    "effects/electric_hold_bB.png",
+    "effects/electric_hold_bR.png",
+    "effects/electric_hold_bQ.png",
+    "effects/electric_hold_bK.png",
 );
 /// Контур звеньев по состояниям — им обводится повёрнутое звено.
 const ARROW_OUTLINE: [[u8; 3]; 3] = [[0x0d, 0x0f, 0x17], [0x1a, 0x05, 0x05], [0x06, 0x14, 0x1c]];
@@ -206,6 +264,7 @@ pub enum ArrowPart {
 
 pub struct UiArt {
     buttons: Vec<Pixels>,
+    coins: Vec<Pixels>,
     arrow: Vec<Pixels>,
     targets: Vec<Pixels>,
     /// Кадры волны: [слой][кадр].
@@ -222,6 +281,7 @@ pub struct UiArt {
     /// Лава в пешке и электричество в слоне по сторонам.
     lava: Vec<Strip>,
     electric: Vec<Strip>,
+    wind: Vec<Strip>,
 }
 
 /// Кадры из полос `strips`, где кадр `size` и их `count` в ряд.
@@ -326,6 +386,7 @@ impl UiArt {
         let decode = |pngs: &[&[u8]]| pngs.iter().map(|png| Pixels::decode(png)).collect();
         UiArt {
             buttons: decode(&BUTTONS),
+            coins: decode(&COINS),
             arrow: decode(&ARROW),
             targets: decode(&TARGETS),
             wave: frames(&WAVE, WAVE_FRAME, WAVE_FRAMES),
@@ -344,6 +405,10 @@ impl UiArt {
             lava: LAVA_PNG
                 .iter()
                 .map(|png| Strip::new(png, super::SPRITE, LAVA_FRAMES))
+                .collect(),
+            wind: WIND_PNG
+                .iter()
+                .map(|png| Strip::new(png, ELECTRIC_FIGURE, WIND_FRAMES))
                 .collect(),
             electric: ELECTRIC_PNG
                 .iter()
@@ -366,6 +431,7 @@ impl UiArt {
         UiTextures {
             k,
             buttons: all("end-turn", &self.buttons),
+            coins: all("coin", &self.coins),
             targets: all("target", &self.targets),
             wave: all("fire-wave", &self.wave),
             portal: all("portal", &self.portal),
@@ -389,6 +455,12 @@ impl UiArt {
                 .iter()
                 .enumerate()
                 .map(|(i, strip)| strip.textures(ctx, &format!("lava-{i}"), k))
+                .collect(),
+            wind: self
+                .wind
+                .iter()
+                .enumerate()
+                .map(|(i, strip)| strip.textures(ctx, &format!("wind-{i}"), k))
                 .collect(),
             electric: self
                 .electric
@@ -431,6 +503,7 @@ impl UiArt {
 pub struct UiTextures {
     k: usize,
     buttons: Vec<TextureHandle>,
+    coins: Vec<TextureHandle>,
     targets: Vec<TextureHandle>,
     wave: Vec<TextureHandle>,
     portal: Vec<TextureHandle>,
@@ -441,13 +514,20 @@ pub struct UiTextures {
     freeze_blocks: Vec<StripTextures>,
     lava: Vec<StripTextures>,
     electric: Vec<StripTextures>,
+    wind: Vec<StripTextures>,
     turned: RefCell<HashMap<(usize, i32), Sprite>>,
 }
 
 impl UiTextures {
-    /// Кнопка в состоянии `button`; у нажатой картинка меньше — тень короче.
-    pub fn button(&self, button: Button) -> &TextureHandle {
-        &self.buttons[button as usize]
+    /// Кнопка в состоянии `button`; у нажатой картинка меньше — тень короче. `start` — надпись
+    /// «Начать раунд» вместо «Конец хода».
+    pub fn button(&self, button: Button, start: bool) -> &TextureHandle {
+        &self.buttons[usize::from(start) * BUTTON_STATES + button as usize]
+    }
+
+    /// Монета: большая (`COIN`) или маленькая (`COIN_SMALL`).
+    pub fn coin(&self, big: bool) -> &TextureHandle {
+        &self.coins[usize::from(!big)]
     }
 
     pub fn target(&self, aim: Aim) -> &TextureHandle {
@@ -491,14 +571,19 @@ impl UiTextures {
         self.freeze_blocks[kind as usize * 4 + variant % 4].frame(frame)
     }
 
-    /// Пешка стороны `color` с лавой в кадре `frame` — на холсте фигуры.
-    pub fn lava(&self, color: Color, frame: usize) -> Option<&FrameSprite> {
-        self.lava[color as usize].frame(frame)
+    /// Фигура `kind` стороны `color` с лавой в кадре `frame` — на холсте фигуры.
+    pub fn lava(&self, color: Color, kind: Kind, frame: usize) -> Option<&FrameSprite> {
+        self.lava[super::index(color, kind)].frame(frame)
     }
 
     /// Слон стороны `color` с электричеством в кадре `frame` — вокруг `ELECTRIC_ANCHOR`.
-    pub fn electric(&self, color: Color, frame: usize) -> Option<&FrameSprite> {
-        self.electric[color as usize].frame(frame)
+    pub fn electric(&self, color: Color, kind: Kind, frame: usize) -> Option<&FrameSprite> {
+        self.electric[super::index(color, kind)].frame(frame)
+    }
+
+    /// Воздушная фигура `kind` стороны `color` в вихре, кадр `frame` — вокруг `ELECTRIC_ANCHOR`.
+    pub fn wind(&self, color: Color, kind: Kind, frame: usize) -> Option<&FrameSprite> {
+        self.wind[super::index(color, kind)].frame(frame)
     }
 }
 
@@ -511,12 +596,18 @@ mod tests {
         let art = UiArt::new();
         for (button, image) in art.buttons.iter().enumerate() {
             // Тень кнопки — 2×3 пикселя, у нажатой — 1×1.
-            let shadow = if button == Button::Pressed as usize {
+            let shadow = if button % BUTTON_STATES == Button::Pressed as usize {
                 vec2(1.0, 1.0)
             } else {
                 vec2(2.0, 3.0)
             };
             let size = BUTTON + shadow;
+            assert_eq!(
+                [image.width, image.height],
+                [size.x as usize, size.y as usize]
+            );
+        }
+        for (image, size) in art.coins.iter().zip([COIN, COIN_SMALL]) {
             assert_eq!(
                 [image.width, image.height],
                 [size.x as usize, size.y as usize]

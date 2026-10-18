@@ -221,7 +221,10 @@ fn killed_pieces_go_to_the_killers_reserve_and_drop_after_two_turns() {
     pos.set_hp(sq("c3"), 300);
     pos.make_move(find(&pos, "e1", "f1"));
     pos.end_turn();
-    assert_eq!(pos.reserve(Color::White), [(Kind::Pawn, 0, 1)]);
+    assert_eq!(
+        pos.reserve(Color::White),
+        [(Stock::new(Kind::Pawn, Power::Plain), 0, 1)]
+    );
     let drops = |pos: &Position| pos.legal_moves().into_iter().filter(Move::is_drop).count();
     pos.make_move(find(&pos, "e8", "d8"));
     pos.end_turn();
@@ -230,7 +233,10 @@ fn killed_pieces_go_to_the_killers_reserve_and_drop_after_two_turns() {
     pos.end_turn();
     pos.make_move(find(&pos, "d8", "e8"));
     pos.end_turn();
-    assert_eq!(pos.reserve(Color::White), [(Kind::Pawn, 1, 0)]);
+    assert_eq!(
+        pos.reserve(Color::White),
+        [(Stock::new(Kind::Pawn, Power::Plain), 1, 0)]
+    );
     let moves = pos.legal_moves();
     let targets: Vec<Square> = moves.iter().filter(|m| m.is_drop()).map(|m| m.to).collect();
     assert!(
@@ -335,7 +341,10 @@ fn a_knight_intercepts_a_piece_moving_into_its_reach() {
     let outcome = pos.make_move(find(&pos, "c1", "c3"));
     assert!(outcome.reactions[0].hit.killed);
     assert!(pos.piece(sq("c3")).is_none());
-    assert_eq!(pos.reserve(Color::Black), [(Kind::Rook, 0, 1)]);
+    assert_eq!(
+        pos.reserve(Color::Black),
+        [(Stock::new(Kind::Rook, Power::Plain), 0, 1)]
+    );
     // Замёрзший конь не перехватывает; невидимого коня соперника — тоже нет (свой ход).
     let mut pos = position("4k3/8/8/3n4/8/8/8/2R1K3 w - - 0 1");
     pos.set_frozen(sq("d5"), 1);
@@ -2572,11 +2581,12 @@ fn rogue_like_player_moves_four_different_pieces() {
 }
 
 #[test]
-fn rogue_like_has_no_reserve_for_kills_and_a_wave_comes_every_turn() {
+fn rogue_like_has_no_reserve_for_kills_and_runs_ten_levels() {
     let mut game = Game::from_position(Position::rogue_start(11));
-    let waves = game.position().rogue().unwrap().waves;
-    for wave in 1..=waves {
-        assert_eq!(game.position().rogue().unwrap().wave, wave);
+    let start = game.position().rogue().unwrap();
+    assert_eq!((start.level, start.levels, start.waves), (1, 10, 10));
+    let mut level_ups = 0;
+    for _ in 0..1000 {
         // Волны убиты (без «шведки» — запас не растёт).
         let reserve = game.position.reserve;
         for (sq, kind) in army(&game.position, Color::Black) {
@@ -2586,32 +2596,699 @@ fn rogue_like_has_no_reserve_for_kills_and_a_wave_comes_every_turn() {
         }
         assert_eq!(game.position.reserve, reserve, "шведки нет");
         game.refresh();
-        if wave == waves {
+        let r = game.position().rogue().unwrap();
+        if game.is_over() {
             assert_eq!(
                 game.status(),
                 Status::Victory {
                     winner: Color::White
-                },
-                "все волны отбиты"
+                }
             );
+            assert_eq!(
+                (r.level, r.wave),
+                (r.levels, r.waves),
+                "все уровни пройдены"
+            );
+            assert_eq!(level_ups, 9);
             return;
         }
-        assert_eq!(game.status(), Status::Ongoing, "волны ещё идут");
+        // Игрок ходит и кончает ход: волны уровня кончились — расстановка (ход остаётся у
+        // игрока), «Начать раунд» — новый уровень, на волну длиннее, его первая волна выходит
+        // сразу, и снова ходит игрок.
         game.play(game.legal_moves()[0]).unwrap();
         if game.position().side() == Color::White {
             assert!(game.end_turn());
         }
-        // Соперник сам не ходит; в конце его хода выходит следующая волна — на крайнюю
-        // горизонталь.
+        let turn = game.history().last().unwrap().turn_end().unwrap().clone();
+        if r.wave == r.waves {
+            assert_eq!(turn.planning, Some(r.level + 1));
+            assert!(game.position().planning());
+            assert_eq!(game.position().side(), Color::White);
+            assert!(
+                game.history()
+                    .last()
+                    .unwrap()
+                    .description()
+                    .contains("Расстановка")
+            );
+            assert!(game.position().shop_open() && !game.can_end_turn());
+            assert!(game.leave_shop());
+            assert!(game.end_turn(), "«Начать раунд»");
+            let start = game.history().last().unwrap().turn_end().unwrap().clone();
+            let after = game.position().rogue().unwrap();
+            assert_eq!(start.level_up, Some(r.level + 1));
+            assert_eq!(
+                (after.level, after.wave, after.waves, after.planning),
+                (r.level + 1, 1, r.waves + 1, false)
+            );
+            assert!((2..=4).contains(&start.spawned.len()));
+            assert_eq!(game.position().side(), Color::White);
+            level_ups += 1;
+            continue;
+        }
+        assert_eq!(turn.planning, None);
+        assert!(turn.spawned.is_empty());
+        // Соперник сам не ходит; в конце его хода выходит волна — на крайнюю горизонталь.
         assert!(game.legal_moves().is_empty());
         assert!(game.end_turn());
-        let record = game.history().last().unwrap();
-        let spawned = &record.turn_end().unwrap().spawned;
+        let spawned = &game.history().last().unwrap().turn_end().unwrap().spawned;
         assert!((2..=4).contains(&spawned.len()));
         assert!(spawned.iter().all(|&(sq, _)| rank_of(sq) == 7));
-        assert!(record.description().contains("Вышла волна"));
     }
-    unreachable!("победа после последней волны");
+    unreachable!("победа после последнего уровня");
+}
+
+/// Rogue-like: все волны уровня вышли и отбиты (чужих фигур нет) — следующий конец хода
+/// игрока начнёт расстановку.
+fn clear_level(game: &mut Game) {
+    let mut r = game.position.rogue.unwrap();
+    r.wave = r.waves;
+    game.position.rogue = Some(r);
+    for (sq, _) in army(&game.position, Color::Black) {
+        game.position.board[sq as usize] = None;
+    }
+    game.refresh();
+}
+
+#[test]
+fn rogue_like_planning_restores_the_army_and_lets_it_be_rearranged() {
+    let mut game = Game::from_position(Position::rogue_start(7));
+    clear_level(&mut game);
+    // За уровень: конь g1–f3, пешка e2–e4, конь из запаса на c3; пешка h2 погибла, ладья a1
+    // ранена.
+    game.play(find(game.position(), "g1", "f3")).unwrap();
+    game.play(find(game.position(), "e2", "e4")).unwrap();
+    let drop = *game
+        .legal_moves()
+        .iter()
+        .find(|m| m.kind == MoveKind::Drop(Kind::Knight) && m.to == sq("c3"))
+        .unwrap();
+    game.play(drop).unwrap();
+    game.position.board[sq("h2") as usize] = None;
+    game.position.board[sq("a1") as usize].as_mut().unwrap().hp = 100;
+    let knights = |pos: &Position| pos.reserve[Color::White as usize][Kind::Knight as usize][0];
+    assert_eq!(knights(game.position()).iter().sum::<u8>(), 0);
+    assert!(game.end_turn());
+
+    // Расстановка: фигуры — на местах начала уровня, здоровы; конь из запаса — снова в
+    // запасе; погибшая пешка не вернулась. Ходит по-прежнему игрок.
+    let turn = game.history().last().unwrap().turn_end().unwrap().clone();
+    assert_eq!(turn.planning, Some(2));
+    // Сначала магазин: доска ждёт, пока из него не уйдут.
+    assert!(game.position().shop_open());
+    assert!(game.legal_moves().is_empty() && !game.can_end_turn());
+    assert!(game.leave_shop());
+    let mut returned = turn.returned.clone();
+    returned.sort_unstable();
+    assert_eq!(returned, [(sq("f3"), sq("g1")), (sq("e4"), sq("e2"))]);
+    let pos = game.position();
+    assert!(pos.planning());
+    assert_eq!(pos.side(), Color::White);
+    assert_eq!(pos.piece(sq("g1")).unwrap().kind, Kind::Knight);
+    assert_eq!(pos.piece(sq("e2")).unwrap().kind, Kind::Pawn);
+    for name in ["f3", "e4", "c3", "h2"] {
+        assert!(pos.piece(sq(name)).is_none(), "{name}");
+    }
+    let rook = pos.piece(sq("a1")).unwrap();
+    assert_eq!(rook.hp, rook.max_hp(), "вылечилась");
+    assert_eq!(knights(pos).iter().sum::<u8>(), 1, "конь вернулся в запас");
+    assert!(game.can_end_turn());
+
+    // Пешка — только на вторую горизонталь, остальные — на две первые; обмен — если обе
+    // фигуры встают на новые клетки.
+    let can = |from: &str, to: &str| has_move(game.position(), from, to);
+    assert!(can("e2", "h2") && !can("e2", "e3"));
+    assert!(can("g1", "h2") && !can("g1", "d3"));
+    assert!(can("g1", "f1"), "конь и слон меняются местами");
+    assert!(!can("g1", "e2"), "пешка не встаёт на первую горизонталь");
+    let drops = |kind: Kind, to: &str| {
+        game.legal_moves()
+            .iter()
+            .any(|m| m.kind == MoveKind::Drop(kind) && m.to == sq(to))
+    };
+    assert!(drops(Kind::Pawn, "h2") && !drops(Kind::Pawn, "h3"));
+    assert!(drops(Kind::Knight, "h2") && !drops(Kind::Knight, "d3"));
+
+    // Обмен, ход на пустую клетку и выставление ходов не тратят.
+    let swap = game.play(find(game.position(), "g1", "f1")).unwrap();
+    assert_eq!(swap.rook, Some((sq("f1"), sq("g1"))));
+    let drop = *game
+        .legal_moves()
+        .iter()
+        .find(|m| m.kind == MoveKind::Drop(Kind::Pawn) && m.to == sq("h2"))
+        .unwrap();
+    game.play(drop).unwrap();
+    for _ in 0..4 {
+        game.play(find(game.position(), "f1", "g1")).unwrap();
+        game.play(find(game.position(), "g1", "f1")).unwrap();
+    }
+    let pos = game.position();
+    assert!(pos.planning() && pos.moves_left() == pos.moves_per_turn());
+    assert_eq!(pos.piece(sq("g1")).unwrap().kind, Kind::Bishop);
+    assert_eq!(pos.piece(sq("f1")).unwrap().kind, Kind::Knight);
+    assert!(
+        game.history()
+            .last()
+            .unwrap()
+            .description()
+            .starts_with("Расстановка")
+    );
+    // Отмена — по одному действию.
+    assert!(game.undo());
+    assert_eq!(game.position().piece(sq("g1")).unwrap().kind, Kind::Knight);
+    game.play(find(game.position(), "g1", "f1")).unwrap();
+
+    // «Начать раунд»: уровень 2, первая волна, ходит игрок.
+    assert!(game.end_turn());
+    let start = game.history().last().unwrap().turn_end().unwrap().clone();
+    assert_eq!(start.level_up, Some(2));
+    assert!((2..=4).contains(&start.spawned.len()));
+    let pos = game.position();
+    let r = pos.rogue().unwrap();
+    assert_eq!((r.level, r.wave, r.planning), (2, 1, false));
+    assert_eq!(pos.side(), Color::White);
+    assert!(!game.can_end_turn(), "новый уровень — обычный ход");
+
+    // Следующая расстановка возвращает на места начала второго уровня.
+    clear_level(&mut game);
+    game.play(find(game.position(), "f1", "e3")).unwrap();
+    assert!(game.end_turn());
+    assert!(game.leave_shop());
+    let pos = game.position();
+    assert!(pos.planning());
+    assert_eq!(pos.piece(sq("f1")).unwrap().kind, Kind::Knight);
+    assert_eq!(pos.piece(sq("g1")).unwrap().kind, Kind::Bishop);
+    assert_eq!(pos.piece(sq("h2")).unwrap().kind, Kind::Pawn);
+}
+
+#[test]
+fn rogue_like_gives_gold_for_defeated_pieces() {
+    // Пешка e2 бьёт по диагонали: чёрная пешка d3 с 1 HP погибает — 1 золото.
+    let mut game = Game::from_position(Position::rogue_start(7));
+    for (sq, _) in army(&game.position, Color::Black) {
+        game.position.board[sq as usize] = None;
+    }
+    game.position.board[sq("d3") as usize] = Some(Piece {
+        hp: 1,
+        ..Piece::new(Kind::Pawn, Color::Black)
+    });
+    game.refresh();
+    game.play(find(game.position(), "g1", "h3")).unwrap();
+    assert!(game.end_turn());
+    let record = game.history().last().unwrap();
+    let turn = record.turn_end().unwrap();
+    assert_eq!(turn.gold, 1);
+    assert!(record.description().contains("Золото: +1 (всего 1)"));
+    assert_eq!(game.position().rogue().unwrap().gold, 1);
+    // Цены — как в балансе: пешка 1, конь и слон 2, ладья 3, ферзь 4.
+    let mut pos = Position::rogue_start(7);
+    for kind in [
+        Kind::Pawn,
+        Kind::Knight,
+        Kind::Bishop,
+        Kind::Rook,
+        Kind::Queen,
+    ] {
+        pos.score_kill(Piece::new(kind, Color::Black), Color::White);
+    }
+    assert_eq!(pos.rogue().unwrap().gold, 1 + 2 + 2 + 3 + 4);
+    // Свои потери золота не дают.
+    pos.score_kill(Piece::new(Kind::Queen, Color::White), Color::Black);
+    assert_eq!(pos.rogue().unwrap().gold, 12);
+}
+
+#[test]
+fn rogue_like_shop_sells_pieces_into_the_reserve() {
+    let mut game = Game::from_position(Position::rogue_start(7));
+    let wave: u16 = army(&game.position, Color::Black)
+        .iter()
+        .map(|&(_, kind)| rogue_price(kind))
+        .sum();
+    // «Выиграть раунд»: волны побеждены, за фигуры на доске — золото; открылся магазин.
+    assert!(game.position().can_win_round());
+    assert!(game.win_round());
+    let pos = game.position();
+    assert_eq!(pos.rogue().unwrap().gold, wave);
+    assert!(pos.shop_open() && pos.planning());
+    assert_eq!(pos.side(), Color::White);
+    let offers = pos.offers();
+    assert_eq!(offers.len(), 3);
+    assert!(
+        offers
+            .iter()
+            .all(|o| o.is_some_and(|s| s.kind != Kind::King))
+    );
+
+    game.position.rogue.as_mut().unwrap().gold = 10;
+    let stock = offers[0].unwrap();
+    let kind = stock.kind;
+    let price = shop_price(stock);
+    let fire = if stock.power == Power::Plain { 1 } else { 2 };
+    assert_eq!(
+        price,
+        2 * fire * rogue_price(kind),
+        "в магазине — вдвое дороже"
+    );
+    let ready = |game: &Game| {
+        game.position()
+            .reserve(Color::White)
+            .iter()
+            .find(|s| s.0 == stock)
+            .map_or(0, |s| s.1)
+    };
+    let before = ready(&game);
+    assert!(game.buy(0));
+    assert_eq!(game.position().rogue().unwrap().gold, 10 - price);
+    assert_eq!(ready(&game), before + 1, "куплена — в запасе, готова");
+    assert_eq!(game.position().offers()[0], None);
+    assert!(!game.buy(0), "место пусто");
+    assert!(
+        game.history()
+            .last()
+            .unwrap()
+            .description()
+            .starts_with("Магазин:")
+    );
+    // Отмена возвращает и золото, и фигуру на прилавок.
+    assert!(game.undo());
+    assert_eq!(game.position().rogue().unwrap().gold, 10);
+    assert_eq!(game.position().offers()[0], Some(stock));
+    assert!(game.buy(0));
+
+    // Обновить — за 2 золота, прилавок снова полон; без золота — нельзя ни купить, ни
+    // обновить.
+    let gold = game.position().rogue().unwrap().gold;
+    assert!(game.reroll());
+    assert_eq!(game.position().rogue().unwrap().gold, gold - 2);
+    assert!(game.position().offers().iter().all(Option::is_some));
+    game.position.rogue.as_mut().unwrap().gold = 0;
+    assert!(!game.reroll());
+    assert!(!(0..3).any(|i| game.buy(i)));
+
+    // «Уйти» — расстановка: купленную фигуру можно выставить.
+    assert!(game.leave_shop());
+    assert!(!game.position().shop_open() && game.position().planning());
+    // Две первые горизонтали заняты целиком — выставлять некуда; освободилась h2 — можно.
+    let drop_h2 = |game: &Game| {
+        game.legal_moves()
+            .iter()
+            .any(|m| m.kind == stock.drop_kind() && m.to == sq("h2"))
+    };
+    assert!(!game.legal_moves().iter().any(Move::is_drop));
+    game.position.board[sq("h2") as usize] = None;
+    game.refresh();
+    assert!(drop_h2(&game));
+    assert!(game.can_end_turn());
+}
+
+#[test]
+fn rogue_like_shop_is_weighted_like_the_first_waves() {
+    let mut pos = Position::rogue_start(3);
+    pos.rogue.as_mut().unwrap().shop = true;
+    let mut count = std::collections::HashMap::new();
+    let mut all: f64 = 0.0;
+    for _ in 0..1500 {
+        pos.roll_offers();
+        for stock in pos.offers().into_iter().flatten() {
+            *count.entry(stock).or_insert(0.0f64) += 1.0;
+            all += 1.0;
+        }
+    }
+    let share = |kind: Kind, power: Power| {
+        count.get(&Stock::new(kind, power)).copied().unwrap_or(0.0) / all
+    };
+    // Веса волн первого уровня: пешка 15, конь и слон 5, ладья 3, ферзь 1 (из 29); огненная и
+    // электрическая — каждая в 6 раз реже обычной того же вида.
+    let pawn = share(Kind::Pawn, Power::Plain);
+    assert!((pawn - 15.0 / 29.0 * 6.0 / 9.0).abs() < 0.04, "{pawn}");
+    assert!(share(Kind::Queen, Power::Plain) < share(Kind::Rook, Power::Plain));
+    assert!(share(Kind::Rook, Power::Plain) < share(Kind::Knight, Power::Plain));
+    for power in [Power::Fire, Power::Spark, Power::Wind] {
+        let all: f64 = [
+            Kind::Pawn,
+            Kind::Knight,
+            Kind::Bishop,
+            Kind::Rook,
+            Kind::Queen,
+        ]
+        .into_iter()
+        .map(|k| share(k, power))
+        .sum();
+        assert!((all - 1.0 / 9.0).abs() < 0.03, "{power:?} {all}");
+        assert!(share(Kind::Pawn, power) > share(Kind::Queen, power));
+    }
+}
+
+#[test]
+fn rogue_like_fire_pieces_explode_every_turn() {
+    let mut game = Game::from_position(Position::rogue_start(7));
+    for (sq, _) in army(&game.position, Color::Black) {
+        game.position.board[sq as usize] = None;
+    }
+    // Огненный конь d3, рядом — чёрная ладья e4 (конь её ударом не достаёт).
+    game.position.board[sq("d3") as usize] = Some(Piece {
+        fire: true,
+        ..Piece::new(Kind::Knight, Color::White)
+    });
+    game.position.board[sq("e4") as usize] = Some(Piece::new(Kind::Rook, Color::Black));
+    let full = Kind::Rook.stats().max_hp;
+    let lava = balance().rule(Rule::LavaDamage);
+    // Огненный слон из магазина — в запасе, выставляется отдельно от обычных.
+    game.position.fire_reserve[Color::White as usize][Kind::Bishop as usize] = 1;
+    game.refresh();
+    let fire_drop = *game
+        .legal_moves()
+        .iter()
+        .find(|m| m.kind == MoveKind::FireDrop(Kind::Bishop) && m.to == sq("a3"))
+        .unwrap();
+    game.play(fire_drop).unwrap();
+    assert!(game.position().piece(sq("a3")).unwrap().fire);
+    assert_eq!(
+        game.position().fire_reserve(Color::White)[Kind::Bishop as usize],
+        0
+    );
+    assert!(game.end_turn());
+    let turn = game.history().last().unwrap().turn_end().unwrap().clone();
+    assert_eq!(
+        turn.blasts.len(),
+        1,
+        "только что выставленный не взрывается"
+    );
+    assert_eq!(turn.blasts[0].center, sq("d3"));
+    assert_eq!(hp(game.position(), "e4"), full - lava);
+    assert!(
+        game.history()
+            .last()
+            .unwrap()
+            .description()
+            .contains("Конь d3 взорвался лавой")
+    );
+    // Огонь не уходит: на следующем ходу — снова взрыв (и у слона тоже).
+    assert!(game.position().piece(sq("d3")).unwrap().fire);
+    assert!(game.end_turn());
+    game.play(find(game.position(), "b1", "c3")).unwrap();
+    assert!(game.end_turn());
+    let turn = game.history().last().unwrap().turn_end().unwrap().clone();
+    let centers: Vec<Square> = turn.blasts.iter().map(|b| b.center).collect();
+    assert!(centers.contains(&sq("d3")) && centers.contains(&sq("a3")));
+}
+
+#[test]
+fn rogue_like_fire_pieces_are_sold_and_kept_through_planning() {
+    let mut game = Game::from_position(Position::rogue_start(7));
+    assert!(game.win_round());
+    let r = game.position.rogue.as_mut().unwrap();
+    r.gold = 20;
+    r.offers[0] = Some(Stock::new(Kind::Knight, Power::Fire));
+    // Огненный конь: 2 золота за коня × 2 (магазин) × 2 (огонь) = 8.
+    assert_eq!(shop_price(Stock::new(Kind::Knight, Power::Fire)), 8);
+    assert!(game.buy(0));
+    assert_eq!(game.position().rogue().unwrap().gold, 12);
+    assert_eq!(
+        game.position().fire_reserve(Color::White)[Kind::Knight as usize],
+        1
+    );
+    assert!(
+        game.history()
+            .last()
+            .unwrap()
+            .description()
+            .contains("огненный конь")
+    );
+    assert!(game.leave_shop());
+    // Расставили: огненный конь — вместо обычного g1 (обычный ушёл с доски: место занято).
+    game.position.board[sq("g1") as usize] = None;
+    game.refresh();
+    let drop = *game
+        .legal_moves()
+        .iter()
+        .find(|m| m.kind == MoveKind::FireDrop(Kind::Knight) && m.to == sq("g1"))
+        .unwrap();
+    game.play(drop).unwrap();
+    assert!(game.end_turn(), "«Начать раунд»");
+    // Уровень пройден снова — огненный конь вернулся на g1 огненным.
+    assert!(game.win_round());
+    assert!(game.leave_shop());
+    let knight = game.position().piece(sq("g1")).unwrap();
+    assert!(knight.fire && knight.kind == Kind::Knight);
+}
+
+#[test]
+fn rogue_like_spark_pieces_shock_around_the_target() {
+    let mut game = Game::from_position(Position::rogue_start(7));
+    for (sq, _) in army(&game.position, Color::Black) {
+        game.position.board[sq as usize] = None;
+    }
+    // Электрический конь из магазина — в запасе, выставляется отдельно от обычных.
+    game.position.spark_reserve[Color::White as usize][Kind::Knight as usize] = 1;
+    // Электрический конь c3 бьёт ладью d5, молния — по диагонали от неё: c6 и e6 задеты, d6 —
+    // нет.
+    game.position.board[sq("c3") as usize] = Some(Piece {
+        spark: true,
+        ..Piece::new(Kind::Knight, Color::White)
+    });
+    for name in ["d5", "c6", "e6", "d6"] {
+        game.position.board[sq(name) as usize] = Some(Piece::new(Kind::Rook, Color::Black));
+    }
+    game.refresh();
+    let drop = *game
+        .legal_moves()
+        .iter()
+        .find(|m| m.kind == MoveKind::SparkDrop(Kind::Knight) && m.to == sq("a3"))
+        .unwrap();
+    game.play(drop).unwrap();
+    let knight = game.position().piece(sq("a3")).unwrap();
+    assert!(knight.spark && !knight.fire);
+    assert_eq!(
+        game.position().spark_reserve(Color::White)[Kind::Knight as usize],
+        0
+    );
+    assert_eq!(knight.title(), "Белый электрический конь");
+    assert!(game.end_turn());
+    let turn = game.history().last().unwrap().turn_end().unwrap().clone();
+    let strike = turn
+        .strikes
+        .iter()
+        .find(|s| s.from == sq("c3") && s.hit.square == sq("d5"))
+        .expect("конь бьёт d5");
+    let shocked: Vec<Square> = strike.splash.iter().flatten().map(|h| h.square).collect();
+    assert!(shocked.contains(&sq("c6")) && shocked.contains(&sq("e6")));
+    assert!(!shocked.contains(&sq("d6")));
+    // Электрическая фигура продаётся и возвращается к расстановке электрической.
+    assert_eq!(shop_price(Stock::new(Kind::Knight, Power::Spark)), 8);
+}
+
+#[test]
+fn rogue_like_shop_buys_pieces_from_the_reserve() {
+    let mut game = Game::from_position(Position::rogue_start(7));
+    let knight = Stock::new(Kind::Knight, Power::Plain);
+    // До магазина продавать нельзя.
+    assert!(!game.sell(knight));
+    assert!(game.win_round());
+    game.position.rogue.as_mut().unwrap().gold = 0;
+    game.position.fire_reserve[Color::White as usize][Kind::Rook as usize] = 1;
+    let count = |game: &Game, stock: Stock| {
+        game.position()
+            .reserve(Color::White)
+            .iter()
+            .find(|s| s.0 == stock)
+            .map_or(0, |s| s.1)
+    };
+    // Конь из запаса — за цену в магазине (4), огненная ладья — 12.
+    assert_eq!(count(&game, knight), 1);
+    assert!(game.sell(knight));
+    assert_eq!(count(&game, knight), 0);
+    assert_eq!(game.position().rogue().unwrap().gold, 4);
+    assert!(!game.sell(knight), "в запасе коня больше нет");
+    let rook = Stock::new(Kind::Rook, Power::Fire);
+    assert!(game.sell(rook));
+    assert_eq!(game.position().rogue().unwrap().gold, 16);
+    assert!(
+        game.history()
+            .last()
+            .unwrap()
+            .description()
+            .contains("Продана огненная ладья из запаса за 12 монет")
+    );
+    // Отмена возвращает и фигуру, и золото.
+    assert!(game.undo());
+    assert_eq!(count(&game, rook), 1);
+    assert_eq!(game.position().rogue().unwrap().gold, 4);
+    // После магазина — нельзя.
+    assert!(game.leave_shop());
+    assert!(!game.sell(rook));
+}
+
+#[test]
+fn rogue_like_wind_pieces_move_twice_for_one_move() {
+    let mut game = Game::from_position(Position::rogue_start(7));
+    for (sq, _) in army(&game.position, Color::Black) {
+        game.position.board[sq as usize] = None;
+    }
+    game.position.board[sq("g1") as usize] = Some(Piece {
+        wind: true,
+        ..Piece::new(Kind::Knight, Color::White)
+    });
+    game.refresh();
+    let per_turn = game.position().moves_per_turn();
+    // Первый ход воздушного коня тратит ход, второй — нет; между ними ходят другие.
+    game.play(find(game.position(), "g1", "f3")).unwrap();
+    assert_eq!(game.position().moves_left(), per_turn - 1);
+    assert!(game.position().can_move(sq("f3")));
+    game.play(find(game.position(), "e2", "e4")).unwrap();
+    game.play(find(game.position(), "f3", "g5")).unwrap();
+    assert_eq!(game.position().moves_left(), per_turn - 2);
+    assert!(!game.position().can_move(sq("g5")), "третьего хода нет");
+    assert!(game.legal_moves().iter().all(|m| m.from != sq("g5")));
+    // Ещё два хода — все четыре потрачены (конь — один), ход кончился сам.
+    game.play(find(game.position(), "d2", "d4")).unwrap();
+    game.play(find(game.position(), "b1", "c3")).unwrap();
+    assert_eq!(game.position().side(), Color::Black);
+}
+
+#[test]
+fn rogue_like_wind_piece_gets_a_free_second_move_after_the_last_one() {
+    let mut game = Game::from_position(Position::rogue_start(7));
+    for (sq, _) in army(&game.position, Color::Black) {
+        game.position.board[sq as usize] = None;
+    }
+    game.position.wind_reserve[Color::White as usize][Kind::Knight as usize] = 1;
+    game.position.board[sq("g1") as usize] = None;
+    game.refresh();
+    let drop = *game
+        .legal_moves()
+        .iter()
+        .find(|m| m.kind == MoveKind::WindDrop(Kind::Knight) && m.to == sq("g1"))
+        .unwrap();
+    // Выставление — обычный ход: выставленный в этот ход больше не ходит.
+    game.play(drop).unwrap();
+    let knight = game.position().piece(sq("g1")).unwrap();
+    assert!(knight.wind);
+    assert_eq!(knight.title(), "Белый воздушный конь");
+    assert_eq!(
+        game.position().wind_reserve(Color::White)[Kind::Knight as usize],
+        0
+    );
+    assert!(game.end_turn());
+    assert!(game.end_turn());
+    // Три обычных хода, четвёртый — воздушный конь; его второй ход ещё есть, других — нет.
+    for (from, to) in [("e2", "e4"), ("d2", "d4"), ("b1", "c3"), ("g1", "f3")] {
+        game.play(find(game.position(), from, to)).unwrap();
+    }
+    assert_eq!(game.position().moves_left(), 0);
+    assert_eq!(game.position().side(), Color::White);
+    assert!(!game.legal_moves().is_empty());
+    assert!(game.legal_moves().iter().all(|m| m.from == sq("f3")));
+    game.play(find(game.position(), "f3", "g5")).unwrap();
+    // Ходить больше нечем — ход кончился сам.
+    assert_eq!(game.position().side(), Color::Black);
+}
+
+#[test]
+fn rogue_like_win_round_on_the_last_level_wins_the_game() {
+    let mut game = Game::from_position(Position::rogue_start(7));
+    let mut r = game.position.rogue.unwrap();
+    r.level = r.levels;
+    game.position.rogue = Some(r);
+    assert!(game.win_round());
+    assert_eq!(
+        game.status(),
+        Status::Victory {
+            winner: Color::White
+        }
+    );
+    assert!(!game.position().shop_open());
+}
+
+#[test]
+fn rogue_like_pawns_get_rarer_with_each_level() {
+    let pawn_share = |level: u8| {
+        let (mut pawns, mut all) = (0, 0);
+        for seed in 0..300 {
+            let mut pos = Position::rogue_start(seed);
+            let mut r = pos.rogue.unwrap();
+            r.level = level;
+            pos.rogue = Some(r);
+            for sq in 56..64u8 {
+                pos.board[sq as usize] = None;
+            }
+            for (_, kind) in pos.spawn_wave() {
+                all += 1;
+                pawns += usize::from(kind == Kind::Pawn);
+            }
+        }
+        pawns as f64 / all as f64
+    };
+    let (first, fifth, last) = (pawn_share(1), pawn_share(5), pawn_share(10));
+    assert!(first > fifth && fifth > last, "{first} {fifth} {last}");
+    assert!(first > 0.45, "на 1-м уровне вес пешки 15 из 29: {first}");
+    assert_eq!(last, 0.0, "с 9-го уровня пешек нет");
+}
+
+#[test]
+fn rogue_like_blocked_wave_comes_out_on_the_nearest_free_rank() {
+    let blocked = |ranks: std::ops::Range<i8>| {
+        let mut pos = Position::rogue_start(9);
+        for sq in 16..64u8 {
+            pos.board[sq as usize] = None;
+        }
+        for rank in ranks {
+            for file in 0..8 {
+                pos.board[square(file, rank).unwrap() as usize] =
+                    Some(Piece::new(Kind::Knight, Color::White));
+            }
+        }
+        pos
+    };
+    // Восьмая занята фигурами игрока — волна выходит на седьмую, занята и она — на шестую.
+    for (ranks, rank) in [(7..8, 6), (6..8, 5)] {
+        let mut pos = blocked(ranks);
+        let spawned = pos.spawn_wave();
+        assert!((2..=4).contains(&spawned.len()), "{spawned:?}");
+        assert!(
+            spawned.iter().all(|&(sq, _)| rank_of(sq) == rank),
+            "{spawned:?}"
+        );
+        assert_eq!(pos.rogue().unwrap().wave, 2);
+    }
+    // На восьмой одна свободная клетка — первая фигура встаёт туда, остальные — на седьмую.
+    let mut pos = blocked(7..8);
+    pos.board[sq("c8") as usize] = None;
+    let spawned = pos.spawn_wave();
+    assert!(spawned.iter().any(|&(at, _)| at == sq("c8")), "{spawned:?}");
+    assert!(
+        spawned
+            .iter()
+            .all(|&(at, _)| at == sq("c8") || rank_of(at) == 6),
+        "{spawned:?}"
+    );
+    // На первую горизонталь игрока волна не выходит: места нет — волна ждёт.
+    let mut pos = blocked(1..8);
+    assert!(pos.spawn_wave().is_empty());
+    assert_eq!(pos.rogue().unwrap().wave, 1);
+}
+
+#[test]
+fn rogue_like_knights_do_not_intercept() {
+    let mut pos = Position::rogue_start(5);
+    for sq in 16..64u8 {
+        pos.board[sq as usize] = None;
+    }
+    pos.board[sq("f6") as usize] = Some(Piece::new(Kind::Knight, Color::Black));
+    pos.board[sq("d4") as usize] = Some(Piece::new(Kind::Pawn, Color::Black));
+    // Конь f6 достаёт e4, но не бьёт; пешка d4 бьёт на проходе, как в обычной партии.
+    let outcome = pos.make_move(find(&pos, "e2", "e4"));
+    assert_eq!(outcome.reactions.len(), 1);
+    assert_eq!(outcome.reactions[0].from, sq("d4"));
+    let mut pos = Position::rogue_start(5);
+    for sq in 16..64u8 {
+        pos.board[sq as usize] = None;
+    }
+    pos.board[sq("f6") as usize] = Some(Piece::new(Kind::Knight, Color::Black));
+    assert!(pos.make_move(find(&pos, "e2", "e4")).reactions.is_empty());
+    assert!(pos.make_move(find(&pos, "g1", "h3")).reactions.is_empty());
+    let pawn = pos.piece(sq("e4")).unwrap();
+    assert_eq!(pawn.hp, pawn.max_hp(), "конь волны не перехватил");
 }
 
 #[test]
@@ -2653,7 +3330,35 @@ fn rogue_like_random_games_keep_the_rules() {
                 break;
             }
             let moves = game.legal_moves().to_vec();
-            if moves.is_empty() || game.position().moved() && next(3) == 0 {
+            let pos = game.position();
+            if pos.planning() {
+                // Расстановка: фигуры целы, на своей половине, пешки — на второй горизонтали.
+                for (sq, p) in pos.pieces().filter(|(_, p)| p.color == Color::White) {
+                    assert_eq!(p.hp, p.max_hp());
+                    if p.kind == Kind::Pawn {
+                        assert_eq!(rank_of(sq), 1);
+                    } else {
+                        assert!(rank_of(sq) < 2);
+                    }
+                }
+                assert!(pos.pieces().all(|(_, p)| p.color == Color::White));
+            }
+            if pos.shop_open() {
+                assert!(moves.is_empty() && !game.can_end_turn());
+                match next(4) {
+                    0 => {
+                        game.reroll();
+                    }
+                    1 => {
+                        game.leave_shop();
+                    }
+                    _ => {
+                        game.buy(next(3));
+                    }
+                }
+                continue;
+            }
+            if moves.is_empty() || (pos.moved() || pos.planning()) && next(3) == 0 {
                 assert!(game.end_turn());
                 continue;
             }

@@ -7,7 +7,8 @@ pressed (фаска наоборот, надпись ниже на пиксел�
 (янтарная кромка — ходить больше нечем, пора закончить ход).
 
 `py tools/breach_ui.py [папка]` — по умолчанию assets/breach/ui: end_turn_<состояние>.png
-(1x, тень уже в картинке), preview_ui.png.
+(1x, тень уже в картинке), start_round_<состояние>.png (rogue-like: «Начать раунд», того же
+размера), preview_ui.png.
 """
 import os
 import sys
@@ -37,6 +38,11 @@ FONT = {
     "Х": ["##..##", "##..##", ".####.", "..##..", "..##..", ".####.", "##..##", "##..##"],
     "Ц": ["##..##.", "##..##.", "##..##.", "##..##.", "##..##.", "##..##.", "##..##.", "#######",
           ".....##"],
+    "Р": ["#####.", "##..##", "##..##", "##..##", "#####.", "##....", "##....", "##...."],
+    "Т": ["######", "..##..", "..##..", "..##..", "..##..", "..##..", "..##..", "..##.."],
+    "У": ["##..##", "##..##", "##..##", "##..##", ".#####", "....##", "...##.", "####.."],
+    "Ч": ["##..##", "##..##", "##..##", "##..##", ".#####", "....##", "....##", "....##"],
+    "Ь": ["##....", "##....", "##....", "#####.", "##..##", "##..##", "##..##", "#####."],
     " ": ["...", "...", "...", "...", "...", "...", "...", "..."],
 }
 LINE_STEP = 11  # от верха строки до верха следующей: 8 строк знака, выносной, зазор
@@ -85,15 +91,19 @@ STATES = {
     "ready": (["#1a0d02", "#8a4a08", "#e47a1b", "#ffbc03", "#ffeba1"], "#2a2418", ("#fff8ce", "#e0b860")),
 }
 LABEL = ["КОНЕЦ", "ХОДА"]
+# Rogue-like (с 0.59): та же кнопка кончает расстановку перед уровнем. Надпись шире, поля
+# меньше — размер кнопки тот же.
+START_LABEL = ["НАЧАТЬ", "РАУНД"]
 PAD_X, PAD_Y = 4, 2
 
 
-def end_turn(state="normal"):
-    """Кнопка «Конец хода» без тени."""
+def end_turn(state="normal", label=LABEL):
+    """Кнопка «Конец хода» (или «Начать раунд») без тени."""
     frame, fill, (light, shade) = STATES[state]
-    text = text_image(LABEL, light, shade)
+    text = text_image(label, light, shade)
     th, tw = text.shape[:2]
-    w, h = tw + 2 * PAD_X + 8, th + 2 * PAD_Y + 8
+    width = text_image(LABEL, light, shade).shape[1] + 2 * PAD_X + 8
+    w, h = width, th + 2 * PAD_Y + 8
     img = np.zeros((h, w, 4), np.uint8)
     d, side = bc.rings(w, h)
     bc.paint(img, d >= 4, fill)
@@ -102,7 +112,7 @@ def end_turn(state="normal"):
     # верхняя строка заливки чуть светлее — панель выпуклая, у нажатой — темнее
     yy = np.mgrid[0:h, 0:w][0]
     bc.paint(img, (d == 4) & (yy == 4), "#2c3242" if not pressed else "#11141f")
-    x0, y0 = 4 + PAD_X, 4 + PAD_Y + (1 if pressed else 0)
+    x0, y0 = (w - tw) // 2, 4 + PAD_Y + (1 if pressed else 0)
     m = text[..., 3] > 0
     region = img[y0 : y0 + th, x0 : x0 + tw]
     region[m[: region.shape[0]]] = text[: region.shape[0]][m[: region.shape[0]]]
@@ -118,12 +128,12 @@ def with_shadow(img, pressed=False):
     return out
 
 
-def button_png(state):
-    return with_shadow(end_turn(state), pressed=state == "pressed")
+def button_png(state, label=LABEL):
+    return with_shadow(end_turn(state, label), pressed=state == "pressed")
 
 
 def preview(scale=4):
-    pics = [button_png(s) for s in STATES]
+    pics = [button_png(s) for s in STATES] + [button_png(s, START_LABEL) for s in STATES]
     gap = 10
     w = sum(p.shape[1] for p in pics) + gap * (len(pics) + 1)
     h = max(p.shape[0] for p in pics) + 2 * gap
@@ -139,5 +149,8 @@ if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
     for state in STATES:
         Image.fromarray(button_png(state), "RGBA").save(os.path.join(OUT, f"end_turn_{state}.png"))
+        Image.fromarray(button_png(state, START_LABEL), "RGBA").save(
+            os.path.join(OUT, f"start_round_{state}.png")
+        )
     preview().save(os.path.join(OUT, "preview_ui.png"))
     print("done", OUT, end_turn().shape[1::-1])

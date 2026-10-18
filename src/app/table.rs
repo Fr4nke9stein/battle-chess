@@ -22,15 +22,18 @@ use super::{
 };
 use crate::assets::{
     ANCHOR, ARROW_HEAD, ARROW_SPACING, Aim, ArrowPart, BLESS_FRAME_TIME, BLESS_FRAMES,
-    BURN_CARD_AT, BURN_FRAME, BURN_FRAME_TIME, BURN_FRAMES, BUTTON, Button, CARD, COST_TINT,
-    CardPic, EMBLEM_ZOOM, FREEZE_CENTER, FREEZE_CLINK, FREEZE_DELAY, FREEZE_FRAME_TIME,
-    FREEZE_FRAMES, FrameSprite, GLYPH_HEIGHT, Glyph, POINTS_TINT, PORTAL_CENTER, PORTAL_FRAME,
+    BURN_CARD_AT, BURN_FRAME, BURN_FRAME_TIME, BURN_FRAMES, BUTTON, Button, CARD, COIN, COIN_SMALL,
+    COST_TINT, CardPic, ELECTRIC_ANCHOR, ELECTRIC_FRAME_TIME, ELECTRIC_LOOP, EMBLEM_ZOOM,
+    FREEZE_CENTER, FREEZE_CLINK, FREEZE_DELAY, FREEZE_FRAME_TIME, FREEZE_FRAMES, FrameSprite,
+    GLYPH_HEIGHT, Glyph, LAVA_FRAME_TIME, LAVA_HOLD, POINTS_TINT, PORTAL_CENTER, PORTAL_FRAME,
     PORTAL_FRAME_TIME, PORTAL_FRAMES, PORTAL_SCALE, PORTAL_SINK, SHADOW_SHIFT, SPRITE, Sprite,
-    TARGET_PAD, TILE, Textures, WAVE_CENTER, WAVE_FRAME, WAVE_FRAME_TIME, WAVE_FRAMES, cost_corner,
+    TARGET_PAD, TILE, Textures, WAVE_CENTER, WAVE_FRAME, WAVE_FRAME_TIME, WAVE_FRAMES, WIND_LOOP,
+    cost_corner,
 };
+use crate::balance::{Rule, balance};
 use crate::game::{
-    Area, CardKind, CardPlay, Color, Event, Family, Heal, Kind, MoveKind, Piece, Points, Square,
-    WaveHit, file_of, rank_of,
+    Area, CardKind, CardPlay, Color, Event, Family, Heal, Piece, Points, Power, Square, Stock,
+    WaveHit, file_of, rank_of, shop_price,
 };
 use crate::sound::Sound;
 use crate::theme;
@@ -361,6 +364,33 @@ const RESERVE_GROUND: f32 = 42.0;
 
 /// С 0.40 карты убраны из интерфейса: колоды, руки и очки не рисуются.
 const SHOW_CARDS: bool = false;
+
+/// Rogue-like (с 0.60): золото — монета справа снизу (левый верхний угол, пиксели арта),
+/// число — пиксельным шрифтом ×`POINTS_FONT` над ней, как очки у колоды.
+const GOLD_AT: Vec2 = vec2(484.0, 330.0);
+/// Магазин после уровня — панель посреди доски: место фигуры, промежуток, поля, высота
+/// заголовка и кнопок, пиксели арта.
+const SHOP_SLOT: Vec2 = vec2(50.0, 72.0);
+const SHOP_GAP: f32 = 8.0;
+const SHOP_PAD: f32 = 10.0;
+const SHOP_TITLE: f32 = 18.0;
+const SHOP_BUTTON: f32 = 22.0;
+/// Фигура на прилавке — в долю обычного размера; основание — так низко в ячейке.
+const SHOP_PIECE: f32 = 0.75;
+const SHOP_GROUND: f32 = 50.0;
+
+/// Что под курсором в магазине.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ShopSpot {
+    Offer(usize),
+    Reroll,
+    Leave,
+    /// Зона продажи слева от магазина: сюда перетаскивают фигуру из запаса.
+    Sell,
+}
+
+/// Зона продажи (слева от магазина, с 0.66) — шириной в место прилавка с полями.
+const SELL_WIDTH: f32 = 64.0;
 
 impl BattleChessApp {
     /// Чья рука на месте `seat`: своя сторона — та, что внизу доски.
@@ -1322,19 +1352,19 @@ impl BattleChessApp {
 
     /// Ячейки запаса стороны на месте `seat`: вид, сколько готово, сколько ждёт, место
     /// (пиксели арта).
-    fn reserve_slots(&self, seat: Seat) -> Vec<(Kind, u8, u8, Rect)> {
+    fn reserve_slots(&self, seat: Seat) -> Vec<(Stock, u8, u8, Rect)> {
         let reserve = self.game.position().reserve(self.seat_color(seat));
         reserve
             .into_iter()
             .enumerate()
-            .map(|(i, (kind, ready, waiting))| {
+            .map(|(i, (stock, ready, waiting))| {
                 let min = RESERVE_AT + vec2(i as f32 * (RESERVE_SLOT.x + RESERVE_GAP), 0.0);
                 let min = match seat {
                     Seat::Near => min,
                     Seat::Far => MID * 2.0 - min - RESERVE_SLOT,
                 };
                 (
-                    kind,
+                    stock,
                     ready,
                     waiting,
                     Rect::from_min_size(min.to_pos2(), RESERVE_SLOT),
@@ -1344,7 +1374,7 @@ impl BattleChessApp {
     }
 
     /// Ячейка запаса под курсором.
-    pub(super) fn reserve_under(&self, board: &BoardGeom, pointer: Pos2) -> Option<(Seat, Kind)> {
+    pub(super) fn reserve_under(&self, board: &BoardGeom, pointer: Pos2) -> Option<(Seat, Stock)> {
         let at = board.to_art(pointer).to_pos2();
         [Seat::Near, Seat::Far].into_iter().find_map(|seat| {
             self.reserve_slots(seat)
@@ -1354,8 +1384,8 @@ impl BattleChessApp {
         })
     }
 
-    /// Можно ли выставить фигуру `kind` из запаса на месте `seat` прямо сейчас.
-    pub(super) fn reserve_usable(&self, seat: Seat, kind: Kind) -> bool {
+    /// Можно ли выставить фигуру `stock` из запаса на месте `seat` прямо сейчас.
+    pub(super) fn reserve_usable(&self, seat: Seat, stock: Stock) -> bool {
         let pos = self.game.position();
         self.human_to_move()
             && self.seat_color(seat) == pos.side()
@@ -1363,7 +1393,57 @@ impl BattleChessApp {
             && pos
                 .legal_moves()
                 .iter()
-                .any(|m| m.kind == MoveKind::Drop(kind))
+                .any(|m| m.kind == stock.drop_kind())
+    }
+
+    /// Фигура запаса или прилавка в прямоугольнике спрайта `rect`: огненная — в огне
+    /// (кадры ожидания лавы), электрическая — в молниях; всё — внутри ячейки `clip`.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_stock(
+        &self,
+        painter: &Painter,
+        tex: &Textures,
+        color: Color,
+        stock: Stock,
+        rect: Rect,
+        clip: Rect,
+        tint: Color32,
+    ) {
+        let painter = &painter.with_clip_rect(clip.intersect(painter.clip_rect()));
+        let px = rect.width() / SPRITE.x;
+        match stock.power {
+            Power::Plain => {}
+            Power::Fire => {
+                let [from, to] = LAVA_HOLD;
+                let frame = from + (self.now / LAVA_FRAME_TIME) as usize % (to - from);
+                if let Some(sprite) = tex.ui.lava(color, stock.kind, frame) {
+                    let at = Rect::from_min_size(rect.min + sprite.at * px, sprite.size * px);
+                    painter.image(sprite.texture, at, UV, tint);
+                    return;
+                }
+            }
+            Power::Spark | Power::Wind => {
+                let [from, to] = if stock.power == Power::Wind {
+                    WIND_LOOP
+                } else {
+                    ELECTRIC_LOOP
+                };
+                let frame = from + (self.now / ELECTRIC_FRAME_TIME) as usize % (to - from);
+                let sprite = if stock.power == Power::Wind {
+                    tex.ui.wind(color, stock.kind, frame)
+                } else {
+                    tex.ui.electric(color, stock.kind, frame)
+                };
+                if let Some(sprite) = sprite {
+                    // Кадр электричества больше холста фигуры: совмещаются точки опоры.
+                    let origin = rect.min + (ANCHOR - ELECTRIC_ANCHOR) * px;
+                    let at = Rect::from_min_size(origin + sprite.at * px, sprite.size * px);
+                    painter.image(sprite.texture, at, UV, tint);
+                    return;
+                }
+            }
+        }
+        painter.image(tex.body(color, stock.kind), rect, UV, tint);
     }
 
     /// Запас обеих сторон: фигура, под ней — сколько готово (×N) и сколько ждёт (+N).
@@ -1371,14 +1451,14 @@ impl BattleChessApp {
         let s = board.scale;
         for seat in [Seat::Near, Seat::Far] {
             let color = self.seat_color(seat);
-            for (kind, ready, waiting, slot) in self.reserve_slots(seat) {
+            for (stock, ready, waiting, slot) in self.reserve_slots(seat) {
                 let rect = Rect::from_min_max(
                     board.art_to_screen(slot.min.to_vec2()),
                     board.art_to_screen(slot.max.to_vec2()),
                 );
-                let usable = self.reserve_usable(seat, kind);
-                let picked = usable && self.drop_pick == Some(kind);
-                let hovered = usable && self.reserve_hover == Some((seat, kind));
+                let usable = self.reserve_usable(seat, stock) || self.reserve_sellable(seat, stock);
+                let picked = usable && self.drop_pick == Some(stock);
+                let hovered = usable && self.reserve_hover == Some((seat, stock));
                 let shadow = rect.translate(vec2(2.0, 3.0) * s);
                 painter.rect_filled(shadow, CornerRadius::ZERO, Color32::from_black_alpha(77));
                 painter.rect_filled(
@@ -1418,7 +1498,7 @@ impl BattleChessApp {
                 } else {
                     Color32::from_white_alpha(110)
                 };
-                painter.image(tex.body(color, kind), sprite, UV, tint);
+                self.paint_stock(painter, tex, color, stock, sprite, inner, tint);
                 let mut label = String::new();
                 if ready > 0 {
                     label += &format!("×{ready}");
@@ -1445,6 +1525,328 @@ impl BattleChessApp {
         }
     }
 
+    // ----- Rogue-like: золото и магазин -----
+
+    /// Панель магазина и места на ней (пиксели арта).
+    fn shop_layout(&self) -> (Rect, Vec<(ShopSpot, Rect)>) {
+        let n = self.game.position().offers().len().max(1) as f32;
+        let width = n * SHOP_SLOT.x + (n - 1.0) * SHOP_GAP + 2.0 * SHOP_PAD;
+        let height = SHOP_PAD + SHOP_TITLE + SHOP_SLOT.y + SHOP_GAP + SHOP_BUTTON + SHOP_PAD;
+        let panel = Rect::from_center_size(MID.to_pos2(), vec2(width, height));
+        let mut spots = Vec::new();
+        let top = panel.min.y + SHOP_PAD + SHOP_TITLE;
+        for i in 0..n as usize {
+            let x = panel.min.x + SHOP_PAD + i as f32 * (SHOP_SLOT.x + SHOP_GAP);
+            spots.push((
+                ShopSpot::Offer(i),
+                Rect::from_min_size(Pos2::new(x, top), SHOP_SLOT),
+            ));
+        }
+        let y = top + SHOP_SLOT.y + SHOP_GAP;
+        let half = (width - 2.0 * SHOP_PAD - SHOP_GAP) / 2.0;
+        let left = panel.min.x + SHOP_PAD;
+        spots.push((
+            ShopSpot::Reroll,
+            Rect::from_min_size(Pos2::new(left, y), vec2(half, SHOP_BUTTON)),
+        ));
+        spots.push((
+            ShopSpot::Leave,
+            Rect::from_min_size(
+                Pos2::new(left + half + SHOP_GAP, y),
+                vec2(half, SHOP_BUTTON),
+            ),
+        ));
+        spots.push((
+            ShopSpot::Sell,
+            Rect::from_min_size(
+                Pos2::new(panel.min.x - SHOP_GAP - SELL_WIDTH, panel.min.y),
+                vec2(SELL_WIDTH, height),
+            ),
+        ));
+        (panel, spots)
+    }
+
+    /// Место магазина под курсором.
+    pub(super) fn shop_under(&self, board: &BoardGeom, pointer: Pos2) -> Option<ShopSpot> {
+        let at = board.to_art(pointer).to_pos2();
+        self.shop_layout()
+            .1
+            .into_iter()
+            .find(|(_, rect)| rect.contains(at))
+            .map(|(spot, _)| spot)
+    }
+
+    /// Можно ли сейчас нажать это место магазина: на покупку и обновление хватает золота.
+    pub(super) fn shop_usable(&self, spot: ShopSpot) -> bool {
+        let pos = self.game.position();
+        let gold = pos.rogue().map_or(0, |r| r.gold);
+        match spot {
+            ShopSpot::Offer(i) => pos
+                .offers()
+                .get(i)
+                .copied()
+                .flatten()
+                .is_some_and(|kind| shop_price(kind) <= gold),
+            ShopSpot::Reroll => reroll_cost() <= gold,
+            ShopSpot::Leave => true,
+            ShopSpot::Sell => self.sell_drag.is_some(),
+        }
+    }
+
+    /// Rogue-like: фигуру `stock` из запаса на месте `seat` можно продать — открыт магазин,
+    /// запас свой и она готова.
+    pub(super) fn reserve_sellable(&self, seat: Seat, stock: Stock) -> bool {
+        let pos = self.game.position();
+        self.shop_ready()
+            && self.human_to_move()
+            && pos
+                .rogue()
+                .is_some_and(|r| r.player == self.seat_color(seat))
+            && pos
+                .reserve(self.seat_color(seat))
+                .iter()
+                .any(|&(s, ready, _)| s == stock && ready > 0)
+    }
+
+    /// Плашка в стиле ячеек запаса: тень, тёмный контур, заливка и кромка.
+    fn shop_plate(
+        &self,
+        painter: &Painter,
+        board: &BoardGeom,
+        rect: Rect,
+        lit: bool,
+        edge: Color32,
+    ) {
+        let s = board.scale;
+        let rect = Rect::from_min_max(
+            board.art_to_screen(rect.min.to_vec2()),
+            board.art_to_screen(rect.max.to_vec2()),
+        );
+        let shadow = rect.translate(vec2(2.0, 3.0) * s);
+        painter.rect_filled(shadow, CornerRadius::ZERO, Color32::from_black_alpha(77));
+        painter.rect_filled(
+            rect,
+            CornerRadius::ZERO,
+            Color32::from_rgb(0x0d, 0x0f, 0x17),
+        );
+        let inner = rect.shrink(s);
+        let fill = if lit {
+            Color32::from_rgb(0x2a, 0x35, 0x4d)
+        } else {
+            Color32::from_rgb(0x18, 0x1c, 0x29)
+        };
+        painter.rect_filled(inner, CornerRadius::ZERO, fill);
+        painter.rect_stroke(
+            inner,
+            CornerRadius::ZERO,
+            Stroke::new(s, edge),
+            StrokeKind::Inside,
+        );
+    }
+
+    /// Цена: маленькая монета и число пиксельным шрифтом, по центру точки `center` (арт).
+    fn paint_price(
+        &self,
+        painter: &Painter,
+        board: &BoardGeom,
+        tex: &Textures,
+        center: Vec2,
+        price: u16,
+        tint: Color32,
+    ) {
+        let text: Vec<(Glyph, Color32)> = Glyph::digits(price.into())
+            .into_iter()
+            .map(|g| (g, tint))
+            .collect();
+        let width = self.text_width(&text);
+        let gap = 3.0;
+        let left = center.x - (COIN_SMALL.x + gap + width) / 2.0;
+        let coin = Rect::from_min_size(
+            board.snap(board.art_to_screen(vec2(left, center.y - COIN_SMALL.y / 2.0))),
+            COIN_SMALL * board.scale,
+        );
+        painter.image(tex.ui.coin(false).id(), coin, UV, Color32::WHITE);
+        let corner = board.art_to_screen(vec2(
+            left + COIN_SMALL.x + gap,
+            center.y - GLYPH_HEIGHT / 2.0,
+        ));
+        self.pixel_text(painter, tex, corner, board.scale, &text);
+    }
+
+    /// Золото игрока справа снизу: большая монета, число над ней.
+    pub(super) fn paint_gold(&self, painter: &Painter, board: &BoardGeom, tex: &Textures) {
+        let Some(r) = self.game.position().rogue() else {
+            return;
+        };
+        let coin =
+            Rect::from_min_size(board.snap(board.art_to_screen(GOLD_AT)), COIN * board.scale);
+        painter.image(tex.ui.coin(true).id(), coin, UV, Color32::WHITE);
+        let text: Vec<(Glyph, Color32)> = Glyph::digits(r.gold.into())
+            .into_iter()
+            .map(|g| (g, theme::GOLD))
+            .collect();
+        let px = board.scale * POINTS_FONT;
+        let width = self.text_width(&text) * px;
+        let top = GOLD_AT.y - POINTS_RAISE - GLYPH_HEIGHT * POINTS_FONT;
+        let corner =
+            board.art_to_screen(vec2(GOLD_AT.x + COIN.x / 2.0, top)) - vec2(width / 2.0, 0.0);
+        self.pixel_text(painter, tex, corner, px, &text);
+    }
+
+    /// Магазин после уровня: фигуры на прилавке с ценами, «Обновить» и «Уйти».
+    fn paint_shop(&self, painter: &Painter, board: &BoardGeom, tex: &Textures) {
+        let pos = self.game.position();
+        if !self.shop_ready() {
+            return;
+        }
+        let s = board.scale;
+        let (panel, spots) = self.shop_layout();
+        self.shop_plate(
+            painter,
+            board,
+            panel,
+            false,
+            Color32::from_rgb(0x8a, 0x45, 0x10),
+        );
+        let title_at = board.art_to_screen(vec2(panel.center().x, panel.min.y + SHOP_PAD + 6.0));
+        painter.text(
+            title_at,
+            Align2::CENTER_CENTER,
+            "МАГАЗИН",
+            FontId::new(10.0 * s, theme::bold()),
+            theme::GOLD,
+        );
+        let offers = pos.offers();
+        let player = pos.rogue().map_or(Color::White, |r| r.player);
+        for (spot, rect) in spots {
+            let usable = self.shop_usable(spot);
+            let hovered = usable && self.shop_hover == Some(spot);
+            let edge = if hovered {
+                Color32::from_rgb(0xff, 0xe2, 0x7a)
+            } else if usable {
+                Color32::from_rgb(0xd0, 0x7d, 0x1c)
+            } else {
+                Color32::from_rgb(0x2a, 0x33, 0x45)
+            };
+            self.shop_plate(painter, board, rect, hovered, edge);
+            let center = rect.center().to_vec2();
+            match spot {
+                ShopSpot::Offer(i) => {
+                    let Some(kind) = offers.get(i).copied().flatten() else {
+                        painter.text(
+                            board.art_to_screen(center),
+                            Align2::CENTER_CENTER,
+                            "куплено",
+                            FontId::new(7.0 * s, theme::bold()),
+                            Color32::from_rgb(0x6c, 0x76, 0x8a),
+                        );
+                        continue;
+                    };
+                    let ground = board.art_to_screen(vec2(center.x, rect.min.y + SHOP_GROUND));
+                    let sprite = Rect::from_min_size(
+                        board.snap(ground - ANCHOR * s * SHOP_PIECE),
+                        SPRITE * s * SHOP_PIECE,
+                    );
+                    let tint = if usable {
+                        Color32::WHITE
+                    } else {
+                        Color32::from_white_alpha(110)
+                    };
+                    let cell = Rect::from_min_max(
+                        board.art_to_screen(rect.min.to_vec2()),
+                        board.art_to_screen(rect.max.to_vec2()),
+                    )
+                    .shrink(s);
+                    self.paint_stock(painter, tex, player, kind, sprite, cell, tint);
+                    let price_tint = if usable { theme::GOLD } else { theme::RED };
+                    self.paint_price(
+                        painter,
+                        board,
+                        tex,
+                        vec2(center.x, rect.max.y - 11.0),
+                        shop_price(kind),
+                        price_tint,
+                    );
+                }
+                ShopSpot::Reroll => {
+                    let label_at = board.art_to_screen(vec2(rect.min.x + 26.0, center.y));
+                    painter.text(
+                        label_at,
+                        Align2::CENTER_CENTER,
+                        "Обновить",
+                        FontId::new(8.0 * s, theme::bold()),
+                        if usable {
+                            theme::TEXT_BRIGHT
+                        } else {
+                            Color32::from_rgb(0x6c, 0x76, 0x8a)
+                        },
+                    );
+                    let tint = if usable { theme::GOLD } else { theme::RED };
+                    self.paint_price(
+                        painter,
+                        board,
+                        tex,
+                        vec2(rect.max.x - 17.0, center.y),
+                        reroll_cost(),
+                        tint,
+                    );
+                }
+                ShopSpot::Leave => {
+                    painter.text(
+                        board.art_to_screen(center),
+                        Align2::CENTER_CENTER,
+                        "Уйти",
+                        FontId::new(8.0 * s, theme::bold()),
+                        theme::TEXT_BRIGHT,
+                    );
+                }
+                ShopSpot::Sell => {
+                    painter.text(
+                        board.art_to_screen(vec2(center.x, rect.min.y + SHOP_PAD + 6.0)),
+                        Align2::CENTER_CENTER,
+                        "ПРОДАЖА",
+                        FontId::new(8.0 * s, theme::bold()),
+                        theme::GOLD,
+                    );
+                    match self.sell_drag {
+                        // Над зоной — за сколько продастся (внизу: середину закрывает фигура).
+                        Some((stock, _)) if hovered => self.paint_price(
+                            painter,
+                            board,
+                            tex,
+                            vec2(center.x, rect.max.y - 14.0),
+                            shop_price(stock),
+                            theme::GOLD,
+                        ),
+                        _ => {
+                            painter.text(
+                                board.art_to_screen(center),
+                                Align2::CENTER_CENTER,
+                                "перетащите\nфигуру\nиз запаса",
+                                FontId::new(6.0 * s, theme::bold()),
+                                Color32::from_rgb(0x8c, 0x96, 0xaa),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // Фигура, которую несут на продажу, — под курсором.
+        if let Some((stock, at)) = self.sell_drag {
+            let size = SPRITE * s * SHOP_PIECE;
+            let rect = Rect::from_min_size(board.snap(at - size / 2.0), size);
+            self.paint_stock(
+                painter,
+                tex,
+                player,
+                stock,
+                rect,
+                painter.clip_rect(),
+                Color32::WHITE,
+            );
+        }
+    }
+
     // ----- Кнопка «Конец хода» -----
 
     /// Курсор над кнопкой «Конец хода».
@@ -1458,7 +1860,7 @@ impl BattleChessApp {
     }
 
     fn button_look(&self) -> Button {
-        if !self.human_to_move() {
+        if !self.human_to_move() || self.game.position().shop_open() {
             Button::Disabled
         } else if !self.button_active() {
             Button::Normal
@@ -1494,8 +1896,19 @@ impl BattleChessApp {
             BUTTON + SHADOW_SHIFT
         };
         let rect = Rect::from_min_size(board.art_to_screen(BUTTON_AT), size * board.scale);
-        painter.image(tex.ui.button(look).id(), rect, UV, Color32::WHITE);
+        let start = pos.planning();
+        painter.image(tex.ui.button(look, start).id(), rect, UV, Color32::WHITE);
+        // Доска под магазином притушена; запас и золото — нет: видно, что куплено.
+        if self.shop_ready() {
+            painter.rect_filled(
+                board.area,
+                CornerRadius::ZERO,
+                Color32::from_black_alpha(110),
+            );
+        }
         self.paint_reserve(painter, board, tex);
+        self.paint_gold(painter, board, tex);
+        self.paint_shop(painter, board, tex);
 
         for seat in [Seat::Near, Seat::Far].into_iter().filter(|_| SHOW_CARDS) {
             let color = self.seat_color(seat);
@@ -2123,4 +2536,9 @@ mod tests {
         assert!(far.contains((MID * 2.0 - HAND_AT).to_pos2()));
         assert!(!far.contains(MID.to_pos2()));
     }
+}
+
+/// Rogue-like: сколько золота стоит обновить магазин.
+fn reroll_cost() -> u16 {
+    balance().rule(Rule::RogueRerollCost).clamp(0, 999) as u16
 }

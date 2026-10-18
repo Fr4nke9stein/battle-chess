@@ -45,9 +45,11 @@ def load(code):
     return np.array(Image.open(os.path.join(PIECES, f"{code}.png")).convert("RGBA"))
 
 
-def crack_times(sprite, rng):
+def crack_times(sprite, rng, tall=False):
     """Дерево трещин по телу фигуры: для каждого пикселя трещины — кадр, в котором до
-    него дошла трещина, и её колено (0 — ствол, 1+ — ветви)."""
+    него дошла трещина, и её колено (0 — ствол, 1+ — ветви). У фигур выше пешки (tall)
+    — второй очаг в верхней части тела: иначе стволы упираются в узкую шею и голова
+    остаётся целой."""
     alpha = sprite[..., 3] > 0
     inner = alpha & ~burn.boundary(alpha)
     inner &= ~burn.boundary(inner)  # трещина не доходит до контура на пиксель
@@ -87,6 +89,12 @@ def crack_times(sprite, rng):
     starts = [(-math.pi / 2, 1.0), (math.pi * 0.8, 0.8), (math.pi * 0.2, 0.8), (rng.choice([0.0, math.pi]), 0.5)]
     for ang, k in starts:
         grow(ox, oy, ang + rng.normal(0, 0.25), reach * k, 0, 0.0)
+    if tall:
+        ty = ys.min() + 0.3 * (ys.max() - ys.min())
+        cand = np.argmin(np.hypot(xs - xs.mean(), ys - ty))
+        tx, ty = xs[cand] + 0.5, ys[cand] + 0.5
+        for ang, k in ((-math.pi / 2, 0.45), (math.pi * 0.75, 0.5), (math.pi * 0.25, 0.5)):
+            grow(tx, ty, ang + rng.normal(0, 0.25), reach * k, 0, 2.0)
     # очаг: 2×2 пикселя, с которых всё начинается
     for dy in (0, 1):
         for dx in (-1, 0):
@@ -145,7 +153,8 @@ def paint_fire(img, fl):
 def render(code, seed):
     rng = np.random.default_rng(seed)
     sprite = load(code)
-    times, gens, inner = crack_times(sprite, rng)
+    tall = code[1] != "P"
+    times, gens, inner = crack_times(sprite, rng, tall)
     h, w = inner.shape
     alpha = sprite[..., 3] > 0
     shimmer = burn.value_noise(h, w, 3, rng)
@@ -158,6 +167,13 @@ def render(code, seed):
         if len(part):
             y, x = part[np.argmin(part[:, 0])]
             tongue_pts.append((x + 0.5, y + 1, k))
+    if tall:  # высокие горят по всей длине: язычки ещё на середине и ниже
+        y0, y1 = cpts[:, 0].min(), cpts[:, 0].max()
+        for lo, hi, k in ((0.35, 0.6, 0.75), (0.6, 0.85, 0.6)):
+            band = cpts[(cpts[:, 0] >= y0 + lo * (y1 - y0)) & (cpts[:, 0] < y0 + hi * (y1 - y0))]
+            if len(band):
+                y, x = band[rng.integers(len(band))]
+                tongue_pts.append((x + 0.5, y + 1, k))
     embers = burn.Particles()
     body = alpha & ~burn.boundary(alpha)
     frames = []
@@ -295,6 +311,37 @@ def save_preview(all_frames, out, scale=2):
         os.path.join(out, "preview_lava_crack_frames.png"))
 
 
+def save_all_preview(all_frames, out, scale=2):
+    """Все фигуры, кроме пешек, — каждая на своём куске доски: трещины, потом волна."""
+    under = np.array(Image.open(os.path.join(out, "fire_wave_under.png")).convert("RGBA"))
+    over = np.array(Image.open(os.path.join(out, "fire_wave_over.png")).convert("RGBA"))
+    crop = (60, 30, 240, 190)
+    rows = []
+    for color in "wb":
+        enemy = "b" if color == "w" else "w"
+        row = []
+        for k in "NBRQK":
+            code = color + k
+            pos = {(4, 3): code, (3, 4): enemy + "P", (5, 4): enemy + "P"}
+            row.append([im.crop(crop) for im in scene_frames(all_frames[code], code, (4, 3), pos, under, over)])
+        rows.append(row)
+    cw, ch = crop[2] - crop[0], crop[3] - crop[1]
+    frames = []
+    for n in range(len(rows[0][0])):
+        im = Image.new("RGB", (5 * cw + 4 * 4, 2 * ch + 4), (27, 30, 39))
+        for r, row in enumerate(rows):
+            for c, scene in enumerate(row):
+                im.paste(scene[n], (c * (cw + 4), r * (ch + 4)))
+        frames.append(im.resize((im.width * scale, im.height * scale), Image.NEAREST))
+    allpix = Image.new("RGB", (frames[0].width, frames[0].height * 6))
+    for i, k in enumerate((5, 15, 22, 25, 30, 35)):
+        allpix.paste(frames[k], (0, i * frames[0].height))
+    pal = allpix.quantize(colors=255, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
+    gif = [p.quantize(palette=pal, dither=Image.Dither.NONE) for p in frames]
+    gif[0].save(os.path.join(out, "preview_lava_crack_all.gif"), save_all=True, append_images=gif[1:],
+                duration=FRAME_MS, loop=0, disposal=1)
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     all_frames = {}
@@ -303,6 +350,7 @@ def main():
         all_frames[code] = frames
         Image.fromarray(np.concatenate(frames, axis=1), "RGBA").save(os.path.join(OUT, f"lava_crack_{code}.png"))
     save_preview(all_frames, OUT)
+    save_all_preview(all_frames, OUT)
     print("done", OUT)
 
 

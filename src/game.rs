@@ -219,6 +219,11 @@ pub struct Piece {
     pub spark: bool,
     /// Только что выставлена из запаса: в конце этого хода не бьёт.
     pub fresh: bool,
+    /// Огненная фигура (rogue-like, из магазина, с 0.63): как пешка с лавой у усиленного
+    /// компьютера взрывается в конце каждого своего хода, но огонь не уходит.
+    pub fire: bool,
+    /// Воздушная фигура (rogue-like, с 0.67): ходит дважды за один ход, тратя один.
+    pub wind: bool,
     /// Сколько раз фигура уже возвращалась из запаса (не больше `MAX_REBIRTHS`).
     pub reborn: u8,
 }
@@ -239,12 +244,25 @@ impl Piece {
             lava: false,
             spark: false,
             fresh: false,
+            fire: false,
+            wind: false,
             reborn: 0,
         }
     }
 
     pub fn is_frozen(self) -> bool {
         self.frozen > 0
+    }
+
+    /// Новая фигура (полное здоровье, без льда) с возвращениями и огнём фигуры `old`.
+    fn with(self, old: Piece) -> Piece {
+        Piece {
+            reborn: old.reborn,
+            fire: old.fire,
+            spark: old.spark,
+            wind: old.wind,
+            ..self
+        }
     }
 
     pub fn max_hp(self) -> i32 {
@@ -270,7 +288,8 @@ impl Piece {
             (Color::Black, false) => "Чёрный",
             (Color::Black, true) => "Чёрная",
         };
-        format!("{adjective} {}", self.kind.name())
+        let power = Stock::of(self).power.adjective(self.kind.is_feminine());
+        format!("{adjective} {power}{}", self.kind.name())
     }
 }
 
@@ -318,6 +337,98 @@ pub enum MoveKind {
     CastleLong,
     /// Выставление фигуры из запаса на пустую клетку своей половины (`from` = `to`).
     Drop(Kind),
+    /// Rogue-like (с 0.63): выставление огненной фигуры из запаса.
+    FireDrop(Kind),
+    /// Rogue-like (с 0.64): выставление электрической фигуры из запаса.
+    SparkDrop(Kind),
+    /// Rogue-like (с 0.67): выставление воздушной фигуры из запаса.
+    WindDrop(Kind),
+}
+
+/// Сила фигуры rogue-like из магазина: обычная, огненная (с 0.63: `Piece::fire`) или
+/// электрическая (с 0.64: `Piece::spark`, как слоны усиленного компьютера до 0.41).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Power {
+    Plain,
+    Fire,
+    Spark,
+    /// Воздушная (с 0.67, `Piece::wind`): ходит дважды за один ход.
+    Wind,
+}
+
+impl Power {
+    /// «огненный », «электрическая »; у обычной — пусто.
+    pub fn adjective(self, feminine: bool) -> &'static str {
+        match (self, feminine) {
+            (Power::Plain, _) => "",
+            (Power::Fire, false) => "огненный ",
+            (Power::Fire, true) => "огненная ",
+            (Power::Spark, false) => "электрический ",
+            (Power::Spark, true) => "электрическая ",
+            (Power::Wind, false) => "воздушный ",
+            (Power::Wind, true) => "воздушная ",
+        }
+    }
+}
+
+/// Фигура в запасе: вид и сила (rogue-like, с 0.63).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Stock {
+    pub kind: Kind,
+    pub power: Power,
+}
+
+impl Stock {
+    pub fn new(kind: Kind, power: Power) -> Stock {
+        Stock { kind, power }
+    }
+
+    /// Какой фигурой запаса станет `piece`.
+    pub fn of(piece: Piece) -> Stock {
+        let power = if piece.fire {
+            Power::Fire
+        } else if piece.spark {
+            Power::Spark
+        } else if piece.wind {
+            Power::Wind
+        } else {
+            Power::Plain
+        };
+        Stock::new(piece.kind, power)
+    }
+
+    /// Новая фигура этого вида и силы стороны `color`.
+    pub fn piece(self, color: Color) -> Piece {
+        Piece {
+            fire: self.power == Power::Fire,
+            spark: self.power == Power::Spark,
+            wind: self.power == Power::Wind,
+            ..Piece::new(self.kind, color)
+        }
+    }
+
+    /// Ход, которым её выставляют.
+    pub fn drop_kind(self) -> MoveKind {
+        match self.power {
+            Power::Plain => MoveKind::Drop(self.kind),
+            Power::Fire => MoveKind::FireDrop(self.kind),
+            Power::Spark => MoveKind::SparkDrop(self.kind),
+            Power::Wind => MoveKind::WindDrop(self.kind),
+        }
+    }
+}
+
+impl MoveKind {
+    /// Какую фигуру запаса выставляет этот ход.
+    pub fn stock(self) -> Option<Stock> {
+        match self {
+            MoveKind::Drop(kind) => Some(Stock::new(kind, Power::Plain)),
+            MoveKind::FireDrop(kind) => Some(Stock::new(kind, Power::Fire)),
+            MoveKind::SparkDrop(kind) => Some(Stock::new(kind, Power::Spark)),
+            MoveKind::WindDrop(kind) => Some(Stock::new(kind, Power::Wind)),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -331,7 +442,7 @@ pub struct Move {
 
 impl Move {
     pub fn is_drop(&self) -> bool {
-        matches!(self.kind, MoveKind::Drop(_))
+        self.kind.stock().is_some()
     }
 
     fn new(from: Square, to: Square, kind: MoveKind) -> Move {
@@ -407,8 +518,17 @@ pub struct TurnEnd {
     pub charged: Vec<Square>,
     /// Rogue-like: фигуры новой волны соперника, вышедшие к следующему ходу.
     pub spawned: Vec<(Square, Kind)>,
+    /// Rogue-like: после расстановки начался этот уровень (его первая волна уже вышла).
+    pub level_up: Option<u8>,
     /// Rogue-like: шаги фигур волн вперёд (откуда, куда) — до ударов.
     pub marched: Vec<(Square, Square)>,
+    /// Rogue-like (с 0.59): все волны уровня отбиты — расстановка перед этим уровнем.
+    pub planning: Option<u8>,
+    /// Rogue-like: фигуры игрока, вернувшиеся к расстановке на клетки начала уровня (откуда,
+    /// куда).
+    pub returned: Vec<(Square, Square)>,
+    /// Rogue-like (с 0.60): золото, полученное за побеждённые в конце этого хода фигуры.
+    pub gold: u16,
 }
 
 /// Rogue-like режим (с 0.50, просьба пользователя): у соперника нет своих фигур — они
@@ -420,11 +540,121 @@ pub struct TurnEnd {
 pub struct Rogue {
     /// Сторона игрока; волны — у соперника.
     pub player: Color,
-    /// Сколько волн уже вышло и сколько всего.
+    /// Сколько волн уже вышло и сколько всего на этом уровне.
     pub wave: u8,
     pub waves: u8,
+    /// Уровень (с 1) и сколько их всего (с 0.54): отбил все волны уровня — следующий, на
+    /// одну волну длиннее, пешек в волнах — реже.
+    pub level: u8,
+    pub levels: u8,
+    /// Расстановка перед следующим уровнем (с 0.59, просьба пользователя): фигуры игрока
+    /// вернулись на клетки начала уровня и вылечились; он двигает и меняет их местами,
+    /// выставляет запас, а кнопка «Начать раунд» начинает уровень.
+    pub planning: bool,
+    /// Откуда начинала уровень фигура игрока, стоящая на клетке (`NO_ORIGIN` — выставлена из
+    /// запаса посреди уровня); `relocate` переносит метку вместе с фигурой.
+    origin: [u8; 64],
+    /// Золото игрока (с 0.60, просьба пользователя): за каждую побеждённую фигуру волн —
+    /// `rogue_price` её вида.
+    pub gold: u16,
+    /// Открыт магазин (после уровня, до расстановки): на прилавке `offers`, «Уйти» закрывает.
+    pub shop: bool,
+    /// Фигуры на прилавке (`None` — куплена); их `Rule::RogueShopSlots`.
+    offers: [Option<Stock>; SHOP_MAX],
+    /// Сколько раз прилавок заполнялся — случайность магазина.
+    rolls: u16,
     /// Случайность волн этой партии.
     seed: u64,
+}
+
+/// Фигура игрока начала уровень в запасе.
+const NO_ORIGIN: u8 = 64;
+
+/// Наибольшее число мест на прилавке магазина (длина массива `Rogue::offers`).
+pub const SHOP_MAX: usize = 5;
+
+/// Что продаёт магазин (короля нет) и вес — тот же, что у фигур волн на первом уровне
+/// (`Rule::RogueWeight*`, с 0.63).
+fn shop_weights() -> [(Kind, u64); 5] {
+    let rule = |rule: Rule| balance().rule(rule).max(0) as u64;
+    [
+        (Kind::Pawn, rule(Rule::RogueWeightPawn)),
+        (Kind::Knight, rule(Rule::RogueWeightKnight)),
+        (Kind::Bishop, rule(Rule::RogueWeightBishop)),
+        (Kind::Rook, rule(Rule::RogueWeightRook)),
+        (Kind::Queen, rule(Rule::RogueWeightQueen)),
+    ]
+}
+
+/// Огненная и электрическая фигуры выходят на прилавок в столько раз реже обычной того же
+/// вида.
+const FIRE_RARITY: u64 = 6;
+
+/// Rogue-like: цена фигуры в магазине — `Rule::RogueShopPercent` (с 0.61 — 200%) от золота
+/// за её победу; огненная — ещё `Rule::RogueFirePercent` от этого, электрическая —
+/// `Rule::RogueSparkPercent`.
+pub fn shop_price(stock: Stock) -> u16 {
+    let percent = |rule: Rule| balance().rule(rule).clamp(0, 1000) as u32;
+    let mut price = u32::from(rogue_price(stock.kind)) * percent(Rule::RogueShopPercent) / 100;
+    match stock.power {
+        Power::Plain => {}
+        Power::Fire => price = price * percent(Rule::RogueFirePercent) / 100,
+        Power::Spark => price = price * percent(Rule::RogueSparkPercent) / 100,
+        Power::Wind => price = price * percent(Rule::RogueWindPercent) / 100,
+    }
+    price.min(u32::from(u16::MAX)) as u16
+}
+
+/// Rogue-like: столько золота дают за побеждённую фигуру вида `kind`.
+pub fn rogue_price(kind: Kind) -> u16 {
+    let rule = match kind {
+        Kind::Pawn => Rule::RogueGoldPawn,
+        Kind::Knight => Rule::RogueGoldKnight,
+        Kind::Bishop => Rule::RogueGoldBishop,
+        Kind::Rook => Rule::RogueGoldRook,
+        Kind::Queen => Rule::RogueGoldQueen,
+        Kind::King => return 0,
+    };
+    balance().rule(rule).clamp(0, 999) as u16
+}
+
+/// «1 монета», «2 монеты», «5 монет»; `accusative` — «за 1 монету».
+fn coins(n: u16, accusative: bool) -> String {
+    let word = match (n % 10, n % 100) {
+        (1, r) if r != 11 => {
+            if accusative {
+                "монету"
+            } else {
+                "монета"
+            }
+        }
+        (2..=4, r) if !(12..=14).contains(&r) => "монеты",
+        _ => "монет",
+    };
+    format!("{n} {word}")
+}
+
+/// Действие rogue-like вне доски.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RogueAction {
+    /// Кнопка «Выиграть раунд»: фигуры волн на доске побеждены разом (за них — золото), волн
+    /// уровня больше нет.
+    WinRound { gold: u16 },
+    /// Покупка фигуры в магазине — в запас.
+    Buy { stock: Stock, price: u16 },
+    /// Новые фигуры на прилавке.
+    Reroll { price: u16 },
+    /// Продажа фигуры из запаса (с 0.65) — за её цену в магазине.
+    Sell { stock: Stock, price: u16 },
+    /// «Уйти» из магазина — к расстановке.
+    Leave,
+}
+
+impl Rogue {
+    /// Волн на уровне `level`: на первом — `Rule::RogueWaves`, дальше — на одну больше каждый.
+    fn waves_at(level: u8) -> u8 {
+        (balance().rule(Rule::RogueWaves) + i32::from(level) - 1).clamp(1, 255) as u8
+    }
 }
 
 impl TurnEnd {
@@ -434,6 +664,8 @@ impl TurnEnd {
             && self.blasts.iter().all(|b| b.hits.is_empty())
             && self.spawned.is_empty()
             && self.marched.is_empty()
+            && self.level_up.is_none()
+            && self.planning.is_none()
     }
 }
 
@@ -617,6 +849,12 @@ pub struct Position {
     /// Запас убитых фигур соперника («шведка», с 0.43): [сторона][`Kind`][ходов ждать 0..=2]
     /// [сколько раз уже возвращалась: 0..`MAX_REBIRTHS`] — сколько таких фигур.
     reserve: [[[[u8; MAX_REBIRTHS as usize]; 3]; 6]; 2],
+    /// Огненные фигуры в запасе (rogue-like, с 0.63): [сторона][`Kind`], всегда готовы.
+    fire_reserve: [[u8; 6]; 2],
+    /// Электрические фигуры в запасе (с 0.64): [сторона][`Kind`], всегда готовы.
+    spark_reserve: [[u8; 6]; 2],
+    /// Воздушные фигуры в запасе (с 0.67): [сторона][`Kind`], всегда готовы.
+    wind_reserve: [[u8; 6]; 2],
     /// Король стороны погиб — она проиграла (с 0.44).
     king_lost: [bool; 2],
     /// Партия «с перемещением при взятии» (с 0.46): ближники встают на клетку убитой.
@@ -627,6 +865,9 @@ pub struct Position {
     /// (в rogue-like игрок ходит несколько раз — каждый раз другой фигурой).
     moves_made: u8,
     used: u64,
+    /// Воздушные фигуры, сходившие в этом ходу один раз (rogue-like, с 0.67): второй ход —
+    /// бесплатный, даже если ходы кончились.
+    airborne: u64,
 }
 
 /// Сколько начал своих ходов ждать, прежде чем выставить взятую фигуру.
@@ -1330,11 +1571,15 @@ impl Position {
             boosted: None,
 
             reserve: [[[[0; MAX_REBIRTHS as usize]; 3]; 6]; 2],
+            fire_reserve: [[0; 6]; 2],
+            spark_reserve: [[0; 6]; 2],
+            wind_reserve: [[0; 6]; 2],
             king_lost: [false; 2],
             advance: false,
             rogue: None,
             moves_made: 0,
             used: 0,
+            airborne: 0,
         };
         position.deal();
         Ok(position)
@@ -1412,6 +1657,13 @@ impl Position {
     /// соперник — очки победы, сколько стоит фигура (`Kind::points`); своя фигура, убитая
     /// своей волной, очков победы не даёт.
     fn score_kill(&mut self, victim: Piece, killer: Color) {
+        // Rogue-like: за побеждённую фигуру волны игроку — золото.
+        if let Some(r) = &mut self.rogue
+            && killer == r.player
+            && victim.color != r.player
+        {
+            r.gold = r.gold.saturating_add(rogue_price(victim.kind));
+        }
         let n = victim.kind.points();
         self.give_sacrifice(victim.color, n);
         if killer != victim.color {
@@ -1509,6 +1761,12 @@ impl Position {
         self.used & 1 << sq != 0
     }
 
+    /// Фигура на `sq` может ещё сходить в этом ходу: не ходила, и ходы остались — или она
+    /// воздушная и сходила только раз.
+    pub fn can_move(&self, sq: Square) -> bool {
+        !self.used(sq) && (self.moves_left() > 0 || self.airborne & 1 << sq != 0)
+    }
+
     /// Rogue-like: волны соперника; `None` — обычная партия.
     pub fn rogue(&self) -> Option<Rogue> {
         self.rogue
@@ -1518,7 +1776,9 @@ impl Position {
     /// проигрывает, только когда вышли все волны и фигур не осталось.
     pub fn defeated(&self, color: Color) -> bool {
         match self.rogue {
-            Some(r) if r.player != color => r.wave >= r.waves && !self.has_pieces(color),
+            Some(r) if r.player != color => {
+                r.level >= r.levels && r.wave >= r.waves && !self.has_pieces(color)
+            }
             _ => !self.has_pieces(color) || self.king_lost(color) || self.breached(),
         }
     }
@@ -1550,7 +1810,15 @@ impl Position {
         pos.rogue = Some(Rogue {
             player,
             wave: 0,
-            waves: balance().rule(Rule::RogueWaves).clamp(1, 255) as u8,
+            waves: Rogue::waves_at(1),
+            level: 1,
+            levels: balance().rule(Rule::RogueLevels).clamp(1, 255) as u8,
+            planning: false,
+            origin: pos.origins(player),
+            gold: 0,
+            shop: false,
+            offers: [None; SHOP_MAX],
+            rolls: 0,
             seed: seed | 1,
         });
         pos.spawn_wave();
@@ -1559,8 +1827,9 @@ impl Position {
 
     /// Следующая волна соперника выходит на его крайнюю горизонталь: от `Rule::RogueWaveMin`
     /// до `Rule::RogueWaveMax` фигур (сколько поместится на свободные клетки), вид — по весам
-    /// `Rule::RogueWeight*` (дорогие — реже). Не поместилась ни одна — волна ждёт следующего
-    /// хода и не считается. Случайность — от зерна партии и ключа позиции: при отмене и в
+    /// `Rule::RogueWeight*` (дорогие — реже). Крайняя горизонталь занята — фигура выходит на
+    /// ближайшую со свободной клеткой (с 0.55), до второй горизонтали игрока. Не поместилась
+    /// ни одна — волна ждёт следующего хода и не считается. Случайность — от зерна партии и ключа позиции: при отмене и в
     /// переборе волна та же.
     fn spawn_wave(&mut self) -> Vec<(Square, Kind)> {
         let Some(mut r) = self.rogue.filter(|r| r.wave < r.waves) else {
@@ -1580,7 +1849,12 @@ impl Position {
         let max = rule(Rule::RogueWaveMax).max(min);
         let count = min + next(max - min + 1);
         let weights = [
-            (Kind::Pawn, rule(Rule::RogueWeightPawn)),
+            // С каждым уровнем пешки выходят реже.
+            (
+                Kind::Pawn,
+                rule(Rule::RogueWeightPawn)
+                    .saturating_sub(rule(Rule::RoguePawnDrop) * u64::from(r.level - 1)),
+            ),
             (Kind::Knight, rule(Rule::RogueWeightKnight)),
             (Kind::Bishop, rule(Rule::RogueWeightBishop)),
             (Kind::Rook, rule(Rule::RogueWeightRook)),
@@ -1589,6 +1863,7 @@ impl Position {
         let total: u64 = weights.iter().map(|w| w.1).sum();
         let wall = self.wall(enemy);
         let back = enemy.home_rank();
+        let ranks: Vec<i8> = (0..7).map(|k| back + k * enemy.forward()).collect();
         let mut spawned = Vec::new();
         for _ in 0..count {
             let kind = if total == 0 {
@@ -1604,13 +1879,17 @@ impl Position {
                     })
                     .map_or(Kind::Pawn, |&(kind, _)| kind)
             };
-            let free: Vec<Square> = (0..8)
-                .filter_map(|file| square(file, back))
-                .filter(|&sq| self.open(sq, wall))
-                .collect();
-            if free.is_empty() {
+            // Крайняя занята (фигуры игрока не дают выйти) — на ближайшую горизонталь со
+            // свободной клеткой: вторую с края, третью и так далее, но не на первую игрока.
+            let Some(free) = ranks.iter().find_map(|&rank| {
+                let free: Vec<Square> = (0..8)
+                    .filter_map(|file| square(file, rank))
+                    .filter(|&sq| self.open(sq, wall))
+                    .collect();
+                (!free.is_empty()).then_some(free)
+            }) else {
                 break;
-            }
+            };
             let sq = free[next(free.len() as u64) as usize];
             self.board[sq as usize] = Some(Piece::new(kind, enemy));
             spawned.push((sq, kind));
@@ -2233,17 +2512,31 @@ impl Position {
     /// соперник — его ледяные зоны тают (продержались ход), и начинает он с карты из колоды;
     /// у усиленной стороны к ходу соперника насыщаются лавой новые пешки.
     pub fn end_turn(&mut self) -> TurnEnd {
+        // Rogue-like: кнопка «Начать раунд» кончает расстановку.
+        if self.planning() {
+            return self.start_round();
+        }
         let us = self.side;
+        let gold_before = self.rogue.map_or(0, |r| r.gold);
         let strikes = self.strike_all();
         let blasts = self.lava_blasts();
+        let gold = self.rogue.map_or(0, |r| r.gold) - gold_before;
         // Rogue-like: фигуры волн сами не ходят — в конце хода сначала бьют, потом шагают
         // вперёд; новая волна выходит после шага и в этот ход не бьёт.
         let marched = self.march();
         // Rogue-like: в конце хода соперника на его крайнюю горизонталь выходит новая волна.
-        let spawned = if self.rogue.is_some_and(|r| r.player != us) {
-            self.spawn_wave()
-        } else {
-            Vec::new()
+        // Игрок отбил все волны уровня — расстановка перед следующим: ход остаётся у него.
+        let (mut planning, mut returned) = (None, Vec::new());
+        let spawned = match self.rogue {
+            Some(r) if r.player != us => self.spawn_wave(),
+            Some(r)
+                if r.level < r.levels && r.wave >= r.waves && !self.has_pieces(us.opponent()) =>
+            {
+                returned = self.begin_planning();
+                planning = Some(r.level + 1);
+                Vec::new()
+            }
+            _ => Vec::new(),
         };
         self.thaw(us);
         // Сыгранные «Они множатся» возвращаются в руку (в полной руке — наверх колоды).
@@ -2258,7 +2551,11 @@ impl Position {
                 piece.fresh = false;
             }
         }
-        self.side = us.opponent();
+        self.side = if planning.is_some() {
+            us
+        } else {
+            us.opponent()
+        };
         self.thaw(self.side);
 
         self.tick_reserve(self.side);
@@ -2268,6 +2565,7 @@ impl Position {
         self.moved = false;
         self.moves_made = 0;
         self.used = 0;
+        self.airborne = 0;
         self.cards_played = 0;
         self.draw_card(self.side);
         self.gain_mana();
@@ -2282,7 +2580,294 @@ impl Position {
             charged,
             spawned,
             marched,
+            level_up: None,
+            planning,
+            returned,
+            gold,
         }
+    }
+
+    /// Rogue-like: открыт магазин.
+    pub fn shop_open(&self) -> bool {
+        self.rogue.is_some_and(|r| r.shop)
+    }
+
+    /// Rogue-like: прилавок магазина — `Rule::RogueShopSlots` мест (`None` — куплено).
+    pub fn offers(&self) -> Vec<Option<Stock>> {
+        let n = (balance()
+            .rule(Rule::RogueShopSlots)
+            .clamp(1, SHOP_MAX as i32)) as usize;
+        self.rogue.map_or_else(Vec::new, |r| r.offers[..n].to_vec())
+    }
+
+    /// Rogue-like: прилавок заполняется заново — по весам фигур волн первого уровня
+    /// (`shop_weights`), огненная фигура — в `FIRE_RARITY` раз реже обычной того же вида.
+    /// Случайность — зерно партии и счёт заполнений: при отмене прилавок тот же.
+    fn roll_offers(&mut self) {
+        let Some(mut r) = self.rogue else {
+            return;
+        };
+        r.rolls = r.rolls.wrapping_add(1);
+        let mut state = (r.seed
+            ^ (u64::from(r.rolls) << 8 | u64::from(r.level)).wrapping_mul(0xD1B5_4A32_D192_ED03))
+            | 1;
+        let mut next = move |n: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % n.max(1)
+        };
+        let weights: Vec<(Stock, u64)> = shop_weights()
+            .into_iter()
+            .flat_map(|(kind, w)| {
+                [
+                    (Stock::new(kind, Power::Plain), w * FIRE_RARITY),
+                    (Stock::new(kind, Power::Fire), w),
+                    (Stock::new(kind, Power::Spark), w),
+                    (Stock::new(kind, Power::Wind), w),
+                ]
+            })
+            .collect();
+        let total: u64 = weights.iter().map(|w| w.1).sum();
+        for offer in &mut r.offers {
+            let mut roll = next(total);
+            *offer = weights
+                .iter()
+                .find(|&&(_, w)| {
+                    let hit = roll < w;
+                    roll = roll.saturating_sub(w);
+                    hit
+                })
+                .map(|&(stock, _)| stock)
+                .or(Some(Stock::new(Kind::Pawn, Power::Plain)));
+        }
+        self.rogue = Some(r);
+    }
+
+    /// Rogue-like: покупка фигуры с места `slot` прилавка — в запас игрока, готовой.
+    fn buy(&mut self, slot: usize) -> Option<RogueAction> {
+        let mut r = self.rogue.filter(|r| r.shop)?;
+        let stock = (*self.offers().get(slot)?)?;
+        let price = shop_price(stock);
+        if r.gold < price {
+            return None;
+        }
+        r.gold -= price;
+        r.offers[slot] = None;
+        self.rogue = Some(r);
+        self.give_stock(stock.piece(r.player));
+        Some(RogueAction::Buy { stock, price })
+    }
+
+    /// Rogue-like: новые фигуры на прилавке за `Rule::RogueRerollCost` золота.
+    fn reroll(&mut self) -> Option<RogueAction> {
+        let mut r = self.rogue.filter(|r| r.shop)?;
+        let price = balance().rule(Rule::RogueRerollCost).clamp(0, 999) as u16;
+        if r.gold < price {
+            return None;
+        }
+        r.gold -= price;
+        self.rogue = Some(r);
+        self.roll_offers();
+        Some(RogueAction::Reroll { price })
+    }
+
+    /// Rogue-like: продажа готовой фигуры `stock` из запаса игрока — за цену в магазине.
+    fn sell(&mut self, stock: Stock) -> Option<RogueAction> {
+        let r = self.rogue.filter(|r| r.shop)?;
+        if !self.stock_ready(r.player, stock) {
+            return None;
+        }
+        self.take_stock(r.player, stock);
+        let price = shop_price(stock);
+        let mut r = self.rogue?;
+        r.gold = r.gold.saturating_add(price);
+        self.rogue = Some(r);
+        Some(RogueAction::Sell { stock, price })
+    }
+
+    /// Rogue-like: «Уйти» из магазина — начинается расстановка.
+    fn leave_shop(&mut self) -> Option<RogueAction> {
+        let mut r = self.rogue.filter(|r| r.shop)?;
+        r.shop = false;
+        self.rogue = Some(r);
+        Some(RogueAction::Leave)
+    }
+
+    /// Rogue-like: можно нажать «Выиграть раунд» — идёт бой, ходит игрок.
+    pub fn can_win_round(&self) -> bool {
+        self.rogue
+            .is_some_and(|r| !r.planning && r.player == self.side)
+    }
+
+    /// Rogue-like: «Выиграть раунд» — фигуры волн на доске побеждены (за них — золото), волн
+    /// на этом уровне больше не будет.
+    fn win_round(&mut self) -> Option<RogueAction> {
+        let mut r = self.rogue.filter(|_| self.can_win_round())?;
+        let mut gold = 0u16;
+        for sq in 0..64 {
+            if let Some(p) = self.board[sq].filter(|p| p.color != r.player) {
+                self.board[sq] = None;
+                gold = gold.saturating_add(rogue_price(p.kind));
+            }
+        }
+        r.gold = r.gold.saturating_add(gold);
+        r.wave = r.waves;
+        self.rogue = Some(r);
+        Some(RogueAction::WinRound { gold })
+    }
+
+    /// Rogue-like: идёт расстановка перед следующим уровнем.
+    pub fn planning(&self) -> bool {
+        self.rogue.is_some_and(|r| r.planning)
+    }
+
+    /// Метки начала уровня: каждая фигура стороны `player` начинает его на своей клетке.
+    fn origins(&self, player: Color) -> [u8; 64] {
+        std::array::from_fn(|sq| match self.board[sq] {
+            Some(p) if p.color == player => sq as u8,
+            _ => NO_ORIGIN,
+        })
+    }
+
+    /// Rogue-like: уровень пройден — начинается расстановка. Выжившие фигуры игрока встают на
+    /// клетки, где начинали уровень, с полным здоровьем; выставленные из запаса посреди уровня
+    /// возвращаются в запас; погибшие не возвращаются. Возвращает (откуда, куда) для анимации.
+    fn begin_planning(&mut self) -> Vec<(Square, Square)> {
+        let Some(mut r) = self.rogue else {
+            return Vec::new();
+        };
+        let player = r.player;
+        let mut home = Vec::new();
+        for sq in 0..64u8 {
+            let Some(piece) = self.board[sq as usize].filter(|p| p.color == player) else {
+                continue;
+            };
+            self.board[sq as usize] = None;
+            match r.origin[sq as usize] {
+                NO_ORIGIN => self.give_stock(Piece::new(piece.kind, player).with(piece)),
+                origin => home.push((sq, origin, piece)),
+            }
+        }
+        let mut returned = Vec::new();
+        for (from, to, piece) in home {
+            self.board[to as usize] = Some(Piece::new(piece.kind, player).with(piece));
+            if piece.kind == Kind::King {
+                self.kings[player as usize] = Some(to);
+            }
+            if from != to {
+                returned.push((from, to));
+            }
+        }
+        r.planning = true;
+        r.shop = true;
+        r.origin = self.origins(player);
+        self.rogue = Some(r);
+        self.roll_offers();
+        returned
+    }
+
+    /// Rogue-like: «Начать раунд» — расстановка запоминается как начало уровня, уровень
+    /// начинается, его первая волна выходит сразу; ходит игрок.
+    fn start_round(&mut self) -> TurnEnd {
+        let Some(mut r) = self.rogue else {
+            return TurnEnd::default();
+        };
+        r.planning = false;
+        r.level += 1;
+        r.wave = 0;
+        r.waves = Rogue::waves_at(r.level);
+        r.origin = self.origins(r.player);
+        self.rogue = Some(r);
+        // Рокировка снова возможна, если король и ладья стоят на своих местах.
+        let (short, long) = r.player.castling_bits();
+        self.castling |= short | long;
+        let spawned = self.spawn_wave();
+        self.moved = false;
+        self.moves_made = 0;
+        self.used = 0;
+        self.airborne = 0;
+        TurnEnd {
+            spawned,
+            level_up: Some(r.level),
+            ..TurnEnd::default()
+        }
+    }
+
+    /// Куда при расстановке встаёт фигура вида `kind` стороны `us`: на две первые свои
+    /// горизонтали (с 0.61), пешка — только на вторую.
+    fn arrange_fits(us: Color, kind: Kind, sq: Square) -> bool {
+        let row = (rank_of(sq) - us.home_rank()).abs();
+        if kind == Kind::Pawn {
+            row == 1
+        } else {
+            row < 2
+        }
+    }
+
+    /// Действия расстановки: фигура — на пустую клетку или на место своей фигуры (обмен, если
+    /// и та может встать на её клетку); фигура из запаса — на пустую клетку.
+    fn arrange_moves(&self, out: &mut Vec<Move>) {
+        let us = self.side;
+        for from in 0..64u8 {
+            let Some(piece) = self.board[from as usize].filter(|p| p.color == us) else {
+                continue;
+            };
+            for to in (0..64u8).filter(|&to| to != from && Self::arrange_fits(us, piece.kind, to)) {
+                let free = match self.board[to as usize] {
+                    None => true,
+                    Some(other) => other.color == us && Self::arrange_fits(us, other.kind, from),
+                };
+                if free {
+                    out.push(Move::new(from, to, MoveKind::Quiet));
+                }
+            }
+        }
+        for stock in self.reserve(us).into_iter().map(|s| s.0) {
+            if self.stock_ready(us, stock) {
+                out.extend(
+                    (0..64u8)
+                        .filter(|&sq| {
+                            self.board[sq as usize].is_none()
+                                && Self::arrange_fits(us, stock.kind, sq)
+                        })
+                        .map(|sq| Move::new(sq, sq, stock.drop_kind())),
+                );
+            }
+        }
+    }
+
+    /// Действие расстановки: ходов не тратит, никто не перехватывает. Обмен — фигура с клетки
+    /// `to` встаёт на `from` (в `Outcome::rook`, анимация — как у ладьи рокировки).
+    fn arrange(&mut self, mv: Move) -> Outcome {
+        let us = self.side;
+        let mut outcome = Outcome {
+            mv,
+            piece: Piece::new(Kind::Pawn, us),
+            rook: None,
+            promoted: None,
+            frozen: false,
+            reactions: Vec::new(),
+        };
+        if let Some(stock) = mv.kind.stock() {
+            let piece = self.take_stock(us, stock);
+            self.board[mv.to as usize] = Some(piece);
+            outcome.piece = piece;
+            return outcome;
+        }
+        outcome.piece = self.board[mv.from as usize].expect("расстановка с пустой клетки");
+        if self.board[mv.to as usize].is_some() {
+            self.board.swap(mv.from as usize, mv.to as usize);
+            outcome.rook = Some((mv.to, mv.from));
+        } else {
+            self.relocate(mv.from, mv.to);
+        }
+        for sq in [mv.from, mv.to] {
+            if self.board[sq as usize].is_some_and(|p| p.kind == Kind::King && p.color == us) {
+                self.kings[us as usize] = Some(sq);
+            }
+        }
+        outcome
     }
 
     /// Rogue-like: все свободные (не замёрзшие) фигуры волн стороны, которая ходит, шагают
@@ -2381,13 +2966,16 @@ impl Position {
         let raw = balance().rule(Rule::LavaDamage);
         let mut blasts = Vec::new();
         for center in strike_queue() {
-            let Some(pawn) = self.board[center as usize].filter(|p| p.color == us && p.lava) else {
+            let Some(pawn) =
+                self.board[center as usize].filter(|p| p.color == us && (p.lava || p.fire))
+            else {
                 continue;
             };
             if let Some(piece) = &mut self.board[center as usize] {
                 piece.lava = false;
             }
-            if pawn.is_frozen() {
+            // Огненная фигура, только что выставленная, взорвётся в конце следующего хода.
+            if pawn.is_frozen() || pawn.fire && !pawn.lava && pawn.fresh {
                 continue;
             }
             let mut hits = Vec::new();
@@ -2770,11 +3358,20 @@ impl Position {
     /// Ходы фигурой в `out` — те же, что `legal_moves`, но без своего вектора (для
     /// перебора). Сходившая сторона фигурой больше не ходит, замороженные фигуры — тоже.
     pub fn pseudo_moves(&self, out: &mut Vec<Move>) {
-        if self.moves_made >= self.moves_per_turn() {
+        // Ходы кончились — сходить может только воздушная фигура вторым ходом.
+        let spent = self.moves_made >= self.moves_per_turn();
+        if spent && self.airborne == 0 {
             return;
         }
         // Rogue-like: фигуры волн сами не ходят — они шагают вперёд в конце хода (`march`).
         if self.rogue.is_some_and(|r| r.player != self.side) {
+            return;
+        }
+        if self.planning() {
+            // Пока открыт магазин, доска ждёт.
+            if !self.shop_open() {
+                self.arrange_moves(out);
+            }
             return;
         }
         let us = self.side;
@@ -2782,7 +3379,11 @@ impl Position {
             let Some(piece) = self.board[from as usize] else {
                 continue;
             };
-            if piece.color != us || piece.is_frozen() || self.used(from) {
+            if piece.color != us
+                || piece.is_frozen()
+                || self.used(from)
+                || spent && self.airborne & 1 << from == 0
+            {
                 continue;
             }
             match piece.kind {
@@ -2801,20 +3402,11 @@ impl Position {
             }
         }
         // Выставление готовой фигуры из запаса — вместо хода.
-        for kind in [
-            Kind::Pawn,
-            Kind::Knight,
-            Kind::Bishop,
-            Kind::Rook,
-            Kind::Queen,
-        ] {
-            if self.reserve[us as usize][kind as usize][0]
-                .iter()
-                .any(|&n| n > 0)
-            {
+        for stock in self.reserve(us).into_iter().map(|s| s.0).filter(|_| !spent) {
+            if self.stock_ready(us, stock) {
                 out.extend(
-                    self.drop_squares(us, kind)
-                        .map(|sq| Move::new(sq, sq, MoveKind::Drop(kind))),
+                    self.drop_squares(us, stock.kind)
+                        .map(|sq| Move::new(sq, sq, stock.drop_kind())),
                 );
             }
         }
@@ -2835,21 +3427,106 @@ impl Position {
     }
 
     /// Запас стороны `color`: по видам — (готовы выставить, ждут).
-    pub fn reserve(&self, color: Color) -> Vec<(Kind, u8, u8)> {
-        [
+    pub fn reserve(&self, color: Color) -> Vec<(Stock, u8, u8)> {
+        let kinds = [
             Kind::Queen,
             Kind::Rook,
             Kind::Bishop,
             Kind::Knight,
             Kind::Pawn,
-        ]
-        .into_iter()
-        .filter_map(|kind| {
+        ];
+        // Огненные и электрические — первыми.
+        let charged = [Power::Fire, Power::Spark, Power::Wind]
+            .into_iter()
+            .flat_map(|power| {
+                kinds.into_iter().filter_map(move |kind| {
+                    let n = self.charged(power, color)?[kind as usize];
+                    (n > 0).then_some((Stock::new(kind, power), n, 0))
+                })
+            });
+        let plain = kinds.into_iter().filter_map(|kind| {
             let [ready, w1, w2] =
                 self.reserve[color as usize][kind as usize].map(|r| r.iter().sum::<u8>());
-            (ready + w1 + w2 > 0).then_some((kind, ready, w1 + w2))
-        })
-        .collect()
+            (ready + w1 + w2 > 0).then_some((Stock::new(kind, Power::Plain), ready, w1 + w2))
+        });
+        charged.chain(plain).collect()
+    }
+
+    /// Запас огненных или электрических фигур стороны `color` по видам; у обычных — `None`.
+    fn charged(&self, power: Power, color: Color) -> Option<&[u8; 6]> {
+        match power {
+            Power::Plain => None,
+            Power::Fire => Some(&self.fire_reserve[color as usize]),
+            Power::Spark => Some(&self.spark_reserve[color as usize]),
+            Power::Wind => Some(&self.wind_reserve[color as usize]),
+        }
+    }
+
+    fn charged_mut(&mut self, power: Power, color: Color) -> Option<&mut [u8; 6]> {
+        match power {
+            Power::Plain => None,
+            Power::Fire => Some(&mut self.fire_reserve[color as usize]),
+            Power::Spark => Some(&mut self.spark_reserve[color as usize]),
+            Power::Wind => Some(&mut self.wind_reserve[color as usize]),
+        }
+    }
+
+    /// Сколько готовых фигур `stock` в запасе стороны `color`.
+    fn stock_ready(&self, color: Color, stock: Stock) -> bool {
+        match self.charged(stock.power, color) {
+            Some(charged) => charged[stock.kind as usize] > 0,
+            None => self.reserve[color as usize][stock.kind as usize][0]
+                .iter()
+                .any(|&n| n > 0),
+        }
+    }
+
+    /// Берёт из запаса фигуру `stock` для выставления: какой она выйдет (кроме `fresh`).
+    fn take_stock(&mut self, color: Color, stock: Stock) -> Piece {
+        if let Some(charged) = self.charged_mut(stock.power, color) {
+            let n = &mut charged[stock.kind as usize];
+            *n = n.saturating_sub(1);
+            return stock.piece(color);
+        }
+        // Первой выходит фигура, что возвращалась реже.
+        let ready = &mut self.reserve[color as usize][stock.kind as usize][0];
+        let r = ready.iter().position(|&n| n > 0).expect("фигура в запасе");
+        ready[r] -= 1;
+        Piece {
+            reborn: r as u8 + 1,
+            ..Piece::new(stock.kind, color)
+        }
+    }
+
+    /// Фигура `piece` уходит в запас готовой (rogue-like: расстановка, покупка).
+    fn give_stock(&mut self, piece: Piece) {
+        if let Some(charged) = self.charged_mut(Stock::of(piece).power, piece.color) {
+            let n = &mut charged[piece.kind as usize];
+            *n = n.saturating_add(1);
+            return;
+        }
+        let color = piece.color as usize;
+        let slot = (piece.reborn.max(1) - 1).min(MAX_REBIRTHS - 1) as usize;
+        let ready = &mut self.reserve[color][piece.kind as usize][0];
+        ready[slot] = ready[slot].saturating_add(1);
+    }
+
+    /// Огненные фигуры в запасе стороны `color` по видам (тесты).
+    #[cfg(test)]
+    pub fn fire_reserve(&self, color: Color) -> [u8; 6] {
+        self.fire_reserve[color as usize]
+    }
+
+    /// Электрические фигуры в запасе стороны `color` по видам (тесты).
+    #[cfg(test)]
+    pub fn spark_reserve(&self, color: Color) -> [u8; 6] {
+        self.spark_reserve[color as usize]
+    }
+
+    /// Воздушные фигуры в запасе стороны `color` по видам (тесты).
+    #[cfg(test)]
+    pub fn wind_reserve(&self, color: Color) -> [u8; 6] {
+        self.wind_reserve[color as usize]
     }
 
     /// Начало хода стороны `color`: взятые фигуры на ход ближе к выставлению.
@@ -3015,15 +3692,21 @@ impl Position {
     fn relocate(&mut self, from: Square, to: Square) {
         if from != to {
             self.board[to as usize] = self.board[from as usize].take();
+            if let Some(r) = &mut self.rogue {
+                r.origin[to as usize] = std::mem::replace(&mut r.origin[from as usize], NO_ORIGIN);
+            }
         }
     }
 
     /// Делает ход (законность не проверяется) и сообщает, что произошло.
     pub fn make_move(&mut self, mv: Move) -> Outcome {
+        if self.planning() {
+            return self.arrange(mv);
+        }
         let us = self.side;
-        let piece = match mv.kind {
-            MoveKind::Drop(kind) => Piece::new(kind, us),
-            _ => self.board[mv.from as usize].expect("ход с пустой клетки"),
+        let piece = match mv.kind.stock() {
+            Some(stock) => Piece::new(stock.kind, us),
+            None => self.board[mv.from as usize].expect("ход с пустой клетки"),
         };
         let mut outcome = Outcome {
             mv,
@@ -3034,23 +3717,22 @@ impl Position {
 
             reactions: Vec::new(),
         };
-        if let MoveKind::Drop(kind) = mv.kind {
-            // Первой выходит фигура, что возвращалась реже.
-            let ready = &mut self.reserve[us as usize][kind as usize][0];
-            let r = ready.iter().position(|&n| n > 0).expect("фигура в запасе");
-            ready[r] -= 1;
+        if let Some(stock) = mv.kind.stock() {
             let fresh = Piece {
                 fresh: true,
-                reborn: r as u8 + 1,
-                ..Piece::new(kind, us)
+                ..self.take_stock(us, stock)
             };
             self.board[mv.to as usize] = Some(fresh);
+            if let Some(r) = &mut self.rogue {
+                r.origin[mv.to as usize] = NO_ORIGIN;
+            }
             outcome.piece = fresh;
             outcome.frozen = self.on_ice(mv.to) && self.freeze_at(mv.to);
             self.halfmove_clock = 0;
             self.moved = true;
             self.moves_made += 1;
             self.used |= 1 << mv.to;
+            self.airborne &= !(1 << mv.to);
             outcome.reactions = self.intercept(mv.to, None);
             return outcome;
         }
@@ -3092,8 +3774,18 @@ impl Position {
             self.halfmove_clock + 1
         };
         self.moved = true;
-        self.moves_made += 1;
-        self.used |= 1 << mv.to;
+        // Воздушная фигура (rogue-like): первый ход — как обычный, второй — бесплатный.
+        // Между её ходами могут ходить другие фигуры.
+        let second = self.airborne & 1 << mv.from != 0;
+        self.airborne &= !(1 << mv.from | 1 << mv.to);
+        if !second {
+            self.moves_made += 1;
+        }
+        if piece.wind && !second {
+            self.airborne |= 1 << mv.to;
+        } else {
+            self.used |= 1 << mv.to;
+        }
         if let Some((_, rook)) = outcome.rook {
             self.used |= 1 << rook;
         }
@@ -3110,7 +3802,8 @@ impl Position {
     /// Перехват: свободные (не замёрзшие и не только что выставленные) чужие кони, до которых
     /// ударом достаёт клетка `sq`, по очереди бьют вставшую на неё фигуру, пока она жива. Пешки
     /// бьют только на проходе (с 0.45): чужую пешку, прошедшую двойным ходом через клетку
-    /// `passed` в их досягаемости, — по её новой клетке. В барьер соперника не бьют.
+    /// `passed` в их досягаемости, — по её новой клетке. В барьер соперника не бьют. В
+    /// rogue-like (с 0.55, просьба пользователя) кони не перехватывают — только пешки.
     fn intercept(&mut self, sq: Square, passed: Option<Square>) -> Vec<Strike> {
         let mut strikes = Vec::new();
         let Some(mover) = self.board[sq as usize] else {
@@ -3122,8 +3815,10 @@ impl Position {
         if wall & 1 << sq != 0 {
             return strikes;
         }
+        let rogue = self.rogue.is_some();
         let mut guards: Vec<Square> = [Kind::Knight, Kind::Pawn]
             .into_iter()
+            .filter(|&kind| !(rogue && kind == Kind::Knight))
             .flat_map(|kind| {
                 strike_steps(Piece::new(kind, them))
                     .iter()
@@ -3189,6 +3884,8 @@ pub enum Event {
     Card(CardPlay),
     /// Сторона закончила ход: удары её фигур, взрывы лавы, новая лава.
     EndTurn(Color, TurnEnd),
+    /// Rogue-like: магазин и кнопка «Выиграть раунд».
+    Rogue(RogueAction),
 }
 
 /// Действие стороны вместе с позицией до него.
@@ -3252,6 +3949,28 @@ impl Record {
             ""
         };
         let (text, dealt) = match &self.event {
+            // Расстановка rogue-like: «Кg1→d4», «Кg1⇄Сf1», «К@c3».
+            Event::Move(o) if self.before.planning() => {
+                let letter = o.piece.kind.letter();
+                let (from, to) = (square_name(o.mv.from), square_name(o.mv.to));
+                let text = match (o.mv.kind, o.rook) {
+                    (
+                        MoveKind::Drop(_)
+                        | MoveKind::FireDrop(_)
+                        | MoveKind::SparkDrop(_)
+                        | MoveKind::WindDrop(_),
+                        _,
+                    ) => {
+                        format!("{letter}@{to}")
+                    }
+                    (_, Some(_)) => {
+                        let other = self.before.piece(o.mv.to).map_or("", |p| p.kind.letter());
+                        format!("{letter}{from}⇄{other}{to}")
+                    }
+                    _ => format!("{letter}{from}→{to}"),
+                };
+                (text, 0)
+            }
             Event::Move(o) => {
                 let letter = o.piece.kind.letter();
                 let mut text = match o.mv.kind {
@@ -3262,7 +3981,12 @@ impl Record {
                         square_name(o.mv.from),
                         square_name(o.mv.to)
                     ),
-                    MoveKind::Drop(_) => format!("{letter}@{}", square_name(o.mv.to)),
+                    MoveKind::Drop(_)
+                    | MoveKind::FireDrop(_)
+                    | MoveKind::SparkDrop(_)
+                    | MoveKind::WindDrop(_) => {
+                        format!("{letter}@{}", square_name(o.mv.to))
+                    }
                 };
                 if let Some(kind) = o.promoted {
                     text.push_str(kind.letter());
@@ -3278,6 +4002,26 @@ impl Record {
                     );
                 }
                 (text, o.reactions.iter().map(|s| s.hit.damage).sum())
+            }
+            Event::Rogue(action) => {
+                let text = match *action {
+                    RogueAction::WinRound { .. } => "Раунд выигран".to_owned(),
+                    RogueAction::Buy { stock, price } => {
+                        let fire = match stock.power {
+                            Power::Plain => "",
+                            Power::Fire => "🔥",
+                            Power::Spark => "⚡",
+                            Power::Wind => "≋",
+                        };
+                        format!("Магазин: {fire}{} −{price}", stock.kind.letter())
+                    }
+                    RogueAction::Reroll { price } => format!("Обновить −{price}"),
+                    RogueAction::Sell { stock, price } => {
+                        format!("Продажа: {} +{price}", stock.kind.letter())
+                    }
+                    RogueAction::Leave => "Из магазина".to_owned(),
+                };
+                (text, 0)
             }
             Event::Card(play) => {
                 // «Огненная Волна d4», «Обмен b1↔c1».
@@ -3320,7 +4064,13 @@ impl Record {
                 if !turn.marched.is_empty() {
                     text.insert(0, format!("Волна ↓{}", turn.marched.len()));
                 }
-                if !turn.spawned.is_empty() {
+                if turn.planning.is_some() {
+                    text.push("Расстановка".to_owned());
+                }
+                if let Some(level) = turn.level_up {
+                    text.push(format!("Уровень {level}"));
+                }
+                if !turn.spawned.is_empty() && turn.level_up.is_none() {
                     let wave = self.before.rogue().map_or(0, |r| r.wave) + 1;
                     text.push(format!("Волна {wave}"));
                 }
@@ -3355,10 +4105,64 @@ impl Record {
             }
         });
         let o = match &self.event {
+            Event::Move(o) if self.before.planning() => {
+                let name = o.piece.title();
+                let (from, to) = (square_name(o.mv.from), square_name(o.mv.to));
+                return match (o.mv.kind, o.rook) {
+                    (
+                        MoveKind::Drop(_)
+                        | MoveKind::FireDrop(_)
+                        | MoveKind::SparkDrop(_)
+                        | MoveKind::WindDrop(_),
+                        _,
+                    ) => {
+                        format!("Расстановка: {name} из запаса — на {to}.")
+                    }
+                    (_, Some(_)) => {
+                        let other = self
+                            .before
+                            .piece(o.mv.to)
+                            .map_or("фигура", |p| p.kind.name());
+                        format!("Расстановка: {name} {from} и {other} {to} поменялись местами.")
+                    }
+                    _ => format!("Расстановка: {name} {from} → {to}."),
+                };
+            }
             Event::Move(outcome) => outcome,
             Event::Card(play) => return card_description(play, &self.before) + &ending,
+            Event::Rogue(action) => {
+                let text = match *action {
+                    RogueAction::WinRound { gold } => format!(
+                        "Кнопка «Выиграть раунд»: волны уровня побеждены, +{}.",
+                        coins(gold, false)
+                    ),
+                    RogueAction::Buy { stock, price } => {
+                        let fire = stock.power.adjective(stock.kind.is_feminine());
+                        format!(
+                            "Магазин: {fire}{} за {} — в запасе.",
+                            stock.kind.name(),
+                            coins(price, true)
+                        )
+                    }
+                    RogueAction::Reroll { price } => {
+                        format!("Магазин обновлён за {}.", coins(price, true))
+                    }
+                    RogueAction::Sell { stock, price } => format!(
+                        "Продан{} {}{} из запаса за {}.",
+                        if stock.kind.is_feminine() { "а" } else { "" },
+                        stock.power.adjective(stock.kind.is_feminine()),
+                        stock.kind.name(),
+                        coins(price, true)
+                    ),
+                    RogueAction::Leave => "Ушли из магазина — расстановка.".to_owned(),
+                };
+                return text + &ending;
+            }
             Event::EndTurn(color, turn) => {
-                let mut text = format!("{} закончили ход.", color.name());
+                let mut text = match turn.level_up {
+                    Some(level) => format!("{} начали уровень {level}.", color.name()),
+                    None => format!("{} закончили ход.", color.name()),
+                };
                 if !turn.marched.is_empty() {
                     let steps: Vec<String> = turn
                         .marched
@@ -3375,7 +4179,18 @@ impl Record {
                     text += &strike_description(strike);
                 }
                 for blast in &turn.blasts {
-                    text += &format!(" Пешка {} взорвалась лавой", square_name(blast.center));
+                    let (name, verb) = self.before.piece(blast.center).map_or(
+                        ("Пешка", "взорвалась"),
+                        |p| {
+                            let verb = if p.kind.is_feminine() {
+                                "взорвалась"
+                            } else {
+                                "взорвался"
+                            };
+                            (p.kind.title(), verb)
+                        },
+                    );
+                    text += &format!(" {name} {} {verb} лавой", square_name(blast.center));
                     text += &if blast.hits.is_empty() {
                         ", никого не задев.".to_owned()
                     } else {
@@ -3387,10 +4202,24 @@ impl Record {
                         turn.charged.iter().map(|&sq| square_name(sq)).collect();
                     text += &format!(" Лавой насытились пешки {}.", squares.join(", "));
                 }
+                if turn.gold > 0 {
+                    let total = self.before.rogue().map_or(0, |r| r.gold) + turn.gold;
+                    text += &format!(" Золото: +{} (всего {total}).", turn.gold);
+                }
+                if let Some(level) = turn.planning {
+                    text += &format!(
+                        " Все волны уровня отбиты! Расстановка перед уровнем {level}: фигуры \
+                         вернулись на места начала уровня и вылечились, выставленные из запаса — \
+                         снова в запасе. Открылся магазин."
+                    );
+                }
                 if !turn.spawned.is_empty() {
                     let rogue = self.before.rogue();
-                    let wave = rogue.map_or(0, |r| r.wave) + 1;
-                    let waves = rogue.map_or(0, |r| r.waves);
+                    let (wave, waves) = match (turn.level_up, rogue) {
+                        (Some(level), _) => (1, Rogue::waves_at(level)),
+                        (None, Some(r)) => (r.wave + 1, r.waves),
+                        (None, None) => (0, 0),
+                    };
                     let pieces: Vec<String> = turn
                         .spawned
                         .iter()
@@ -3411,7 +4240,10 @@ impl Record {
                 square_name(o.mv.from),
                 square_name(o.mv.to)
             ),
-            MoveKind::Drop(_) => format!(
+            MoveKind::Drop(_)
+            | MoveKind::FireDrop(_)
+            | MoveKind::SparkDrop(_)
+            | MoveKind::WindDrop(_) => format!(
                 "{} из запаса выставлен{} на {}.",
                 piece.title(),
                 if piece.kind.is_feminine() { "а" } else { "" },
@@ -3783,7 +4615,60 @@ impl Game {
     /// Можно ли закончить ход: фигурой уже сходили или ходить нечем (фигуры заморожены
     /// или заперты) — тогда ход фигурой пропускается.
     pub fn can_end_turn(&self) -> bool {
-        !self.is_over() && (self.legal.is_empty() || self.position.moved())
+        !self.is_over()
+            && !self.position.shop_open()
+            && (self.legal.is_empty() || self.position.moved() || self.position.planning())
+    }
+
+    /// Rogue-like: действие магазина или «Выиграть раунд» — в историю, как ход.
+    fn rogue_action(&mut self, act: impl FnOnce(&mut Position) -> Option<RogueAction>) -> bool {
+        if self.is_over() {
+            return false;
+        }
+        let before = self.position.clone();
+        let Some(action) = act(&mut self.position) else {
+            return false;
+        };
+        self.history.push(Record {
+            before,
+            event: Event::Rogue(action),
+            check: false,
+            loser: None,
+        });
+        self.refresh();
+        true
+    }
+
+    /// Rogue-like: купить фигуру с места `slot` прилавка.
+    pub fn buy(&mut self, slot: usize) -> bool {
+        self.rogue_action(|pos| pos.buy(slot))
+    }
+
+    /// Rogue-like: обновить магазин.
+    pub fn reroll(&mut self) -> bool {
+        self.rogue_action(Position::reroll)
+    }
+
+    /// Rogue-like: продать фигуру `stock` из запаса (пока открыт магазин).
+    pub fn sell(&mut self, stock: Stock) -> bool {
+        self.rogue_action(|pos| pos.sell(stock))
+    }
+
+    /// Rogue-like: уйти из магазина к расстановке.
+    pub fn leave_shop(&mut self) -> bool {
+        self.rogue_action(Position::leave_shop)
+    }
+
+    /// Rogue-like: кнопка «Выиграть раунд» — волны уровня побеждены, ход кончается (на
+    /// последнем уровне — победа).
+    pub fn win_round(&mut self) -> bool {
+        if !self.rogue_action(Position::win_round) {
+            return false;
+        }
+        if !self.note_victory() {
+            self.finish_turn();
+        }
+        true
     }
 
     /// Ходит фигурой, если ход законен. Если карту в этом ходу уже не сыграть, ход
@@ -3802,8 +4687,13 @@ impl Game {
             loser: None,
         });
         self.refresh();
-        // Ходы в этом ходу ещё есть (rogue-like) — ход ждёт кнопку.
-        if !self.note_victory() && !self.position.any_card_playable() && self.legal.is_empty() {
+        // Ходы в этом ходу ещё есть (rogue-like) — ход ждёт кнопку; расстановку кончает только
+        // кнопка «Начать раунд».
+        if !self.note_victory()
+            && !self.position.any_card_playable()
+            && self.legal.is_empty()
+            && !self.position.planning()
+        {
             self.finish_turn();
         }
         Some(outcome)
@@ -3934,7 +4824,7 @@ impl Game {
                             .map(|h| h.target),
                     );
                 }
-                Event::Card(_) | Event::EndTurn(..) => {}
+                Event::Card(_) | Event::EndTurn(..) | Event::Rogue(_) => {}
             }
         }
         kills

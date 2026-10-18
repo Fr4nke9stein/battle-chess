@@ -45,6 +45,19 @@ pub enum Rule {
     RogueWeightBishop,
     RogueWeightRook,
     RogueWeightQueen,
+    RogueLevels,
+    RoguePawnDrop,
+    RogueGoldPawn,
+    RogueGoldKnight,
+    RogueGoldBishop,
+    RogueGoldRook,
+    RogueGoldQueen,
+    RogueShopSlots,
+    RogueRerollCost,
+    RogueShopPercent,
+    RogueFirePercent,
+    RogueSparkPercent,
+    RogueWindPercent,
 }
 
 pub struct RuleDef {
@@ -60,7 +73,7 @@ pub struct RuleDef {
 const RETIRED_RULES: [&str; 1] = ["rogue_wave_turns"];
 
 /// В порядке `Rule`.
-pub const RULES: [RuleDef; 16] = [
+pub const RULES: [RuleDef; 29] = [
     RuleDef {
         key: "mana_per_turn",
         default: 2,
@@ -118,7 +131,7 @@ pub const RULES: [RuleDef; 16] = [
         default: 10,
         min: 1,
         max: 99,
-        note: "rogue-like: сколько волн фигур соперника выйдет за партию; отбил все — победа",
+        note: "rogue-like: сколько волн на первом уровне (на каждом следующем — на одну больше)",
     },
     RuleDef {
         key: "rogue_wave_min",
@@ -143,7 +156,7 @@ pub const RULES: [RuleDef; 16] = [
     },
     RuleDef {
         key: "rogue_weight_pawn",
-        default: 10,
+        default: 15,
         min: 0,
         max: 100,
         note: "rogue-like: вес пешки при выборе фигур волны — чем больше, тем чаще",
@@ -175,6 +188,97 @@ pub const RULES: [RuleDef; 16] = [
         min: 0,
         max: 100,
         note: "rogue-like: вес ферзя в волне",
+    },
+    RuleDef {
+        key: "rogue_levels",
+        default: 10,
+        min: 1,
+        max: 99,
+        note: "rogue-like: сколько уровней; на каждом следующем на одну волну больше (на первом — rogue_waves)",
+    },
+    RuleDef {
+        key: "rogue_pawn_drop",
+        default: 2,
+        min: 0,
+        max: 100,
+        note: "rogue-like: на сколько вес пешки в волнах меньше с каждым следующим уровнем (не ниже 0)",
+    },
+    RuleDef {
+        key: "rogue_gold_pawn",
+        default: 1,
+        min: 0,
+        max: 99,
+        note: "rogue-like: золото за побеждённую пешку (цена в магазине — rogue_shop_percent от него)",
+    },
+    RuleDef {
+        key: "rogue_gold_knight",
+        default: 2,
+        min: 0,
+        max: 99,
+        note: "rogue-like: золото за побеждённого коня",
+    },
+    RuleDef {
+        key: "rogue_gold_bishop",
+        default: 2,
+        min: 0,
+        max: 99,
+        note: "rogue-like: золото за побеждённого слона",
+    },
+    RuleDef {
+        key: "rogue_gold_rook",
+        default: 3,
+        min: 0,
+        max: 99,
+        note: "rogue-like: золото за побеждённую ладью",
+    },
+    RuleDef {
+        key: "rogue_gold_queen",
+        default: 4,
+        min: 0,
+        max: 99,
+        note: "rogue-like: золото за побеждённого ферзя",
+    },
+    RuleDef {
+        key: "rogue_shop_slots",
+        default: 3,
+        min: 1,
+        max: 5,
+        note: "rogue-like: сколько фигур на выбор в магазине после уровня",
+    },
+    RuleDef {
+        key: "rogue_reroll_cost",
+        default: 2,
+        min: 0,
+        max: 99,
+        note: "rogue-like: сколько золота стоит обновить магазин",
+    },
+    RuleDef {
+        key: "rogue_shop_percent",
+        default: 200,
+        min: 0,
+        max: 1000,
+        note: "rogue-like: цена фигуры в магазине, % от золота за её победу (200 — вдвое дороже)",
+    },
+    RuleDef {
+        key: "rogue_fire_percent",
+        default: 200,
+        min: 0,
+        max: 1000,
+        note: "rogue-like: огненная фигура в магазине — % от цены обычной такой же",
+    },
+    RuleDef {
+        key: "rogue_spark_percent",
+        default: 200,
+        min: 0,
+        max: 1000,
+        note: "rogue-like: электрическая фигура в магазине — % от цены обычной такой же",
+    },
+    RuleDef {
+        key: "rogue_wind_percent",
+        default: 200,
+        min: 0,
+        max: 1000,
+        note: "rogue-like: воздушная фигура в магазине — % от цены обычной такой же",
     },
 ];
 
