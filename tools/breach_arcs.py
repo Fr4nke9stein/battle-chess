@@ -166,7 +166,11 @@ def ground_point(r, ang):
     return FAX + math.cos(ang) * r, FAY + math.sin(ang) * r * 0.5
 
 
-def render(code, seed=7):
+def render(code, seed=7, bodies=None, under=None, length=None):
+    """Кадры электричества. bodies(f) — своё тело фигуры в кадре f (холст FW×FH, аура — по обычному
+    силуэту; что тело выносит за силуэт, ложится поверх ауры и задних молний); under(f) — свой слой
+    вместо золотой ауры (тогда и контур фигуры ею не подсвечивается); length — столько кадров без
+    концовки: после LOOP_END повтор продолжается."""
     rng = np.random.default_rng(seed)
     sprite = np.array(Image.open(os.path.join(fw.art.ROOT, "assets", "breach", "pieces", f"{code}.png")).convert("RGBA"))
     canvas = np.zeros((FH, FW, 4), np.uint8)
@@ -192,11 +196,12 @@ def render(code, seed=7):
     bolts = []
     sparks = burn.Particles()
     frames = []
-    for f in range(FRAMES):
+    for f in range(FRAMES if length is None else length):
+        looping = f < LOOP_END or length is not None
         # сила ауры: растёт во вступлении, держится, опадает в концовке
         if f < LOOP_START:
             grow = np.clip((f - 1) / (FLASH - 1), 0, 1)
-        elif f < LOOP_END:
+        elif looping:
             grow = 1.0
         else:
             grow = max(0.0, 1 - (f - LOOP_END + 1) / (FRAMES - LOOP_END))
@@ -227,7 +232,7 @@ def render(code, seed=7):
                 bolts.append(Bolt(bolt_points(m, fq, rng, 0.35), front=math.sin(a) > -0.2, life=3))
         elif grow > 0.3 or f < LOOP_START:
             # дуги вдоль тела — главный рисунок «саяна»: короткие, изогнутые наружу
-            for _ in range(3 if f < LOOP_END else 1):
+            for _ in range(3 if looping else 1):
                 a = rng.uniform(0, 2 * math.pi)
                 span = rng.uniform(0.6, 1.2)
                 oy = rng.uniform(-14, 14)
@@ -236,7 +241,7 @@ def render(code, seed=7):
                 front = rng.random() < 0.55
                 bolts.append(Bolt(bolt_points(p, q, rng, 0.3, bow=-rng.uniform(0.3, 0.6)), front, life=2))
             # иногда — молния наружу или в землю
-            if rng.random() < 0.35 and f < LOOP_END:
+            if rng.random() < 0.35 and looping:
                 if rng.random() < 0.5:
                     a = rng.uniform(math.pi * 0.9, math.pi * 2.1)  # вверх и в стороны
                     p = edge_point(sil, cx, cy, a)
@@ -256,8 +261,8 @@ def render(code, seed=7):
         up = (5 + 22 * nt ** 2) * grow
         aura = ((d <= side) | (gap <= up)) & ~sil & (grow > 0)
         aura &= yy < base + 2
-        img = np.zeros((FH, FW, 4), np.uint8)
-        if aura.any():
+        img = np.zeros((FH, FW, 4), np.uint8) if under is None else under(f).copy()
+        if under is None and aura.any():
             outer = burn.boundary(aura) & ~burn.neighbours_any(sil)
             img[aura] = (*GOLD[2], 150)
             img[aura & ((d <= 2) | (gap <= up * 0.35))] = (*GOLD[1], 185)
@@ -274,9 +279,9 @@ def render(code, seed=7):
         m = back[..., 3] > 0
         img[m] = back[m]
         # ---- слон: подсветка контура аурой, на вспышке — бело-голубой
-        body = canvas.copy()
+        body = (canvas if bodies is None else bodies(f)).copy()
         rgb = body[..., :3].astype(float)
-        if grow > 0:
+        if grow > 0 and under is None:
             k = 0.35 * grow
             rgb[rim] = rgb[rim] * (1 - k) + np.array(GOLD[0], float) * k
         if f in (FLASH, FLASH + 1):
@@ -285,6 +290,14 @@ def render(code, seed=7):
             rgb[inner] = rgb[inner] * (1 - k) + np.array(CYAN[1], float) * k
         body[..., :3] = rgb.astype(np.uint8)
         img[sil] = body[sil]
+        loose = (body[..., 3] > 0) & ~sil  # то, что своё тело выносит за силуэт (искры лавы, вихрь)
+        if loose.any():
+            sa = body[..., 3:4].astype(float) / 255
+            da = img[..., 3:4].astype(float) / 255
+            oa = sa + da * (1 - sa)
+            rgb = (body[..., :3] * sa + img[..., :3] * da * (1 - sa)) / np.maximum(oa, 1e-6)
+            img[loose, :3] = np.round(rgb[loose]).astype(np.uint8)
+            img[loose, 3] = np.round(oa[loose, 0] * 255).astype(np.uint8)
         # ---- передние молнии, искры
         paint_bolts(front_l, [b for b in bolts if b.front])
         m = front_l[..., 3] > 0

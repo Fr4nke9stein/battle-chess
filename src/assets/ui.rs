@@ -10,7 +10,7 @@ use eframe::egui::{self, TextureHandle, TextureOptions, Vec2, vec2};
 
 use super::Pixels;
 use super::cards::{Sprite, rotsprite, sprite};
-use crate::game::{Color, Kind};
+use crate::game::{Color, Crest, Kind, Piece, Power};
 
 /// Кнопка «Конец хода» без тени; тень лежит в картинке справа и снизу.
 pub const BUTTON: Vec2 = vec2(53.0, 35.0);
@@ -18,11 +18,18 @@ pub const BUTTON: Vec2 = vec2(53.0, 35.0);
 /// маленькая — цены в магазине.
 pub const COIN: Vec2 = vec2(32.0, 32.0);
 pub const COIN_SMALL: Vec2 = vec2(16.0, 16.0);
+/// Гербы rogue-like из арт-проекта (`tools/breach_crest.py`), без тени.
+pub const CREST: Vec2 = vec2(49.0, 45.0);
 /// Кадр огненной волны и центр верхней грани клетки фигуры в нём.
 pub const WAVE_FRAME: Vec2 = vec2(184.0, 168.0);
 pub const WAVE_CENTER: Vec2 = vec2(92.0, 98.0);
 pub const WAVE_FRAMES: usize = 20;
 pub const WAVE_FRAME_TIME: f64 = 0.06;
+/// Большая огненная волна крестом (`tools/breach_firewave_plus.py`, с 0.87): кадр 304×248, центр
+/// верхней грани клетки фигуры — `BIG_WAVE_CENTER`, кадры — по `WAVE_FRAME_TIME`.
+pub const BIG_WAVE_FRAME: Vec2 = vec2(304.0, 248.0);
+pub const BIG_WAVE_CENTER: Vec2 = vec2(152.0, 132.0);
+pub const BIG_WAVE_FRAMES: usize = 26;
 /// Метка цели: ромб клетки и поля вокруг него (`marker_pad()` в генераторе).
 pub const TARGET_PAD: f32 = 15.0;
 /// Звенья стрелки — через столько пикселей вдоль кривой, у карты мелкие, к цели крупнее.
@@ -98,6 +105,43 @@ pub const ELECTRIC_LOOP: [usize; 2] = [8, 24];
 /// опоры, что у электричества, 60 мс; вступление [0, 8), повтор [8, 40).
 pub const WIND_FRAMES: usize = 40;
 pub const WIND_LOOP: [usize; 2] = [8, 40];
+/// Ядовитая фигура (`tools/breach_poison.py`, с 0.79): лужа и капли — кадр 120×120 с той же
+/// опорой, 60 мс; вступление [0, 8), повтор [8, 40). След шага — `POISON_TRAIL` 96×80, середина
+/// между центрами клеток — `POISON_TRAIL_CENTER`, `POISON_TRAIL_FRAMES` кадров по 60 мс.
+pub const POISON_FRAMES: usize = 40;
+pub const POISON_LOOP: [usize; 2] = [8, 40];
+pub const POISON_TRAIL: Vec2 = vec2(96.0, 80.0);
+pub const POISON_TRAIL_CENTER: Vec2 = vec2(48.0, 40.0);
+pub const POISON_TRAIL_FRAMES: usize = 30;
+/// Метеорит мага (`tools/breach_meteor.py`, с 0.83): кадр `METEOR` с центром клетки
+/// `METEOR_CENTER`, `METEOR_FRAMES` кадров по `METEOR_FRAME_TIME`; касается клетки в кадре
+/// `METEOR_IMPACT`. С 0.84 (просьба пользователя) — крупный камень с кратерами в широком хвосте
+/// пламени, кадров вдвое больше и они короче — плавнее.
+pub const METEOR: Vec2 = vec2(200.0, 280.0);
+pub const METEOR_CENTER: Vec2 = vec2(72.0, 250.0);
+pub const METEOR_FRAMES: usize = 44;
+pub const METEOR_IMPACT: usize = 16;
+pub const METEOR_FRAME_TIME: f64 = 0.03;
+/// Горящий кратер (`tools/breach_crater.py`, с 0.94): кадр 80×112, центр клетки (40, 84),
+/// повтор из `CRATER_FRAMES` кадров по `CRATER_FRAME_TIME`, слои под фигурами и над ними.
+pub const CRATER: Vec2 = vec2(80.0, 112.0);
+pub const CRATER_CENTER: Vec2 = vec2(40.0, 84.0);
+pub const CRATER_FRAMES: usize = 12;
+pub const CRATER_FRAME_TIME: f64 = 0.08;
+/// Волна метеорита крестом (`tools/breach_meteor_wave.py`): кадр как у огненной волны,
+/// `METEOR_WAVE_FRAMES` кадров по `WAVE_FRAME_TIME`.
+pub const METEOR_WAVE_FRAMES: usize = 18;
+/// Теневая фигура (с 0.70, арт-проект): тёмная аура `dark_fire_*` (`tools/breach_darkfire.py`,
+/// 40 кадров, вступление [0, 8), повтор [8, 40)) и теневой шаг (`tools/breach_shadowstep.py`):
+/// исчезновение на исходной клетке `STEP_OUT` кадров, появление на целевой `STEP_IN` кадров
+/// с кадра исчезновения `STEP_IN_AT`. Кадр и опора — как у электричества.
+pub const DARK_FRAMES: usize = 40;
+pub const DARK_LOOP: [usize; 2] = [8, 40];
+pub const STEP_OUT: usize = 18;
+pub const STEP_IN: usize = 13;
+pub const STEP_IN_AT: usize = 7;
+/// Кадр теневого шага (с 0.71, просьба пользователя: вдвое быстрее — 30 мс вместо 60).
+pub const STEP_FRAME_TIME: f64 = 0.03;
 
 /// Состояния кнопки в порядке `Button`: «Конец хода», потом «Начать раунд» (rogue-like,
 /// расстановка перед уровнем, с 0.59).
@@ -116,6 +160,89 @@ const BUTTONS: [&[u8]; 10] = breach!(
 const BUTTON_STATES: usize = 5;
 /// Монеты: большая и маленькая.
 const COINS: [&[u8]; 2] = breach!("ui/coin_32.png", "ui/coin_16.png");
+/// Гербы в порядке `Crest::ALL`.
+const CRESTS: [&[u8]; 80] = breach!(
+    "ui/crest_heart.png",
+    "ui/crest_coin.png",
+    "ui/crest_snow2.png",
+    "ui/crest_pawn.png",
+    "ui/crest_spikes.png",
+    "ui/crest_crystal.png",
+    "ui/crest_axe_sword.png",
+    "ui/crest_axe_fangs.png",
+    "ui/crest_axe_queen.png",
+    "ui/crest_axes.png",
+    "ui/crest_whirl.png",
+    "ui/crest_fire_axe.png",
+    "ui/crest_flame_pawn.png",
+    "ui/crest_flames.png",
+    "ui/crest_flame_skull.png",
+    "ui/crest_flame_sword.png",
+    "ui/crest_flame_coin.png",
+    "ui/crest_bomb.png",
+    "ui/crest_dark_rook.png",
+    "ui/crest_dark_skull.png",
+    "ui/crest_dark_flames.png",
+    "ui/crest_dark_portal.png",
+    "ui/crest_dark_coin.png",
+    "ui/crest_dark_eye.png",
+    "ui/crest_winds.png",
+    "ui/crest_wind_coin.png",
+    "ui/crest_wind_knight.png",
+    "ui/crest_wind_sword.png",
+    "ui/crest_bolt_bishop.png",
+    "ui/crest_bolt_coin.png",
+    "ui/crest_bolt_plus.png",
+    "ui/crest_bolts.png",
+    "ui/crest_red_bolt.png",
+    "ui/crest_bolt_one.png",
+    "ui/crest_pawns2.png",
+    "ui/crest_bishops2.png",
+    "ui/crest_knights2.png",
+    "ui/crest_rooks2.png",
+    "ui/crest_queens2.png",
+    "ui/crest_reroll_coin.png",
+    "ui/crest_hat_coin.png",
+    "ui/crest_hats.png",
+    "ui/crest_hat_bishop.png",
+    "ui/crest_meteor.png",
+    "ui/crest_hat_meteor.png",
+    "ui/crest_hat_plus.png",
+    "ui/crest_gold_king.png",
+    "ui/crest_king_coin.png",
+    "ui/crest_kings2.png",
+    "ui/crest_king_queen.png",
+    "ui/crest_king_skull.png",
+    "ui/crest_piggy.png",
+    "ui/crest_axe_flame.png",
+    "ui/crest_axe_bolt.png",
+    "ui/crest_axe_wind.png",
+    "ui/crest_axe_king.png",
+    "ui/crest_axe_dark.png",
+    "ui/crest_axe_snow.png",
+    "ui/crest_axe_hat.png",
+    "ui/crest_king_flame.png",
+    "ui/crest_king_bolt.png",
+    "ui/crest_king_wind.png",
+    "ui/crest_king_dark.png",
+    "ui/crest_king_snow.png",
+    "ui/crest_king_hat.png",
+    "ui/crest_hat_flame.png",
+    "ui/crest_hat_bolt.png",
+    "ui/crest_hat_wind.png",
+    "ui/crest_hat_dark.png",
+    "ui/crest_hat_snow.png",
+    "ui/crest_flame_snow.png",
+    "ui/crest_snow_bolt.png",
+    "ui/crest_snow_wind.png",
+    "ui/crest_snow_dark.png",
+    "ui/crest_flame_bolt.png",
+    "ui/crest_flame_wind.png",
+    "ui/crest_flame_dark.png",
+    "ui/crest_bolt_wind.png",
+    "ui/crest_bolt_dark.png",
+    "ui/crest_wind_dark.png",
+);
 /// Звенья s, m, l и наконечник — по состояниям `Aim` (idle, enemy, ally).
 const ARROW: [&[u8]; 12] = breach!(
     "ui/arrow_seg_s_idle.png",
@@ -138,6 +265,10 @@ const TARGETS: [&[u8]; 3] = breach!(
 );
 /// Огненная волна: слой под фигурами и слой над ними, кадры в ряд.
 const WAVE: [&[u8]; 2] = breach!("effects/fire_wave_under.png", "effects/fire_wave_over.png");
+const BIG_WAVE: [&[u8]; 2] = breach!(
+    "effects/fire_wave_plus_under.png",
+    "effects/fire_wave_plus_over.png"
+);
 /// Благословение: слой под фигурами и над ними; слон с крыльями белых и чёрных.
 const BLESS: [&[u8]; 2] = breach!("effects/bless_under.png", "effects/bless_over.png");
 const BLESS_FIGURE_PNG: [&[u8]; 2] =
@@ -186,6 +317,529 @@ const FREEZE_BLOCKS: [&[u8]; 24] = breach!(
 );
 /// Лава в фигурах (с 0.63 — всех видов, из арт-проекта: огненные фигуры rogue-like) в
 /// порядке `super::index`, электричество в слоне — белых и чёрных.
+/// Анимации объединённых фигур — те же полосы на спрайте варвара (`tools/breach_barbarian_combo.py`,
+/// с 0.96): идут в массивах следом за обычными, `+ BARBARIAN` к номеру.
+const BARBARIAN: usize = 12;
+/// Золотые объединённые (`tools/breach_gold_combo.py`, с 0.97) — следом за варварами, `+ GOLD`.
+const GOLD: usize = 24;
+/// Маги-объединённые (`tools/breach_wizard_combo.py`, с 0.98) — следом за золотыми, `+ WIZARD`.
+const WIZARD: usize = 36;
+/// Ледяные объединённые (`tools/breach_ice_combo.py`, с 0.99) — следом за магами, `+ ICE`.
+const ICE: usize = 48;
+/// Огненные объединённые (`tools/breach_fire_combo.py`, с 0.101): кадры силы на теле с трещинами
+/// ожидания взрыва — следом за ледяными, `+ FIRE`; своей лавы у набора нет (взрыв — обычная).
+const FIRE: usize = 60;
+/// Электрические объединённые (`tools/breach_spark_combo.py`, с 0.102): вихрь и тёмная аура вместе с
+/// молниями (40 кадров, как у вихря и ауры) — следом за огненными, `+ SPARK`; своего набора
+/// электричества нет.
+const SPARK: usize = 72;
+/// Воздушные теневые (`tools/breach_wind_combo.py`, с 0.103): тёмная аура с вихрем и теневой шаг —
+/// следом за электрическими, `+ WIND`; только у тени.
+const WIND: usize = 84;
+const WIND_DARK_PNG: [&[u8]; 12] = breach!(
+    "effects/wind/dark_fire_wP.png",
+    "effects/wind/dark_fire_wN.png",
+    "effects/wind/dark_fire_wB.png",
+    "effects/wind/dark_fire_wR.png",
+    "effects/wind/dark_fire_wQ.png",
+    "effects/wind/dark_fire_wK.png",
+    "effects/wind/dark_fire_bP.png",
+    "effects/wind/dark_fire_bN.png",
+    "effects/wind/dark_fire_bB.png",
+    "effects/wind/dark_fire_bR.png",
+    "effects/wind/dark_fire_bQ.png",
+    "effects/wind/dark_fire_bK.png",
+);
+const WIND_STEP_OUT_PNG: [&[u8]; 12] = breach!(
+    "effects/wind/shadowstep_out_wP.png",
+    "effects/wind/shadowstep_out_wN.png",
+    "effects/wind/shadowstep_out_wB.png",
+    "effects/wind/shadowstep_out_wR.png",
+    "effects/wind/shadowstep_out_wQ.png",
+    "effects/wind/shadowstep_out_wK.png",
+    "effects/wind/shadowstep_out_bP.png",
+    "effects/wind/shadowstep_out_bN.png",
+    "effects/wind/shadowstep_out_bB.png",
+    "effects/wind/shadowstep_out_bR.png",
+    "effects/wind/shadowstep_out_bQ.png",
+    "effects/wind/shadowstep_out_bK.png",
+);
+const WIND_STEP_IN_PNG: [&[u8]; 12] = breach!(
+    "effects/wind/shadowstep_in_wP.png",
+    "effects/wind/shadowstep_in_wN.png",
+    "effects/wind/shadowstep_in_wB.png",
+    "effects/wind/shadowstep_in_wR.png",
+    "effects/wind/shadowstep_in_wQ.png",
+    "effects/wind/shadowstep_in_wK.png",
+    "effects/wind/shadowstep_in_bP.png",
+    "effects/wind/shadowstep_in_bN.png",
+    "effects/wind/shadowstep_in_bB.png",
+    "effects/wind/shadowstep_in_bR.png",
+    "effects/wind/shadowstep_in_bQ.png",
+    "effects/wind/shadowstep_in_bK.png",
+);
+const SPARK_WIND_PNG: [&[u8]; 12] = breach!(
+    "effects/spark/wind_wP.png",
+    "effects/spark/wind_wN.png",
+    "effects/spark/wind_wB.png",
+    "effects/spark/wind_wR.png",
+    "effects/spark/wind_wQ.png",
+    "effects/spark/wind_wK.png",
+    "effects/spark/wind_bP.png",
+    "effects/spark/wind_bN.png",
+    "effects/spark/wind_bB.png",
+    "effects/spark/wind_bR.png",
+    "effects/spark/wind_bQ.png",
+    "effects/spark/wind_bK.png",
+);
+const SPARK_DARK_PNG: [&[u8]; 12] = breach!(
+    "effects/spark/dark_fire_wP.png",
+    "effects/spark/dark_fire_wN.png",
+    "effects/spark/dark_fire_wB.png",
+    "effects/spark/dark_fire_wR.png",
+    "effects/spark/dark_fire_wQ.png",
+    "effects/spark/dark_fire_wK.png",
+    "effects/spark/dark_fire_bP.png",
+    "effects/spark/dark_fire_bN.png",
+    "effects/spark/dark_fire_bB.png",
+    "effects/spark/dark_fire_bR.png",
+    "effects/spark/dark_fire_bQ.png",
+    "effects/spark/dark_fire_bK.png",
+);
+const SPARK_STEP_OUT_PNG: [&[u8]; 12] = breach!(
+    "effects/spark/shadowstep_out_wP.png",
+    "effects/spark/shadowstep_out_wN.png",
+    "effects/spark/shadowstep_out_wB.png",
+    "effects/spark/shadowstep_out_wR.png",
+    "effects/spark/shadowstep_out_wQ.png",
+    "effects/spark/shadowstep_out_wK.png",
+    "effects/spark/shadowstep_out_bP.png",
+    "effects/spark/shadowstep_out_bN.png",
+    "effects/spark/shadowstep_out_bB.png",
+    "effects/spark/shadowstep_out_bR.png",
+    "effects/spark/shadowstep_out_bQ.png",
+    "effects/spark/shadowstep_out_bK.png",
+);
+const SPARK_STEP_IN_PNG: [&[u8]; 12] = breach!(
+    "effects/spark/shadowstep_in_wP.png",
+    "effects/spark/shadowstep_in_wN.png",
+    "effects/spark/shadowstep_in_wB.png",
+    "effects/spark/shadowstep_in_wR.png",
+    "effects/spark/shadowstep_in_wQ.png",
+    "effects/spark/shadowstep_in_wK.png",
+    "effects/spark/shadowstep_in_bP.png",
+    "effects/spark/shadowstep_in_bN.png",
+    "effects/spark/shadowstep_in_bB.png",
+    "effects/spark/shadowstep_in_bR.png",
+    "effects/spark/shadowstep_in_bQ.png",
+    "effects/spark/shadowstep_in_bK.png",
+);
+const FIRE_ELECTRIC_PNG: [&[u8]; 12] = breach!(
+    "effects/fire/electric_hold_wP.png",
+    "effects/fire/electric_hold_wN.png",
+    "effects/fire/electric_hold_wB.png",
+    "effects/fire/electric_hold_wR.png",
+    "effects/fire/electric_hold_wQ.png",
+    "effects/fire/electric_hold_wK.png",
+    "effects/fire/electric_hold_bP.png",
+    "effects/fire/electric_hold_bN.png",
+    "effects/fire/electric_hold_bB.png",
+    "effects/fire/electric_hold_bR.png",
+    "effects/fire/electric_hold_bQ.png",
+    "effects/fire/electric_hold_bK.png",
+);
+const FIRE_WIND_PNG: [&[u8]; 12] = breach!(
+    "effects/fire/wind_wP.png",
+    "effects/fire/wind_wN.png",
+    "effects/fire/wind_wB.png",
+    "effects/fire/wind_wR.png",
+    "effects/fire/wind_wQ.png",
+    "effects/fire/wind_wK.png",
+    "effects/fire/wind_bP.png",
+    "effects/fire/wind_bN.png",
+    "effects/fire/wind_bB.png",
+    "effects/fire/wind_bR.png",
+    "effects/fire/wind_bQ.png",
+    "effects/fire/wind_bK.png",
+);
+const FIRE_DARK_PNG: [&[u8]; 12] = breach!(
+    "effects/fire/dark_fire_wP.png",
+    "effects/fire/dark_fire_wN.png",
+    "effects/fire/dark_fire_wB.png",
+    "effects/fire/dark_fire_wR.png",
+    "effects/fire/dark_fire_wQ.png",
+    "effects/fire/dark_fire_wK.png",
+    "effects/fire/dark_fire_bP.png",
+    "effects/fire/dark_fire_bN.png",
+    "effects/fire/dark_fire_bB.png",
+    "effects/fire/dark_fire_bR.png",
+    "effects/fire/dark_fire_bQ.png",
+    "effects/fire/dark_fire_bK.png",
+);
+const FIRE_STEP_OUT_PNG: [&[u8]; 12] = breach!(
+    "effects/fire/shadowstep_out_wP.png",
+    "effects/fire/shadowstep_out_wN.png",
+    "effects/fire/shadowstep_out_wB.png",
+    "effects/fire/shadowstep_out_wR.png",
+    "effects/fire/shadowstep_out_wQ.png",
+    "effects/fire/shadowstep_out_wK.png",
+    "effects/fire/shadowstep_out_bP.png",
+    "effects/fire/shadowstep_out_bN.png",
+    "effects/fire/shadowstep_out_bB.png",
+    "effects/fire/shadowstep_out_bR.png",
+    "effects/fire/shadowstep_out_bQ.png",
+    "effects/fire/shadowstep_out_bK.png",
+);
+const FIRE_STEP_IN_PNG: [&[u8]; 12] = breach!(
+    "effects/fire/shadowstep_in_wP.png",
+    "effects/fire/shadowstep_in_wN.png",
+    "effects/fire/shadowstep_in_wB.png",
+    "effects/fire/shadowstep_in_wR.png",
+    "effects/fire/shadowstep_in_wQ.png",
+    "effects/fire/shadowstep_in_wK.png",
+    "effects/fire/shadowstep_in_bP.png",
+    "effects/fire/shadowstep_in_bN.png",
+    "effects/fire/shadowstep_in_bB.png",
+    "effects/fire/shadowstep_in_bR.png",
+    "effects/fire/shadowstep_in_bQ.png",
+    "effects/fire/shadowstep_in_bK.png",
+);
+const ICE_LAVA_PNG: [&[u8]; 12] = breach!(
+    "effects/ice/lava_crack_wP.png",
+    "effects/ice/lava_crack_wN.png",
+    "effects/ice/lava_crack_wB.png",
+    "effects/ice/lava_crack_wR.png",
+    "effects/ice/lava_crack_wQ.png",
+    "effects/ice/lava_crack_wK.png",
+    "effects/ice/lava_crack_bP.png",
+    "effects/ice/lava_crack_bN.png",
+    "effects/ice/lava_crack_bB.png",
+    "effects/ice/lava_crack_bR.png",
+    "effects/ice/lava_crack_bQ.png",
+    "effects/ice/lava_crack_bK.png",
+);
+const ICE_ELECTRIC_PNG: [&[u8]; 12] = breach!(
+    "effects/ice/electric_hold_wP.png",
+    "effects/ice/electric_hold_wN.png",
+    "effects/ice/electric_hold_wB.png",
+    "effects/ice/electric_hold_wR.png",
+    "effects/ice/electric_hold_wQ.png",
+    "effects/ice/electric_hold_wK.png",
+    "effects/ice/electric_hold_bP.png",
+    "effects/ice/electric_hold_bN.png",
+    "effects/ice/electric_hold_bB.png",
+    "effects/ice/electric_hold_bR.png",
+    "effects/ice/electric_hold_bQ.png",
+    "effects/ice/electric_hold_bK.png",
+);
+const ICE_WIND_PNG: [&[u8]; 12] = breach!(
+    "effects/ice/wind_wP.png",
+    "effects/ice/wind_wN.png",
+    "effects/ice/wind_wB.png",
+    "effects/ice/wind_wR.png",
+    "effects/ice/wind_wQ.png",
+    "effects/ice/wind_wK.png",
+    "effects/ice/wind_bP.png",
+    "effects/ice/wind_bN.png",
+    "effects/ice/wind_bB.png",
+    "effects/ice/wind_bR.png",
+    "effects/ice/wind_bQ.png",
+    "effects/ice/wind_bK.png",
+);
+const ICE_DARK_PNG: [&[u8]; 12] = breach!(
+    "effects/ice/dark_fire_wP.png",
+    "effects/ice/dark_fire_wN.png",
+    "effects/ice/dark_fire_wB.png",
+    "effects/ice/dark_fire_wR.png",
+    "effects/ice/dark_fire_wQ.png",
+    "effects/ice/dark_fire_wK.png",
+    "effects/ice/dark_fire_bP.png",
+    "effects/ice/dark_fire_bN.png",
+    "effects/ice/dark_fire_bB.png",
+    "effects/ice/dark_fire_bR.png",
+    "effects/ice/dark_fire_bQ.png",
+    "effects/ice/dark_fire_bK.png",
+);
+const ICE_STEP_OUT_PNG: [&[u8]; 12] = breach!(
+    "effects/ice/shadowstep_out_wP.png",
+    "effects/ice/shadowstep_out_wN.png",
+    "effects/ice/shadowstep_out_wB.png",
+    "effects/ice/shadowstep_out_wR.png",
+    "effects/ice/shadowstep_out_wQ.png",
+    "effects/ice/shadowstep_out_wK.png",
+    "effects/ice/shadowstep_out_bP.png",
+    "effects/ice/shadowstep_out_bN.png",
+    "effects/ice/shadowstep_out_bB.png",
+    "effects/ice/shadowstep_out_bR.png",
+    "effects/ice/shadowstep_out_bQ.png",
+    "effects/ice/shadowstep_out_bK.png",
+);
+const ICE_STEP_IN_PNG: [&[u8]; 12] = breach!(
+    "effects/ice/shadowstep_in_wP.png",
+    "effects/ice/shadowstep_in_wN.png",
+    "effects/ice/shadowstep_in_wB.png",
+    "effects/ice/shadowstep_in_wR.png",
+    "effects/ice/shadowstep_in_wQ.png",
+    "effects/ice/shadowstep_in_wK.png",
+    "effects/ice/shadowstep_in_bP.png",
+    "effects/ice/shadowstep_in_bN.png",
+    "effects/ice/shadowstep_in_bB.png",
+    "effects/ice/shadowstep_in_bR.png",
+    "effects/ice/shadowstep_in_bQ.png",
+    "effects/ice/shadowstep_in_bK.png",
+);
+const WIZARD_LAVA_PNG: [&[u8]; 12] = breach!(
+    "effects/wizard/lava_crack_wP.png",
+    "effects/wizard/lava_crack_wN.png",
+    "effects/wizard/lava_crack_wB.png",
+    "effects/wizard/lava_crack_wR.png",
+    "effects/wizard/lava_crack_wQ.png",
+    "effects/wizard/lava_crack_wK.png",
+    "effects/wizard/lava_crack_bP.png",
+    "effects/wizard/lava_crack_bN.png",
+    "effects/wizard/lava_crack_bB.png",
+    "effects/wizard/lava_crack_bR.png",
+    "effects/wizard/lava_crack_bQ.png",
+    "effects/wizard/lava_crack_bK.png",
+);
+const WIZARD_ELECTRIC_PNG: [&[u8]; 12] = breach!(
+    "effects/wizard/electric_hold_wP.png",
+    "effects/wizard/electric_hold_wN.png",
+    "effects/wizard/electric_hold_wB.png",
+    "effects/wizard/electric_hold_wR.png",
+    "effects/wizard/electric_hold_wQ.png",
+    "effects/wizard/electric_hold_wK.png",
+    "effects/wizard/electric_hold_bP.png",
+    "effects/wizard/electric_hold_bN.png",
+    "effects/wizard/electric_hold_bB.png",
+    "effects/wizard/electric_hold_bR.png",
+    "effects/wizard/electric_hold_bQ.png",
+    "effects/wizard/electric_hold_bK.png",
+);
+const WIZARD_WIND_PNG: [&[u8]; 12] = breach!(
+    "effects/wizard/wind_wP.png",
+    "effects/wizard/wind_wN.png",
+    "effects/wizard/wind_wB.png",
+    "effects/wizard/wind_wR.png",
+    "effects/wizard/wind_wQ.png",
+    "effects/wizard/wind_wK.png",
+    "effects/wizard/wind_bP.png",
+    "effects/wizard/wind_bN.png",
+    "effects/wizard/wind_bB.png",
+    "effects/wizard/wind_bR.png",
+    "effects/wizard/wind_bQ.png",
+    "effects/wizard/wind_bK.png",
+);
+const WIZARD_DARK_PNG: [&[u8]; 12] = breach!(
+    "effects/wizard/dark_fire_wP.png",
+    "effects/wizard/dark_fire_wN.png",
+    "effects/wizard/dark_fire_wB.png",
+    "effects/wizard/dark_fire_wR.png",
+    "effects/wizard/dark_fire_wQ.png",
+    "effects/wizard/dark_fire_wK.png",
+    "effects/wizard/dark_fire_bP.png",
+    "effects/wizard/dark_fire_bN.png",
+    "effects/wizard/dark_fire_bB.png",
+    "effects/wizard/dark_fire_bR.png",
+    "effects/wizard/dark_fire_bQ.png",
+    "effects/wizard/dark_fire_bK.png",
+);
+const WIZARD_STEP_OUT_PNG: [&[u8]; 12] = breach!(
+    "effects/wizard/shadowstep_out_wP.png",
+    "effects/wizard/shadowstep_out_wN.png",
+    "effects/wizard/shadowstep_out_wB.png",
+    "effects/wizard/shadowstep_out_wR.png",
+    "effects/wizard/shadowstep_out_wQ.png",
+    "effects/wizard/shadowstep_out_wK.png",
+    "effects/wizard/shadowstep_out_bP.png",
+    "effects/wizard/shadowstep_out_bN.png",
+    "effects/wizard/shadowstep_out_bB.png",
+    "effects/wizard/shadowstep_out_bR.png",
+    "effects/wizard/shadowstep_out_bQ.png",
+    "effects/wizard/shadowstep_out_bK.png",
+);
+const WIZARD_STEP_IN_PNG: [&[u8]; 12] = breach!(
+    "effects/wizard/shadowstep_in_wP.png",
+    "effects/wizard/shadowstep_in_wN.png",
+    "effects/wizard/shadowstep_in_wB.png",
+    "effects/wizard/shadowstep_in_wR.png",
+    "effects/wizard/shadowstep_in_wQ.png",
+    "effects/wizard/shadowstep_in_wK.png",
+    "effects/wizard/shadowstep_in_bP.png",
+    "effects/wizard/shadowstep_in_bN.png",
+    "effects/wizard/shadowstep_in_bB.png",
+    "effects/wizard/shadowstep_in_bR.png",
+    "effects/wizard/shadowstep_in_bQ.png",
+    "effects/wizard/shadowstep_in_bK.png",
+);
+const GOLD_LAVA_PNG: [&[u8]; 12] = breach!(
+    "effects/gold/lava_crack_wP.png",
+    "effects/gold/lava_crack_wN.png",
+    "effects/gold/lava_crack_wB.png",
+    "effects/gold/lava_crack_wR.png",
+    "effects/gold/lava_crack_wQ.png",
+    "effects/gold/lava_crack_wK.png",
+    "effects/gold/lava_crack_bP.png",
+    "effects/gold/lava_crack_bN.png",
+    "effects/gold/lava_crack_bB.png",
+    "effects/gold/lava_crack_bR.png",
+    "effects/gold/lava_crack_bQ.png",
+    "effects/gold/lava_crack_bK.png",
+);
+const GOLD_ELECTRIC_PNG: [&[u8]; 12] = breach!(
+    "effects/gold/electric_hold_wP.png",
+    "effects/gold/electric_hold_wN.png",
+    "effects/gold/electric_hold_wB.png",
+    "effects/gold/electric_hold_wR.png",
+    "effects/gold/electric_hold_wQ.png",
+    "effects/gold/electric_hold_wK.png",
+    "effects/gold/electric_hold_bP.png",
+    "effects/gold/electric_hold_bN.png",
+    "effects/gold/electric_hold_bB.png",
+    "effects/gold/electric_hold_bR.png",
+    "effects/gold/electric_hold_bQ.png",
+    "effects/gold/electric_hold_bK.png",
+);
+const GOLD_WIND_PNG: [&[u8]; 12] = breach!(
+    "effects/gold/wind_wP.png",
+    "effects/gold/wind_wN.png",
+    "effects/gold/wind_wB.png",
+    "effects/gold/wind_wR.png",
+    "effects/gold/wind_wQ.png",
+    "effects/gold/wind_wK.png",
+    "effects/gold/wind_bP.png",
+    "effects/gold/wind_bN.png",
+    "effects/gold/wind_bB.png",
+    "effects/gold/wind_bR.png",
+    "effects/gold/wind_bQ.png",
+    "effects/gold/wind_bK.png",
+);
+const GOLD_DARK_PNG: [&[u8]; 12] = breach!(
+    "effects/gold/dark_fire_wP.png",
+    "effects/gold/dark_fire_wN.png",
+    "effects/gold/dark_fire_wB.png",
+    "effects/gold/dark_fire_wR.png",
+    "effects/gold/dark_fire_wQ.png",
+    "effects/gold/dark_fire_wK.png",
+    "effects/gold/dark_fire_bP.png",
+    "effects/gold/dark_fire_bN.png",
+    "effects/gold/dark_fire_bB.png",
+    "effects/gold/dark_fire_bR.png",
+    "effects/gold/dark_fire_bQ.png",
+    "effects/gold/dark_fire_bK.png",
+);
+const GOLD_STEP_OUT_PNG: [&[u8]; 12] = breach!(
+    "effects/gold/shadowstep_out_wP.png",
+    "effects/gold/shadowstep_out_wN.png",
+    "effects/gold/shadowstep_out_wB.png",
+    "effects/gold/shadowstep_out_wR.png",
+    "effects/gold/shadowstep_out_wQ.png",
+    "effects/gold/shadowstep_out_wK.png",
+    "effects/gold/shadowstep_out_bP.png",
+    "effects/gold/shadowstep_out_bN.png",
+    "effects/gold/shadowstep_out_bB.png",
+    "effects/gold/shadowstep_out_bR.png",
+    "effects/gold/shadowstep_out_bQ.png",
+    "effects/gold/shadowstep_out_bK.png",
+);
+const GOLD_STEP_IN_PNG: [&[u8]; 12] = breach!(
+    "effects/gold/shadowstep_in_wP.png",
+    "effects/gold/shadowstep_in_wN.png",
+    "effects/gold/shadowstep_in_wB.png",
+    "effects/gold/shadowstep_in_wR.png",
+    "effects/gold/shadowstep_in_wQ.png",
+    "effects/gold/shadowstep_in_wK.png",
+    "effects/gold/shadowstep_in_bP.png",
+    "effects/gold/shadowstep_in_bN.png",
+    "effects/gold/shadowstep_in_bB.png",
+    "effects/gold/shadowstep_in_bR.png",
+    "effects/gold/shadowstep_in_bQ.png",
+    "effects/gold/shadowstep_in_bK.png",
+);
+const BARBARIAN_LAVA_PNG: [&[u8]; 12] = breach!(
+    "effects/barbarian/lava_crack_wP.png",
+    "effects/barbarian/lava_crack_wN.png",
+    "effects/barbarian/lava_crack_wB.png",
+    "effects/barbarian/lava_crack_wR.png",
+    "effects/barbarian/lava_crack_wQ.png",
+    "effects/barbarian/lava_crack_wK.png",
+    "effects/barbarian/lava_crack_bP.png",
+    "effects/barbarian/lava_crack_bN.png",
+    "effects/barbarian/lava_crack_bB.png",
+    "effects/barbarian/lava_crack_bR.png",
+    "effects/barbarian/lava_crack_bQ.png",
+    "effects/barbarian/lava_crack_bK.png",
+);
+const BARBARIAN_ELECTRIC_PNG: [&[u8]; 12] = breach!(
+    "effects/barbarian/electric_hold_wP.png",
+    "effects/barbarian/electric_hold_wN.png",
+    "effects/barbarian/electric_hold_wB.png",
+    "effects/barbarian/electric_hold_wR.png",
+    "effects/barbarian/electric_hold_wQ.png",
+    "effects/barbarian/electric_hold_wK.png",
+    "effects/barbarian/electric_hold_bP.png",
+    "effects/barbarian/electric_hold_bN.png",
+    "effects/barbarian/electric_hold_bB.png",
+    "effects/barbarian/electric_hold_bR.png",
+    "effects/barbarian/electric_hold_bQ.png",
+    "effects/barbarian/electric_hold_bK.png",
+);
+const BARBARIAN_WIND_PNG: [&[u8]; 12] = breach!(
+    "effects/barbarian/wind_wP.png",
+    "effects/barbarian/wind_wN.png",
+    "effects/barbarian/wind_wB.png",
+    "effects/barbarian/wind_wR.png",
+    "effects/barbarian/wind_wQ.png",
+    "effects/barbarian/wind_wK.png",
+    "effects/barbarian/wind_bP.png",
+    "effects/barbarian/wind_bN.png",
+    "effects/barbarian/wind_bB.png",
+    "effects/barbarian/wind_bR.png",
+    "effects/barbarian/wind_bQ.png",
+    "effects/barbarian/wind_bK.png",
+);
+const BARBARIAN_DARK_PNG: [&[u8]; 12] = breach!(
+    "effects/barbarian/dark_fire_wP.png",
+    "effects/barbarian/dark_fire_wN.png",
+    "effects/barbarian/dark_fire_wB.png",
+    "effects/barbarian/dark_fire_wR.png",
+    "effects/barbarian/dark_fire_wQ.png",
+    "effects/barbarian/dark_fire_wK.png",
+    "effects/barbarian/dark_fire_bP.png",
+    "effects/barbarian/dark_fire_bN.png",
+    "effects/barbarian/dark_fire_bB.png",
+    "effects/barbarian/dark_fire_bR.png",
+    "effects/barbarian/dark_fire_bQ.png",
+    "effects/barbarian/dark_fire_bK.png",
+);
+const BARBARIAN_STEP_OUT_PNG: [&[u8]; 12] = breach!(
+    "effects/barbarian/shadowstep_out_wP.png",
+    "effects/barbarian/shadowstep_out_wN.png",
+    "effects/barbarian/shadowstep_out_wB.png",
+    "effects/barbarian/shadowstep_out_wR.png",
+    "effects/barbarian/shadowstep_out_wQ.png",
+    "effects/barbarian/shadowstep_out_wK.png",
+    "effects/barbarian/shadowstep_out_bP.png",
+    "effects/barbarian/shadowstep_out_bN.png",
+    "effects/barbarian/shadowstep_out_bB.png",
+    "effects/barbarian/shadowstep_out_bR.png",
+    "effects/barbarian/shadowstep_out_bQ.png",
+    "effects/barbarian/shadowstep_out_bK.png",
+);
+const BARBARIAN_STEP_IN_PNG: [&[u8]; 12] = breach!(
+    "effects/barbarian/shadowstep_in_wP.png",
+    "effects/barbarian/shadowstep_in_wN.png",
+    "effects/barbarian/shadowstep_in_wB.png",
+    "effects/barbarian/shadowstep_in_wR.png",
+    "effects/barbarian/shadowstep_in_wQ.png",
+    "effects/barbarian/shadowstep_in_wK.png",
+    "effects/barbarian/shadowstep_in_bP.png",
+    "effects/barbarian/shadowstep_in_bN.png",
+    "effects/barbarian/shadowstep_in_bB.png",
+    "effects/barbarian/shadowstep_in_bR.png",
+    "effects/barbarian/shadowstep_in_bQ.png",
+    "effects/barbarian/shadowstep_in_bK.png",
+);
 const LAVA_PNG: [&[u8]; 12] = breach!(
     "effects/lava_crack_wP.png",
     "effects/lava_crack_wN.png",
@@ -203,6 +857,76 @@ const LAVA_PNG: [&[u8]; 12] = breach!(
 /// Электричество — с 0.64 у всех видов (из арт-проекта: электрические фигуры rogue-like), с
 /// 0.66 — последняя версия `electric_hold_*` без кольца по земле во вспышке (просьба
 /// пользователя; спокойный `electric_calm_*` из 0.65 не подошёл), в порядке `super::index`.
+const DARK_PNG: [&[u8]; 12] = breach!(
+    "effects/dark_fire_wP.png",
+    "effects/dark_fire_wN.png",
+    "effects/dark_fire_wB.png",
+    "effects/dark_fire_wR.png",
+    "effects/dark_fire_wQ.png",
+    "effects/dark_fire_wK.png",
+    "effects/dark_fire_bP.png",
+    "effects/dark_fire_bN.png",
+    "effects/dark_fire_bB.png",
+    "effects/dark_fire_bR.png",
+    "effects/dark_fire_bQ.png",
+    "effects/dark_fire_bK.png",
+);
+const STEP_OUT_PNG: [&[u8]; 12] = breach!(
+    "effects/shadowstep_out_wP.png",
+    "effects/shadowstep_out_wN.png",
+    "effects/shadowstep_out_wB.png",
+    "effects/shadowstep_out_wR.png",
+    "effects/shadowstep_out_wQ.png",
+    "effects/shadowstep_out_wK.png",
+    "effects/shadowstep_out_bP.png",
+    "effects/shadowstep_out_bN.png",
+    "effects/shadowstep_out_bB.png",
+    "effects/shadowstep_out_bR.png",
+    "effects/shadowstep_out_bQ.png",
+    "effects/shadowstep_out_bK.png",
+);
+const STEP_IN_PNG: [&[u8]; 12] = breach!(
+    "effects/shadowstep_in_wP.png",
+    "effects/shadowstep_in_wN.png",
+    "effects/shadowstep_in_wB.png",
+    "effects/shadowstep_in_wR.png",
+    "effects/shadowstep_in_wQ.png",
+    "effects/shadowstep_in_wK.png",
+    "effects/shadowstep_in_bP.png",
+    "effects/shadowstep_in_bN.png",
+    "effects/shadowstep_in_bB.png",
+    "effects/shadowstep_in_bR.png",
+    "effects/shadowstep_in_bQ.png",
+    "effects/shadowstep_in_bK.png",
+);
+const METEOR_PNG: [&[u8]; 1] = breach!("effects/meteor.png");
+const CRATER_PNG: [&[u8]; 2] = breach!("effects/crater_under.png", "effects/crater_over.png");
+const METEOR_WAVE_PNG: [&[u8]; 2] = breach!(
+    "effects/meteor_wave_under.png",
+    "effects/meteor_wave_over.png"
+);
+const POISON_PNG: [&[u8]; 12] = breach!(
+    "effects/poison_wP.png",
+    "effects/poison_wN.png",
+    "effects/poison_wB.png",
+    "effects/poison_wR.png",
+    "effects/poison_wQ.png",
+    "effects/poison_wK.png",
+    "effects/poison_bP.png",
+    "effects/poison_bN.png",
+    "effects/poison_bB.png",
+    "effects/poison_bR.png",
+    "effects/poison_bQ.png",
+    "effects/poison_bK.png",
+);
+/// След ядовитой фигуры по направлениям `Trail` (на экране): вверх-вправо, вниз-влево,
+/// вверх-влево, вниз-вправо.
+const POISON_TRAIL_PNG: [&[u8]; 4] = breach!(
+    "effects/poison_trail_ne.png",
+    "effects/poison_trail_sw.png",
+    "effects/poison_trail_nw.png",
+    "effects/poison_trail_se.png",
+);
 const WIND_PNG: [&[u8]; 12] = breach!(
     "effects/wind_wP.png",
     "effects/wind_wN.png",
@@ -265,6 +989,7 @@ pub enum ArrowPart {
 pub struct UiArt {
     buttons: Vec<Pixels>,
     coins: Vec<Pixels>,
+    crests: Vec<Pixels>,
     arrow: Vec<Pixels>,
     targets: Vec<Pixels>,
     /// Кадры волны: [слой][кадр].
@@ -282,6 +1007,43 @@ pub struct UiArt {
     lava: Vec<Strip>,
     electric: Vec<Strip>,
     wind: Vec<Strip>,
+    poison: Vec<Strip>,
+    poison_trail: Vec<Strip>,
+    big_wave: Vec<Strip>,
+    crater: Vec<Strip>,
+    meteor_wave: Vec<Strip>,
+    meteor: Strip,
+    /// Аура теневой фигуры, исчезновение и появление теневого шага.
+    dark: [Vec<Strip>; 3],
+}
+
+/// Номер полосы анимации силы `of` у фигуры: у варвара — его набор (`BARBARIAN` следом за
+/// обычными), у золотой — свой (`GOLD`), у мага — `WIZARD`, у ледяной — `ICE`; без них — набор
+/// другой силы фигуры, если в нём есть эта анимация: огня (`FIRE`: всё, кроме лавы), молнии
+/// (`SPARK`: вихрь и тень), ветра (`WIND`: тень).
+fn strip_index(piece: Piece, of: Power) -> usize {
+    let set = match base_set(piece) {
+        0 if piece.fire && of != Power::Fire => FIRE,
+        0 if piece.spark && !matches!(of, Power::Fire | Power::Spark) => SPARK,
+        0 if piece.wind && of == Power::Shade => WIND,
+        set => set,
+    };
+    super::index(piece.color, piece.kind) + set
+}
+
+/// Набор полос по основе фигуры: варвар, золотая, маг, ледяная; иначе — обычные (0).
+fn base_set(piece: Piece) -> usize {
+    if piece.barbarian {
+        BARBARIAN
+    } else if piece.gold {
+        GOLD
+    } else if piece.wizard {
+        WIZARD
+    } else if piece.icy {
+        ICE
+    } else {
+        0
+    }
 }
 
 /// Кадры из полос `strips`, где кадр `size` и их `count` в ряд.
@@ -387,6 +1149,7 @@ impl UiArt {
         UiArt {
             buttons: decode(&BUTTONS),
             coins: decode(&COINS),
+            crests: decode(&CRESTS),
             arrow: decode(&ARROW),
             targets: decode(&TARGETS),
             wave: frames(&WAVE, WAVE_FRAME, WAVE_FRAMES),
@@ -404,14 +1167,97 @@ impl UiArt {
                 .collect(),
             lava: LAVA_PNG
                 .iter()
+                .chain(&BARBARIAN_LAVA_PNG)
+                .chain(&GOLD_LAVA_PNG)
+                .chain(&WIZARD_LAVA_PNG)
+                .chain(&ICE_LAVA_PNG)
                 .map(|png| Strip::new(png, super::SPRITE, LAVA_FRAMES))
                 .collect(),
+            dark: [
+                (
+                    &DARK_PNG,
+                    [
+                        &BARBARIAN_DARK_PNG,
+                        &GOLD_DARK_PNG,
+                        &WIZARD_DARK_PNG,
+                        &ICE_DARK_PNG,
+                        &FIRE_DARK_PNG,
+                        &SPARK_DARK_PNG,
+                        &WIND_DARK_PNG,
+                    ],
+                    DARK_FRAMES,
+                ),
+                (
+                    &STEP_OUT_PNG,
+                    [
+                        &BARBARIAN_STEP_OUT_PNG,
+                        &GOLD_STEP_OUT_PNG,
+                        &WIZARD_STEP_OUT_PNG,
+                        &ICE_STEP_OUT_PNG,
+                        &FIRE_STEP_OUT_PNG,
+                        &SPARK_STEP_OUT_PNG,
+                        &WIND_STEP_OUT_PNG,
+                    ],
+                    STEP_OUT,
+                ),
+                (
+                    &STEP_IN_PNG,
+                    [
+                        &BARBARIAN_STEP_IN_PNG,
+                        &GOLD_STEP_IN_PNG,
+                        &WIZARD_STEP_IN_PNG,
+                        &ICE_STEP_IN_PNG,
+                        &FIRE_STEP_IN_PNG,
+                        &SPARK_STEP_IN_PNG,
+                        &WIND_STEP_IN_PNG,
+                    ],
+                    STEP_IN,
+                ),
+            ]
+            .map(|(pngs, combos, frames)| {
+                pngs.iter()
+                    .chain(combos.into_iter().flatten())
+                    .map(|png| Strip::new(png, ELECTRIC_FIGURE, frames))
+                    .collect()
+            }),
             wind: WIND_PNG
                 .iter()
+                .chain(&BARBARIAN_WIND_PNG)
+                .chain(&GOLD_WIND_PNG)
+                .chain(&WIZARD_WIND_PNG)
+                .chain(&ICE_WIND_PNG)
+                .chain(&FIRE_WIND_PNG)
+                .chain(&SPARK_WIND_PNG)
                 .map(|png| Strip::new(png, ELECTRIC_FIGURE, WIND_FRAMES))
+                .collect(),
+            poison: POISON_PNG
+                .iter()
+                .map(|png| Strip::new(png, ELECTRIC_FIGURE, POISON_FRAMES))
+                .collect(),
+            poison_trail: POISON_TRAIL_PNG
+                .iter()
+                .map(|png| Strip::new(png, POISON_TRAIL, POISON_TRAIL_FRAMES))
+                .collect(),
+            meteor: Strip::new(METEOR_PNG[0], METEOR, METEOR_FRAMES),
+            big_wave: BIG_WAVE
+                .iter()
+                .map(|png| Strip::new(png, BIG_WAVE_FRAME, BIG_WAVE_FRAMES))
+                .collect(),
+            crater: CRATER_PNG
+                .iter()
+                .map(|png| Strip::new(png, CRATER, CRATER_FRAMES))
+                .collect(),
+            meteor_wave: METEOR_WAVE_PNG
+                .iter()
+                .map(|png| Strip::new(png, WAVE_FRAME, METEOR_WAVE_FRAMES))
                 .collect(),
             electric: ELECTRIC_PNG
                 .iter()
+                .chain(&BARBARIAN_ELECTRIC_PNG)
+                .chain(&GOLD_ELECTRIC_PNG)
+                .chain(&WIZARD_ELECTRIC_PNG)
+                .chain(&ICE_ELECTRIC_PNG)
+                .chain(&FIRE_ELECTRIC_PNG)
                 .map(|png| Strip::new(png, ELECTRIC_FIGURE, ELECTRIC_FRAMES))
                 .collect(),
         }
@@ -432,6 +1278,7 @@ impl UiArt {
             k,
             buttons: all("end-turn", &self.buttons),
             coins: all("coin", &self.coins),
+            crests: all("crest", &self.crests),
             targets: all("target", &self.targets),
             wave: all("fire-wave", &self.wave),
             portal: all("portal", &self.portal),
@@ -456,11 +1303,49 @@ impl UiArt {
                 .enumerate()
                 .map(|(i, strip)| strip.textures(ctx, &format!("lava-{i}"), k))
                 .collect(),
+            dark: [0, 1, 2].map(|n| {
+                self.dark[n]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, strip)| strip.textures(ctx, &format!("dark-{n}-{i}"), k))
+                    .collect()
+            }),
             wind: self
                 .wind
                 .iter()
                 .enumerate()
                 .map(|(i, strip)| strip.textures(ctx, &format!("wind-{i}"), k))
+                .collect(),
+            poison: self
+                .poison
+                .iter()
+                .enumerate()
+                .map(|(i, strip)| strip.textures(ctx, &format!("poison-{i}"), k))
+                .collect(),
+            poison_trail: self
+                .poison_trail
+                .iter()
+                .enumerate()
+                .map(|(i, strip)| strip.textures(ctx, &format!("poison-trail-{i}"), k))
+                .collect(),
+            meteor: self.meteor.textures(ctx, "meteor", k),
+            big_wave: self
+                .big_wave
+                .iter()
+                .enumerate()
+                .map(|(i, strip)| strip.textures(ctx, &format!("big-wave-{i}"), k))
+                .collect(),
+            crater: self
+                .crater
+                .iter()
+                .enumerate()
+                .map(|(i, strip)| strip.textures(ctx, &format!("crater-{i}"), k))
+                .collect(),
+            meteor_wave: self
+                .meteor_wave
+                .iter()
+                .enumerate()
+                .map(|(i, strip)| strip.textures(ctx, &format!("meteor-wave-{i}"), k))
                 .collect(),
             electric: self
                 .electric
@@ -504,6 +1389,7 @@ pub struct UiTextures {
     k: usize,
     buttons: Vec<TextureHandle>,
     coins: Vec<TextureHandle>,
+    crests: Vec<TextureHandle>,
     targets: Vec<TextureHandle>,
     wave: Vec<TextureHandle>,
     portal: Vec<TextureHandle>,
@@ -515,6 +1401,13 @@ pub struct UiTextures {
     lava: Vec<StripTextures>,
     electric: Vec<StripTextures>,
     wind: Vec<StripTextures>,
+    poison: Vec<StripTextures>,
+    poison_trail: Vec<StripTextures>,
+    big_wave: Vec<StripTextures>,
+    crater: Vec<StripTextures>,
+    meteor_wave: Vec<StripTextures>,
+    meteor: StripTextures,
+    dark: [Vec<StripTextures>; 3],
     turned: RefCell<HashMap<(usize, i32), Sprite>>,
 }
 
@@ -528,6 +1421,11 @@ impl UiTextures {
     /// Монета: большая (`COIN`) или маленькая (`COIN_SMALL`).
     pub fn coin(&self, big: bool) -> &TextureHandle {
         &self.coins[usize::from(!big)]
+    }
+
+    /// Герб (`CREST`).
+    pub fn crest(&self, crest: Crest) -> &TextureHandle {
+        &self.crests[crest as usize]
     }
 
     pub fn target(&self, aim: Aim) -> &TextureHandle {
@@ -571,19 +1469,56 @@ impl UiTextures {
         self.freeze_blocks[kind as usize * 4 + variant % 4].frame(frame)
     }
 
-    /// Фигура `kind` стороны `color` с лавой в кадре `frame` — на холсте фигуры.
-    pub fn lava(&self, color: Color, kind: Kind, frame: usize) -> Option<&FrameSprite> {
-        self.lava[super::index(color, kind)].frame(frame)
+    /// Фигура `piece` с лавой в кадре `frame` — на холсте фигуры (варвар — на своём спрайте).
+    pub fn lava(&self, piece: Piece, frame: usize) -> Option<&FrameSprite> {
+        self.lava[strip_index(piece, Power::Fire)].frame(frame)
     }
 
-    /// Слон стороны `color` с электричеством в кадре `frame` — вокруг `ELECTRIC_ANCHOR`.
-    pub fn electric(&self, color: Color, kind: Kind, frame: usize) -> Option<&FrameSprite> {
-        self.electric[super::index(color, kind)].frame(frame)
+    /// Фигура `piece` с электричеством в кадре `frame` — вокруг `ELECTRIC_ANCHOR`.
+    pub fn electric(&self, piece: Piece, frame: usize) -> Option<&FrameSprite> {
+        self.electric[strip_index(piece, Power::Spark)].frame(frame)
     }
 
-    /// Воздушная фигура `kind` стороны `color` в вихре, кадр `frame` — вокруг `ELECTRIC_ANCHOR`.
-    pub fn wind(&self, color: Color, kind: Kind, frame: usize) -> Option<&FrameSprite> {
-        self.wind[super::index(color, kind)].frame(frame)
+    /// Теневая фигура: `phase` 0 — аура, 1 — исчезновение, 2 — появление; кадр `frame`
+    /// вокруг `ELECTRIC_ANCHOR`.
+    pub fn dark(&self, phase: usize, piece: Piece, frame: usize) -> Option<&FrameSprite> {
+        self.dark[phase][strip_index(piece, Power::Shade)].frame(frame)
+    }
+
+    /// Воздушная фигура `piece` в вихре, кадр `frame` — вокруг `ELECTRIC_ANCHOR`.
+    pub fn wind(&self, piece: Piece, frame: usize) -> Option<&FrameSprite> {
+        self.wind[strip_index(piece, Power::Wind)].frame(frame)
+    }
+
+    /// Кадр ядовитой фигуры (лужа и капли) — вокруг точки опоры `ELECTRIC_ANCHOR`.
+    pub fn poison(&self, color: Color, kind: Kind, frame: usize) -> Option<&FrameSprite> {
+        self.poison[super::index(color, kind)].frame(frame)
+    }
+
+    /// Кадр следа ядовитой фигуры: `direction` — 0 вверх-вправо, 1 вниз-влево, 2 вверх-влево,
+    /// 3 вниз-вправо (на экране).
+    pub fn poison_trail(&self, direction: usize, frame: usize) -> Option<&FrameSprite> {
+        self.poison_trail[direction].frame(frame)
+    }
+
+    /// Кадр горящего кратера: `over` — слой над фигурами.
+    pub fn crater(&self, over: bool, frame: usize) -> Option<&FrameSprite> {
+        self.crater[over as usize].frame(frame % CRATER_FRAMES)
+    }
+
+    /// Кадр волны метеорита крестом: `over` — слой над фигурами.
+    pub fn meteor_wave(&self, over: bool, frame: usize) -> Option<&FrameSprite> {
+        self.meteor_wave[over as usize].frame(frame)
+    }
+
+    /// Кадр большой огненной волны крестом: `over` — слой над фигурами.
+    pub fn big_wave(&self, over: bool, frame: usize) -> Option<&FrameSprite> {
+        self.big_wave[over as usize].frame(frame)
+    }
+
+    /// Кадр метеорита мага — вокруг центра клетки `METEOR_CENTER`.
+    pub fn meteor(&self, frame: usize) -> Option<&FrameSprite> {
+        self.meteor.frame(frame)
     }
 }
 
@@ -605,6 +1540,13 @@ mod tests {
             assert_eq!(
                 [image.width, image.height],
                 [size.x as usize, size.y as usize]
+            );
+        }
+        assert_eq!(art.crests.len(), Crest::ALL.len());
+        for image in &art.crests {
+            assert_eq!(
+                [image.width, image.height],
+                [CREST.x as usize, CREST.y as usize]
             );
         }
         for (image, size) in art.coins.iter().zip([COIN, COIN_SMALL]) {
@@ -644,6 +1586,42 @@ mod tests {
         // Наконечник смотрит вправо: правый край у середины по высоте непрозрачен.
         let head = &art.arrow[ArrowPart::Head as usize];
         assert!(head.alpha(head.width - 2, head.height / 2) > 0);
+    }
+
+    #[test]
+    fn every_special_piece_finds_its_animation_strips() {
+        use crate::game::{COMBOS, Stock};
+        let art = UiArt::new();
+        let singles = [
+            Power::Plain,
+            Power::Fire,
+            Power::Spark,
+            Power::Wind,
+            Power::Gold,
+            Power::Shade,
+            Power::Ice,
+            Power::Barbarian,
+            Power::Wizard,
+        ]
+        .map(|p| (p, Power::Plain));
+        for (base, with) in COMBOS.into_iter().chain(singles) {
+            for kind in Kind::ALL {
+                for color in [Color::White, Color::Black] {
+                    let piece = Stock::combo(kind, base, with).piece(color);
+                    let index = super::super::index(color, kind);
+                    for (of, len) in [
+                        (Power::Fire, art.lava.len()),
+                        (Power::Spark, art.electric.len()),
+                        (Power::Wind, art.wind.len()),
+                        (Power::Shade, art.dark[0].len()),
+                    ] {
+                        let i = strip_index(piece, of);
+                        assert!(i < len, "{} — {of:?}", piece.title());
+                        assert_eq!(i % 12, index, "{} — {of:?}", piece.title());
+                    }
+                }
+            }
+        }
     }
 
     #[test]

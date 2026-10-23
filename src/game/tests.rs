@@ -332,7 +332,7 @@ fn a_knight_intercepts_a_piece_moving_into_its_reach() {
     let mut pos = position("4k3/8/8/3n4/8/8/8/2R1K3 w - - 0 1");
     let outcome = pos.make_move(find(&pos, "c1", "c3"));
     assert_eq!(outcome.reactions.len(), 1);
-    let strike = outcome.reactions[0];
+    let strike = outcome.reactions[0].clone();
     assert_eq!((strike.from, strike.hit.square), (sq("d5"), sq("c3")));
     assert_eq!(hp(&pos, "c3"), 1200 - 300);
     // Перехват убил — фигура уходит в запас коня.
@@ -360,7 +360,7 @@ fn a_pawn_strikes_en_passant() {
     let mut pos = position("4k3/8/8/8/3p4/8/4P3/4K3 w - - 0 1");
     let outcome = pos.make_move(find(&pos, "e2", "e4"));
     assert_eq!(outcome.reactions.len(), 1);
-    let strike = outcome.reactions[0];
+    let strike = outcome.reactions[0].clone();
     assert_eq!((strike.from, strike.hit.square), (sq("d4"), sq("e4")));
     // Ход на одну клетку — не на проходе: e2–e3 встаёт прямо под удар d4, но пешка молчит.
     let mut pos = position("4k3/8/8/8/3p4/8/4P3/4K3 w - - 0 1");
@@ -2510,7 +2510,7 @@ fn boosted_games_against_random_moves_keep_the_rules() {
             }
             for strike in &turn.strikes {
                 assert!(strike.hits().all(|h| h.target.color != record.color()));
-                sparks += strike.splash.iter().flatten().count();
+                sparks += strike.splash.len();
             }
         }
     }
@@ -2549,12 +2549,64 @@ fn rogue_like_starts_with_the_first_wave_and_a_reserve() {
             "волна выходит на крайнюю горизонталь соперника"
         );
     }
+    // В запасе — 2 пешки и одна особая фигура (не пешка).
     let ready = |kind: Kind| pos.reserve[Color::White as usize][kind as usize][0][0];
     assert_eq!(
         [Kind::Pawn, Kind::Bishop, Kind::Knight, Kind::Rook].map(ready),
-        [2, 1, 1, 0]
+        [2, 0, 0, 0]
     );
+    let special: Vec<(Stock, u8, u8)> = pos
+        .reserve(Color::White)
+        .into_iter()
+        .filter(|(stock, ..)| stock.power != Power::Plain)
+        .collect();
+    assert_eq!(special.len(), 1, "{special:?}");
+    let (stock, ready, _) = special[0];
+    assert_eq!(ready, 1);
+    assert_ne!(stock.kind, Kind::Pawn);
     assert_eq!(pos.moves_per_turn(), 4);
+}
+
+#[test]
+fn rogue_like_starting_special_piece_is_weighted_like_the_waves() {
+    use std::collections::HashMap;
+    let mut kinds: HashMap<Kind, u32> = HashMap::new();
+    let mut powers: HashMap<Power, u32> = HashMap::new();
+    for seed in 0..4000u64 {
+        let stock = Position::starting_special(seed * 7919 + 1);
+        assert_ne!(stock.kind, Kind::Pawn);
+        assert_ne!(stock.kind, Kind::King);
+        assert!(stock.power != Power::Plain && stock.with == Power::Plain);
+        *kinds.entry(stock.kind).or_default() += 1;
+        *powers.entry(stock.power).or_default() += 1;
+    }
+    // Веса волн: конь и слон 5, ладья 3, ферзь 1 — из 14.
+    let share = |kind: Kind| f64::from(kinds[&kind]) / 4000.0;
+    for (kind, weight) in [
+        (Kind::Knight, 5.0),
+        (Kind::Bishop, 5.0),
+        (Kind::Rook, 3.0),
+        (Kind::Queen, 1.0),
+    ] {
+        assert!(
+            (share(kind) - weight / 14.0).abs() < 0.03,
+            "{kind:?}: {}",
+            share(kind)
+        );
+    }
+    // Все восемь сил — примерно поровну.
+    assert_eq!(powers.len(), 8);
+    for (power, n) in powers {
+        assert!(
+            (f64::from(n) / 4000.0 - 0.125).abs() < 0.03,
+            "{power:?}: {n}"
+        );
+    }
+    // У одного зерна — одна и та же фигура.
+    assert_eq!(
+        Position::starting_special(42),
+        Position::starting_special(42)
+    );
 }
 
 #[test]
@@ -2652,7 +2704,8 @@ fn rogue_like_has_no_reserve_for_kills_and_runs_ten_levels() {
         assert!(game.legal_moves().is_empty());
         assert!(game.end_turn());
         let spawned = &game.history().last().unwrap().turn_end().unwrap().spawned;
-        assert!((2..=4).contains(&spawned.len()));
+        // Последняя волна первого уровня — ещё и король-толстосум.
+        assert!((2..=5).contains(&spawned.len()));
         assert!(spawned.iter().all(|&(sq, _)| rank_of(sq) == 7));
     }
     unreachable!("победа после последнего уровня");
@@ -2673,6 +2726,7 @@ fn clear_level(game: &mut Game) {
 #[test]
 fn rogue_like_planning_restores_the_army_and_lets_it_be_rearranged() {
     let mut game = Game::from_position(Position::rogue_start(7));
+    game.position.reserve[Color::White as usize][Kind::Knight as usize][0][0] = 1;
     clear_level(&mut game);
     // За уровень: конь g1–f3, пешка e2–e4, конь из запаса на c3; пешка h2 погибла, ладья a1
     // ранена.
@@ -2920,10 +2974,18 @@ fn rogue_like_shop_is_weighted_like_the_first_waves() {
     // Веса волн первого уровня: пешка 15, конь и слон 5, ладья 3, ферзь 1 (из 29); огненная и
     // электрическая — каждая в 6 раз реже обычной того же вида.
     let pawn = share(Kind::Pawn, Power::Plain);
-    assert!((pawn - 15.0 / 29.0 * 6.0 / 9.0).abs() < 0.04, "{pawn}");
+    assert!((pawn - 15.0 / 29.0 * 6.0 / 13.0).abs() < 0.04, "{pawn}");
     assert!(share(Kind::Queen, Power::Plain) < share(Kind::Rook, Power::Plain));
     assert!(share(Kind::Rook, Power::Plain) < share(Kind::Knight, Power::Plain));
-    for power in [Power::Fire, Power::Spark, Power::Wind] {
+    for power in [
+        Power::Fire,
+        Power::Spark,
+        Power::Wind,
+        Power::Gold,
+        Power::Shade,
+        Power::Ice,
+        Power::Barbarian,
+    ] {
         let all: f64 = [
             Kind::Pawn,
             Kind::Knight,
@@ -2934,7 +2996,7 @@ fn rogue_like_shop_is_weighted_like_the_first_waves() {
         .into_iter()
         .map(|k| share(k, power))
         .sum();
-        assert!((all - 1.0 / 9.0).abs() < 0.03, "{power:?} {all}");
+        assert!((all - 1.0 / 13.0).abs() < 0.03, "{power:?} {all}");
         assert!(share(Kind::Pawn, power) > share(Kind::Queen, power));
     }
 }
@@ -2983,14 +3045,16 @@ fn rogue_like_fire_pieces_explode_every_turn() {
             .description()
             .contains("Конь d3 взорвался лавой")
     );
-    // Огонь не уходит: на следующем ходу — снова взрыв (и у слона тоже).
+    // Огонь не уходит: на следующем ходу — снова взрыв; слону на a3 задеть некого — он
+    // не взрывается и остаётся огненным.
     assert!(game.position().piece(sq("d3")).unwrap().fire);
     assert!(game.end_turn());
     game.play(find(game.position(), "b1", "c3")).unwrap();
     assert!(game.end_turn());
     let turn = game.history().last().unwrap().turn_end().unwrap().clone();
     let centers: Vec<Square> = turn.blasts.iter().map(|b| b.center).collect();
-    assert!(centers.contains(&sq("d3")) && centers.contains(&sq("a3")));
+    assert!(centers.contains(&sq("d3")) && !centers.contains(&sq("a3")));
+    assert!(game.position().piece(sq("a3")).unwrap().fire);
 }
 
 #[test]
@@ -3071,7 +3135,7 @@ fn rogue_like_spark_pieces_shock_around_the_target() {
         .iter()
         .find(|s| s.from == sq("c3") && s.hit.square == sq("d5"))
         .expect("конь бьёт d5");
-    let shocked: Vec<Square> = strike.splash.iter().flatten().map(|h| h.square).collect();
+    let shocked: Vec<Square> = strike.splash.iter().map(|j| j.hit.square).collect();
     assert!(shocked.contains(&sq("c6")) && shocked.contains(&sq("e6")));
     assert!(!shocked.contains(&sq("d6")));
     // Электрическая фигура продаётся и возвращается к расстановке электрической.
@@ -3081,6 +3145,7 @@ fn rogue_like_spark_pieces_shock_around_the_target() {
 #[test]
 fn rogue_like_shop_buys_pieces_from_the_reserve() {
     let mut game = Game::from_position(Position::rogue_start(7));
+    game.position.reserve[Color::White as usize][Kind::Knight as usize][0][0] = 1;
     let knight = Stock::new(Kind::Knight, Power::Plain);
     // До магазина продавать нельзя.
     assert!(!game.sell(knight));
@@ -3094,7 +3159,7 @@ fn rogue_like_shop_buys_pieces_from_the_reserve() {
             .find(|s| s.0 == stock)
             .map_or(0, |s| s.1)
     };
-    // Конь из запаса — за цену в магазине (4), огненная ладья — 12.
+    // Конь из запаса — за цену в магазине (4), огненная ладья — как обычная (6).
     assert_eq!(count(&game, knight), 1);
     assert!(game.sell(knight));
     assert_eq!(count(&game, knight), 0);
@@ -3102,13 +3167,13 @@ fn rogue_like_shop_buys_pieces_from_the_reserve() {
     assert!(!game.sell(knight), "в запасе коня больше нет");
     let rook = Stock::new(Kind::Rook, Power::Fire);
     assert!(game.sell(rook));
-    assert_eq!(game.position().rogue().unwrap().gold, 16);
+    assert_eq!(game.position().rogue().unwrap().gold, 10);
     assert!(
         game.history()
             .last()
             .unwrap()
             .description()
-            .contains("Продана огненная ладья из запаса за 12 монет")
+            .contains("Продана огненная ладья из запаса за 6 монет")
     );
     // Отмена возвращает и фигуру, и золото.
     assert!(game.undo());
@@ -3182,6 +3247,284 @@ fn rogue_like_wind_piece_gets_a_free_second_move_after_the_last_one() {
     game.play(find(game.position(), "f3", "g5")).unwrap();
     // Ходить больше нечем — ход кончился сам.
     assert_eq!(game.position().side(), Color::Black);
+}
+
+#[test]
+fn rogue_like_gold_pieces_earn_more_gold() {
+    let mut game = Game::from_position(Position::rogue_start(7));
+    for (sq, _) in army(&game.position, Color::Black) {
+        game.position.board[sq as usize] = None;
+    }
+    // Золотой конь c3 убивает пешку d5 (1 золото) — и ещё 2 сверху; обычный конь f3 убивает
+    // пешку g5 — только 1.
+    game.position.board[sq("c3") as usize] = Some(Piece {
+        gold: true,
+        ..Piece::new(Kind::Knight, Color::White)
+    });
+    game.position.board[sq("g1") as usize] = None;
+    game.position.board[sq("f3") as usize] = Some(Piece::new(Kind::Knight, Color::White));
+    for name in ["d5", "g5"] {
+        game.position.board[sq(name) as usize] = Some(Piece {
+            hp: 1,
+            ..Piece::new(Kind::Pawn, Color::Black)
+        });
+    }
+    game.position.gold_reserve[Color::White as usize][Kind::Rook as usize] = 1;
+    game.refresh();
+    // Золотая ладья из запаса выставляется отдельно и выглядит золотой.
+    let drop = *game
+        .legal_moves()
+        .iter()
+        .find(|m| m.kind == MoveKind::GoldDrop(Kind::Rook) && m.to == sq("a3"))
+        .unwrap();
+    game.play(drop).unwrap();
+    let rook = game.position().piece(sq("a3")).unwrap();
+    assert!(rook.gold);
+    assert_eq!(rook.title(), "Белая золотая ладья");
+    assert_eq!(
+        game.position().gold_reserve(Color::White)[Kind::Rook as usize],
+        0
+    );
+    assert!(game.end_turn());
+    let turn = game.history().last().unwrap().turn_end().unwrap().clone();
+    assert!(turn.strikes.iter().filter(|s| s.hit.killed).count() == 2);
+    assert_eq!(turn.gold, 1 + 2 + 1);
+    // В магазине — как другие особые; продаётся вдвое дороже обычной (слон — 8 вместо 4).
+    assert_eq!(shop_price(Stock::new(Kind::Knight, Power::Gold)), 8);
+    assert_eq!(shop_price(Stock::new(Kind::Knight, Power::Fire)), 8);
+    assert_eq!(sell_price(Stock::new(Kind::Bishop, Power::Plain)), 4);
+    assert_eq!(sell_price(Stock::new(Kind::Bishop, Power::Gold)), 8);
+    assert_eq!(sell_price(Stock::new(Kind::Bishop, Power::Fire)), 4);
+}
+
+#[test]
+fn rogue_like_shade_pieces_move_through_pieces() {
+    let mut pos = Position::rogue_start(7);
+    for sq in 16..64u8 {
+        pos.board[sq as usize] = None;
+    }
+    let shade = |kind: Kind| {
+        Some(Piece {
+            shade: true,
+            ..Piece::new(kind, Color::White)
+        })
+    };
+    // Теневая ладья a1 проходит сквозь пешку a2 — по всей вертикали; вбок путь занят своими,
+    // но сквозь них — тоже нельзя встать на занятую клетку, а пустых там нет.
+    pos.board[sq("a1") as usize] = shade(Kind::Rook);
+    let to = |pos: &Position, from: &str| -> Vec<String> {
+        let mut v: Vec<String> = pos
+            .legal_moves()
+            .iter()
+            .filter(|m| m.from == sq(from))
+            .map(|m| square_name(m.to))
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    };
+    assert_eq!(to(&pos, "a1"), ["a3", "a4", "a5", "a6", "a7", "a8"]);
+    // Теневой слон c1 — сквозь пешки b2 и d2 по диагоналям.
+    pos.board[sq("c1") as usize] = shade(Kind::Bishop);
+    assert_eq!(to(&pos, "c1"), ["a3", "e3", "f4", "g5", "h6"]);
+    // Теневой конь g1 — на любую пустую клетку через одну: e3, f3, g3, h3 (e1 занят).
+    pos.board[sq("g1") as usize] = shade(Kind::Knight);
+    assert_eq!(to(&pos, "g1"), ["e3", "f3", "g3", "h3"]);
+    // Теневая пешка e2: e3 и e4; перед пешкой e3 стоит фигура — пешка проходит сквозь неё.
+    pos.board[sq("e2") as usize] = shade(Kind::Pawn);
+    assert_eq!(to(&pos, "e2"), ["e3", "e4"]);
+    pos.board[sq("e3") as usize] = Some(Piece::new(Kind::Rook, Color::Black));
+    pos.board[sq("d2") as usize] = None;
+    pos.board[sq("d3") as usize] = shade(Kind::Pawn);
+    pos.board[sq("d4") as usize] = Some(Piece::new(Kind::Rook, Color::Black));
+    assert_eq!(to(&pos, "d3"), ["d5"], "через одну фигуру перед собой");
+    assert_eq!(to(&pos, "e2"), ["e4"]);
+    // Обычная пешка через фигуру не ходит.
+    pos.board[sq("d3") as usize] = Some(Piece::new(Kind::Pawn, Color::White));
+    assert!(to(&pos, "d3").is_empty());
+    // Ход теневой ладьи сквозь пешку — обычный ход.
+    let mut game = Game::from_position(pos);
+    game.play(find(game.position(), "a1", "a5")).unwrap();
+    assert!(game.position().piece(sq("a5")).unwrap().shade);
+    assert_eq!(
+        game.position().piece(sq("a5")).unwrap().title(),
+        "Белая теневая ладья"
+    );
+    // В магазине — как другие особые.
+    assert_eq!(shop_price(Stock::new(Kind::Rook, Power::Shade)), 12);
+    game.position.shade_reserve[Color::White as usize][Kind::Knight as usize] = 1;
+    game.refresh();
+    assert!(
+        game.legal_moves()
+            .iter()
+            .any(|m| m.kind == MoveKind::ShadeDrop(Kind::Knight))
+    );
+    assert_eq!(
+        game.position().shade_reserve(Color::White)[Kind::Knight as usize],
+        1
+    );
+}
+
+#[test]
+fn rogue_like_ice_pieces_freeze_their_attackers() {
+    let mut game = Game::from_position(Position::rogue_start(7));
+    for (sq, _) in army(&game.position, Color::Black) {
+        game.position.board[sq as usize] = None;
+    }
+    // Ледяной конь e4; чёрная пешка f5 бьёт его (и только его) — и замерзает; чёрная ладья h4
+    // бьёт обычную пешку h2 — не замерзает.
+    game.position.board[sq("e4") as usize] = Some(Piece {
+        icy: true,
+        ..Piece::new(Kind::Knight, Color::White)
+    });
+    game.position.board[sq("f5") as usize] = Some(Piece::new(Kind::Pawn, Color::Black));
+    game.position.board[sq("h4") as usize] = Some(Piece::new(Kind::Rook, Color::Black));
+    game.position.ice_reserve[Color::White as usize][Kind::Pawn as usize] = 1;
+    game.refresh();
+    // Ледяной конь сам не замораживает: бьёт пешку f5? Нет — d6, f6, c5, g5… — не достаёт; пусть
+    // ход — выставление ледяной пешки из запаса.
+    game.position.board[sq("a2") as usize] = None;
+    game.refresh();
+    let drop = *game
+        .legal_moves()
+        .iter()
+        .find(|m| m.kind == MoveKind::IceDrop(Kind::Pawn) && m.to == sq("a2"))
+        .unwrap();
+    game.play(drop).unwrap();
+    assert!(game.position().piece(sq("a2")).unwrap().icy);
+    assert_eq!(
+        game.position().piece(sq("a2")).unwrap().title(),
+        "Белая ледяная пешка"
+    );
+    assert_eq!(
+        game.position().ice_reserve(Color::White)[Kind::Pawn as usize],
+        0
+    );
+    assert!(game.end_turn());
+    // Ход чёрных: пешка f5 бьёт ледяного коня e4 — замерзает и не шагает; ладья h4 бьёт h2 и
+    // шагает.
+    assert!(game.end_turn());
+    let turn = game.history().last().unwrap().turn_end().unwrap().clone();
+    let hit = turn
+        .strikes
+        .iter()
+        .find(|s| s.from == sq("f5"))
+        .expect("пешка бьёт коня");
+    assert!(hit.rebound);
+    assert!(
+        turn.strikes
+            .iter()
+            .filter(|s| s.from == sq("h4"))
+            .all(|s| !s.rebound)
+    );
+    assert!(game.position().piece(sq("f5")).unwrap().is_frozen());
+    assert!(!turn.marched.iter().any(|&(from, _)| from == sq("f5")));
+    assert!(turn.marched.contains(&(sq("h4"), sq("h3"))));
+    assert!(
+        game.history()
+            .last()
+            .unwrap()
+            .description()
+            .contains("замёрзла о лёд")
+    );
+    // Следующий ход чёрных замёрзшая пешка не бьёт и не шагает, потом оттаивает.
+    game.play(find(game.position(), "b1", "c3")).unwrap();
+    assert!(game.end_turn());
+    assert!(game.end_turn());
+    let turn = game.history().last().unwrap().turn_end().unwrap().clone();
+    assert!(turn.strikes.iter().all(|s| s.from != sq("f5")));
+    assert!(!turn.marched.iter().any(|&(from, _)| from == sq("f5")));
+    assert!(!game.position().piece(sq("f5")).unwrap().is_frozen());
+    // В магазине — как другие особые.
+    assert_eq!(shop_price(Stock::new(Kind::Knight, Power::Ice)), 8);
+}
+
+#[test]
+fn rogue_like_fat_king_leads_the_last_wave_of_the_first_level() {
+    let mut pos = Position::rogue_start(7);
+    let bosses = |pos: &Position| {
+        pos.pieces()
+            .filter(|(_, p)| p.boss)
+            .map(|(sq, _)| sq)
+            .collect::<Vec<_>>()
+    };
+    assert!(bosses(&pos).is_empty());
+    // Предпоследняя волна — без босса, последняя — с ним, на крайней горизонтали.
+    let mut r = pos.rogue.unwrap();
+    r.wave = r.waves - 2;
+    pos.rogue = Some(r);
+    for sq in 48..64u8 {
+        pos.board[sq as usize] = None;
+    }
+    pos.spawn_wave();
+    assert!(bosses(&pos).is_empty());
+    for sq in 48..64u8 {
+        pos.board[sq as usize] = None;
+    }
+    let spawned = pos.spawn_wave();
+    let boss = bosses(&pos);
+    assert_eq!(boss.len(), 1);
+    assert_eq!(boss[0], sq("e8"), "середина крайней горизонтали");
+    assert!(spawned.contains(&(sq("e8"), Kind::King)));
+    let king = pos.piece(sq("e8")).unwrap();
+    assert_eq!((king.hp, king.max_hp(), king.attack()), (3000, 3000, 300));
+    assert_eq!(king.title(), "Чёрный король-толстосум");
+    assert_eq!(pos.king_square(Color::Black), None, "не король стороны");
+    // На втором уровне босса нет.
+    let mut pos2 = Position::rogue_start(7);
+    let mut r = pos2.rogue.unwrap();
+    r.level = 2;
+    r.wave = r.waves - 1;
+    pos2.rogue = Some(r);
+    for sq in 48..64u8 {
+        pos2.board[sq as usize] = None;
+    }
+    pos2.spawn_wave();
+    assert!(bosses(&pos2).is_empty());
+
+    // Бьёт 16 клеток: 8 вокруг и через клетку по диагоналям и прямым.
+    let mut pos = Position::rogue_start(7);
+    for sq in 16..64u8 {
+        pos.board[sq as usize] = None;
+    }
+    pos.board[sq("e5") as usize] = Some(Piece {
+        boss: true,
+        hp: 3000,
+        ..Piece::new(Kind::King, Color::Black)
+    });
+    let targets = [
+        "d6", "e6", "f6", "d5", "f5", "d4", "e4", "f4", "c7", "g7", "c3", "g3", "e7", "e3", "c5",
+        "g5",
+    ];
+    // Белые ладьи заморожены — сами не бьют; b5 и h8 — дальше 16 клеток.
+    for name in targets.iter().chain(&["b5", "h8"]) {
+        pos.board[sq(name) as usize] = Some(Piece {
+            frozen: 5,
+            ..Piece::new(Kind::Rook, Color::White)
+        });
+    }
+    pos.end_turn();
+    let turn = pos.end_turn();
+    let mut hit: Vec<String> = turn
+        .strikes
+        .iter()
+        .filter(|s| s.from == sq("e5"))
+        .map(|s| square_name(s.hit.square))
+        .collect();
+    hit.sort();
+    let mut want: Vec<String> = targets.iter().map(|s| s.to_string()).collect();
+    want.sort();
+    assert_eq!(hit, want);
+    assert!(
+        turn.strikes
+            .iter()
+            .filter(|s| s.from == sq("e5"))
+            .all(|s| s.hit.damage == 300)
+    );
+    // Победа над ним — 10 золота.
+    let mut pos = Position::rogue_start(7);
+    pos.score_kill(king, Color::White);
+    assert_eq!(pos.rogue().unwrap().gold, 10);
 }
 
 #[test]
@@ -3366,7 +3709,10 @@ fn rogue_like_random_games_keep_the_rules() {
             assert!(!game.position().used(mv.from));
             game.play(mv).unwrap();
             let pos = game.position();
-            assert!(pos.king_square(Color::Black).is_none());
+            assert!(
+                pos.king_square(Color::Black).is_none(),
+                "босс — не король стороны"
+            );
             let r = pos.rogue().unwrap();
             assert!(r.wave <= r.waves);
         }
@@ -3475,4 +3821,2433 @@ fn rogue_like_is_lost_when_a_wave_reaches_the_first_rank() {
     );
     let record = game.history().last().unwrap();
     assert!(record.description().contains("дошла до первой горизонтали"));
+}
+
+/// Rogue-like позиция без фигур волн, с гербами `crests`; ходит `side`.
+fn crest_position(crests: &[Crest], side: Color) -> Position {
+    let mut pos = Position::rogue_start(7);
+    for (sq, _) in army(&pos, Color::Black) {
+        pos.board[sq as usize] = None;
+    }
+    let r = pos.rogue.as_mut().unwrap();
+    for (slot, &crest) in r.crests.iter_mut().zip(crests) {
+        *slot = Some(crest);
+    }
+    pos.side = side;
+    pos
+}
+
+fn ice(kind: Kind) -> Piece {
+    Piece {
+        icy: true,
+        ..Piece::new(kind, Color::White)
+    }
+}
+
+#[test]
+fn rogue_like_crests_are_bought_in_the_shop() {
+    let mut game = Game::from_position(Position::rogue_start(7));
+    assert!(game.position().crest_offers().iter().all(Option::is_none));
+    assert!(game.win_round());
+    let offers: Vec<Crest> = game
+        .position()
+        .crest_offers()
+        .into_iter()
+        .flatten()
+        .collect();
+    assert_eq!(offers.len(), 3, "три герба на выбор");
+    assert!(offers[0] != offers[1] && offers[1] != offers[2] && offers[0] != offers[2]);
+
+    game.position.rogue.as_mut().unwrap().gold = 40;
+    let crest = offers[1];
+    assert!(game.buy_crest(1));
+    assert_eq!(game.position().rogue().unwrap().gold, 25, "герб — 15");
+    assert_eq!(game.position().crests(), vec![crest]);
+    assert!(game.position().has_crest(crest));
+    assert_eq!(game.position().crest_offers()[1], None);
+    assert!(!game.buy_crest(1), "место пусто");
+    let text = game.history().last().unwrap().description();
+    assert!(text.contains(&crest.description()), "{text}");
+    // Отмена возвращает золото и герб на прилавок.
+    assert!(game.undo());
+    assert_eq!(game.position().rogue().unwrap().gold, 40);
+    assert!(game.position().crests().is_empty());
+    assert!(game.buy_crest(1));
+
+    // Обновить — за 5; купленный герб на прилавок больше не выходит.
+    assert!(game.reroll_crests());
+    assert_eq!(game.position().rogue().unwrap().gold, 20);
+    let fresh: Vec<Crest> = game
+        .position()
+        .crest_offers()
+        .into_iter()
+        .flatten()
+        .collect();
+    assert_eq!(fresh.len(), 3);
+    assert!(!fresh.contains(&crest));
+    game.position.rogue.as_mut().unwrap().gold = 4;
+    assert!(
+        !game.reroll_crests() && !game.buy_crest(0),
+        "не хватает золота"
+    );
+
+    // Гербы — до конца забега: после ухода из магазина и следующей расстановки они на месте.
+    assert!(game.leave_shop());
+    assert!(game.end_turn());
+    assert!(game.win_round());
+    assert_eq!(game.position().crests(), vec![crest]);
+
+    // Не купленным остался один герб — на прилавке только он.
+    let mut pos = crest_position(&Crest::ALL[..CRESTS - 1], Color::White);
+    pos.roll_crests();
+    assert_eq!(
+        pos.crest_offers().into_iter().flatten().collect::<Vec<_>>(),
+        vec![Crest::WindDark]
+    );
+}
+
+#[test]
+fn rogue_like_heart_crest_gives_ice_pieces_more_health() {
+    let mut pos = crest_position(&[], Color::White);
+    pos.board[sq("e4") as usize] = Some(ice(Kind::Knight));
+    pos.board[sq("d4") as usize] = Some(Piece::new(Kind::Knight, Color::White));
+    pos.rogue.as_mut().unwrap().origin = pos.origins(Color::White);
+    let full = Kind::Knight.stats().max_hp;
+    let bonus = 2 * crate::balance::UNIT;
+    // Купленный герб — сразу и ледяным фигурам на доске.
+    let r = pos.rogue.as_mut().unwrap();
+    r.shop = true;
+    r.gold = 15;
+    r.crest_offers[0] = Some(Crest::Heart);
+    assert!(pos.buy_crest(0).is_some());
+    let knight = pos.piece(sq("e4")).unwrap();
+    assert_eq!((knight.hp, knight.max_hp()), (full + bonus, full + bonus));
+    assert_eq!(pos.piece(sq("d4")).unwrap().max_hp(), full);
+    // Выставленная из запаса — тоже.
+    pos.ice_reserve[Color::White as usize][Kind::Pawn as usize] = 1;
+    let pawn = pos.take_stock(Color::White, Stock::new(Kind::Pawn, Power::Ice));
+    assert_eq!(pawn.max_hp(), Kind::Pawn.stats().max_hp + bonus);
+    // К расстановке — снова с полным здоровьем и прибавкой.
+    pos.wound(sq("e4"), 300);
+    pos.begin_planning();
+    let knight = pos.piece(sq("e4")).unwrap();
+    assert_eq!((knight.hp, knight.max_hp()), (full + bonus, full + bonus));
+}
+
+#[test]
+fn rogue_like_coin_crest_doubles_ice_pieces_in_the_shop() {
+    let share = |crests: &[Crest]| {
+        let mut pos = crest_position(crests, Color::White);
+        let (mut ice, mut all) = (0.0f64, 0.0f64);
+        for _ in 0..1500 {
+            pos.roll_offers();
+            for stock in pos.offers().into_iter().flatten() {
+                all += 1.0;
+                if stock.power == Power::Ice {
+                    ice += 1.0;
+                }
+            }
+        }
+        ice / all
+    };
+    let plain = share(&[]);
+    let coin = share(&[Crest::Coin]);
+    // Без герба ледяных — 1/13, с гербом их вес вдвое больше: 2/14.
+    assert!((plain - 1.0 / 13.0).abs() < 0.02, "{plain}");
+    assert!((coin - 2.0 / 14.0).abs() < 0.03, "{coin}");
+}
+
+#[test]
+fn rogue_like_pawn_crest_prices_ice_pawns_as_plain() {
+    let ice_pawn = Stock::new(Kind::Pawn, Power::Ice);
+    let plain = shop_price(Stock::new(Kind::Pawn, Power::Plain));
+    let pos = crest_position(&[], Color::White);
+    assert_eq!(pos.shop_price(ice_pawn), shop_price(ice_pawn));
+    assert!(shop_price(ice_pawn) > plain);
+    let pos = crest_position(&[Crest::Pawn], Color::White);
+    assert_eq!(pos.shop_price(ice_pawn), plain);
+    assert_eq!(
+        pos.shop_price(Stock::new(Kind::Knight, Power::Ice)),
+        shop_price(Stock::new(Kind::Knight, Power::Ice)),
+        "только пешки"
+    );
+}
+
+#[test]
+fn rogue_like_snow_crest_freezes_attackers_for_two_turns() {
+    for (crests, frozen) in [(&[][..], 3), (&[Crest::Snow2][..], 5)] {
+        let mut pos = crest_position(crests, Color::Black);
+        pos.board[sq("e4") as usize] = Some(ice(Kind::Knight));
+        pos.board[sq("f5") as usize] = Some(Piece::new(Kind::Pawn, Color::Black));
+        let strikes = pos.strike_all();
+        assert!(strikes[0].rebound);
+        assert_eq!(pos.piece(sq("f5")).unwrap().frozen, frozen);
+    }
+}
+
+#[test]
+fn rogue_like_spikes_crest_returns_damage() {
+    let mut pos = crest_position(&[Crest::Spikes], Color::Black);
+    pos.board[sq("e4") as usize] = Some(ice(Kind::Knight));
+    pos.board[sq("f5") as usize] = Some(Piece::new(Kind::Pawn, Color::Black));
+    let attack = Kind::Pawn.stats().attack;
+    let strikes = pos.strike_all();
+    let thorns = strikes[0].thorns.expect("шипы");
+    assert_eq!(
+        (thorns.square, thorns.damage, thorns.killed),
+        (sq("f5"), attack, false)
+    );
+    let pawn = pos.piece(sq("f5")).unwrap();
+    assert_eq!(pawn.hp, Kind::Pawn.stats().max_hp - attack);
+    assert!(pawn.is_frozen(), "и замёрзла о лёд");
+
+    // Король-толстосум погибает о шипы — золото игроку, больше он не бьёт.
+    let mut pos = crest_position(&[Crest::Spikes], Color::Black);
+    pos.board[sq("e4") as usize] = Some(ice(Kind::Knight));
+    pos.board[sq("c4") as usize] = Some(Piece::new(Kind::Pawn, Color::White));
+    pos.board[sq("d5") as usize] = Some(Piece {
+        boss: true,
+        hp: 300,
+        ..Piece::new(Kind::King, Color::Black)
+    });
+    let strikes = pos.strike_all();
+    assert_eq!(strikes.len(), 1, "погибший больше не бьёт");
+    assert_eq!(strikes[0].hit.square, sq("e4"));
+    assert!(strikes[0].thorns.unwrap().killed);
+    assert_eq!(pos.piece(sq("d5")), None);
+    assert_eq!(pos.rogue().unwrap().gold, 10);
+    assert!(!strikes[0].rebound);
+    let text = strike_description(&strikes[0]);
+    assert!(text.contains("Шипы льда"), "{text}");
+
+    // Без герба шипов нет.
+    let mut pos = crest_position(&[], Color::Black);
+    pos.board[sq("e4") as usize] = Some(ice(Kind::Knight));
+    pos.board[sq("f5") as usize] = Some(Piece::new(Kind::Pawn, Color::Black));
+    assert_eq!(pos.strike_all()[0].thorns, None);
+}
+
+#[test]
+fn rogue_like_crystal_crest_encases_ice_pieces_at_one_health() {
+    let unit = crate::balance::UNIT;
+    let mut pos = crest_position(&[Crest::Crystal], Color::Black);
+    // Удар оставил бы коню половину единицы — остаётся ровно одна, конь вмерзает в лёд; удар
+    // второй пешки по нему во льду урона не наносит.
+    pos.board[sq("e4") as usize] = Some(Piece {
+        hp: unit + unit / 2,
+        ..ice(Kind::Knight)
+    });
+    pos.board[sq("d5") as usize] = Some(Piece::new(Kind::Pawn, Color::Black));
+    pos.board[sq("f5") as usize] = Some(Piece::new(Kind::Pawn, Color::Black));
+    let strikes = pos.strike_all();
+    assert_eq!(strikes.len(), 2);
+    assert_eq!(strikes[0].from, sq("d5"));
+    assert_eq!(strikes[0].hit.damage, unit / 2);
+    assert!(strikes[0].chilled && !strikes[0].hit.killed);
+    assert_eq!(strikes[1].hit.damage, 0);
+    let knight = pos.piece(sq("e4")).unwrap();
+    assert_eq!(knight.hp, unit);
+    assert_eq!(knight.frozen, 1, "оттает в конце этого хода");
+    // По коню с одной единицей удар смертелен.
+    let mut pos = crest_position(&[Crest::Crystal], Color::Black);
+    pos.board[sq("e4") as usize] = Some(Piece {
+        hp: unit,
+        ..ice(Kind::Knight)
+    });
+    pos.board[sq("f5") as usize] = Some(Piece::new(Kind::Pawn, Color::Black));
+    assert!(pos.strike_all()[0].hit.killed);
+}
+
+#[test]
+fn rogue_like_encased_ice_piece_moves_on_its_next_turn() {
+    let unit = crate::balance::UNIT;
+    let mut pos = crest_position(&[Crest::Crystal], Color::White);
+    pos.board[sq("e4") as usize] = Some(Piece {
+        hp: unit + unit / 2,
+        ..ice(Kind::Knight)
+    });
+    pos.board[sq("f5") as usize] = Some(Piece::new(Kind::Pawn, Color::Black));
+    let mut game = Game::from_position(pos);
+    game.play(find(game.position(), "b1", "c3")).unwrap();
+    assert!(game.end_turn());
+    // Ход чёрных: пешка f5 бьёт коня — он вмерзает, но к ходу белых оттаивает и может ходить.
+    assert!(game.end_turn());
+    let turn = game.history().last().unwrap().turn_end().unwrap().clone();
+    assert!(
+        turn.strikes
+            .iter()
+            .any(|s| s.hit.square == sq("e4") && s.chilled)
+    );
+    let knight = game.position().piece(sq("e4")).unwrap();
+    assert_eq!(knight.hp, unit);
+    assert!(!knight.is_frozen());
+    assert!(game.legal_moves().iter().any(|m| m.from == sq("e4")));
+}
+
+#[test]
+fn rogue_like_knights_have_their_own_health() {
+    let pos = Position::rogue_start(7);
+    assert_eq!(pos.kind_max_hp(Kind::Knight), rogue_knight_hp());
+    assert_eq!(rogue_knight_hp(), 3 * crate::balance::UNIT);
+    let knight = pos.piece(sq("b1")).unwrap();
+    assert_eq!(
+        (knight.hp, knight.max_hp()),
+        (rogue_knight_hp(), rogue_knight_hp())
+    );
+    assert_eq!(
+        Position::start().kind_max_hp(Kind::Knight),
+        Kind::Knight.stats().max_hp
+    );
+}
+
+fn venom_pawn() -> Piece {
+    Piece {
+        venom: true,
+        ..Piece::new(Kind::Pawn, Color::Black)
+    }
+}
+
+#[test]
+fn rogue_like_second_level_waves_are_half_poisonous() {
+    let count = |level: u8| {
+        let mut pos = Position::rogue_start(11);
+        let (mut venom, mut all) = (0, 0);
+        for i in 0..200u64 {
+            for sq in 0..64 {
+                if pos.board[sq].is_some_and(|p| p.color == Color::Black) {
+                    pos.board[sq] = None;
+                }
+            }
+            let r = pos.rogue.as_mut().unwrap();
+            r.level = level;
+            r.wave = 0;
+            r.waves = 9;
+            r.seed = 2 * i + 1;
+            for (sq, _) in pos.spawn_wave() {
+                all += 1;
+                if pos.piece(sq).unwrap().venom {
+                    venom += 1;
+                }
+            }
+        }
+        (venom as f64 / all as f64, all)
+    };
+    let (share, all) = count(2);
+    assert!(all > 200);
+    assert!((share - 0.5).abs() < 0.08, "{share}");
+    assert_eq!(count(1).0, 0.0);
+    assert_eq!(count(3).0, 0.0);
+    assert_eq!(venom_pawn().title(), "Чёрная ядовитая пешка");
+}
+
+#[test]
+fn rogue_like_poison_hurts_at_the_end_of_the_next_turn() {
+    let unit = crate::balance::UNIT;
+    // Конь покрепче: два удара и яд он переживёт.
+    let full = Kind::Knight.stats().max_hp + 3 * unit;
+    let mut pos = crest_position(&[], Color::White);
+    pos.board[sq("e4") as usize] = Some(Piece {
+        hp: full,
+        bonus_hp: 3 * unit as i16,
+        ..Piece::new(Kind::Knight, Color::White)
+    });
+    // Две ядовитые пешки бьют коня — яд не копится.
+    pos.board[sq("d5") as usize] = Some(venom_pawn());
+    pos.board[sq("f5") as usize] = Some(venom_pawn());
+    let mut game = Game::from_position(pos);
+    game.play(find(game.position(), "b1", "c3")).unwrap();
+    assert!(game.end_turn());
+    assert!(game.end_turn());
+    let turn = game.history().last().unwrap().turn_end().unwrap().clone();
+    let poisoned: Vec<bool> = turn
+        .strikes
+        .iter()
+        .filter(|s| s.hit.square == sq("e4"))
+        .map(|s| s.poisoned)
+        .collect();
+    assert_eq!(poisoned, vec![true, false]);
+    assert!(
+        game.history()
+            .last()
+            .unwrap()
+            .description()
+            .contains("отравлен")
+    );
+    let knight = game.position().piece(sq("e4")).unwrap();
+    assert_eq!(
+        (knight.hp, knight.poison),
+        (full - 2 * Kind::Pawn.stats().attack, 1)
+    );
+    // Ход белых: в его конце — урон яда, яд уходит.
+    game.play(find(game.position(), "g1", "f3")).unwrap();
+    assert!(game.end_turn());
+    let turn = game.history().last().unwrap().turn_end().unwrap().clone();
+    assert_eq!(turn.poison.len(), 1);
+    assert_eq!(
+        (turn.poison[0].square, turn.poison[0].damage),
+        (sq("e4"), unit)
+    );
+    let knight = game.position().piece(sq("e4")).unwrap();
+    assert_eq!(
+        (knight.hp, knight.poison),
+        (full - 2 * Kind::Pawn.stats().attack - unit, 0)
+    );
+    assert!(game.history().last().unwrap().description().contains("Яд:"));
+
+    // Яд может убить.
+    let mut pos = crest_position(&[], Color::White);
+    pos.board[sq("e4") as usize] = Some(Piece {
+        hp: unit,
+        poison: 1,
+        ..Piece::new(Kind::Knight, Color::White)
+    });
+    let turn = pos.end_turn();
+    assert!(turn.poison[0].killed);
+    assert_eq!(pos.piece(sq("e4")), None);
+}
+
+#[test]
+fn rogue_like_barbarians_strike_again_after_a_kill() {
+    let unit = crate::balance::UNIT;
+    let strikes = |barbarian: bool, f6_hp: i32| {
+        let mut pos = crest_position(&[], Color::White);
+        pos.board[sq("e4") as usize] = Some(Piece {
+            barbarian,
+            ..Piece::new(Kind::Knight, Color::White)
+        });
+        for (name, hp) in [("d6", unit), ("f6", f6_hp)] {
+            pos.board[sq(name) as usize] = Some(Piece {
+                hp,
+                ..Piece::new(Kind::Pawn, Color::Black)
+            });
+        }
+        let strikes: Vec<(Square, bool, bool)> = pos
+            .strike_all()
+            .iter()
+            .filter(|s| s.from == sq("e4"))
+            .map(|s| (s.hit.square, s.hit.killed, s.again))
+            .collect();
+        strikes
+    };
+    // Обычный конь бьёт каждую по разу.
+    assert_eq!(
+        strikes(false, 3 * unit),
+        vec![(sq("d6"), true, false), (sq("f6"), false, false)]
+    );
+    // Варвар убил d6 — бьёт ещё раз; второй удар не убил — хватит.
+    assert_eq!(
+        strikes(true, 3 * unit),
+        vec![
+            (sq("d6"), true, false),
+            (sq("f6"), false, false),
+            (sq("f6"), false, true)
+        ]
+    );
+    // Второй удар убил — третий раунд, но бить больше некого.
+    assert_eq!(
+        strikes(true, 2 * unit),
+        vec![
+            (sq("d6"), true, false),
+            (sq("f6"), false, false),
+            (sq("f6"), true, true)
+        ]
+    );
+    // Магазин, запас и вид.
+    assert_eq!(shop_price(Stock::new(Kind::Knight, Power::Barbarian)), 8);
+    let knight = Stock::new(Kind::Knight, Power::Barbarian).piece(Color::White);
+    assert!(knight.barbarian);
+    assert_eq!(knight.title(), "Белый варварский конь");
+    assert_eq!(
+        Stock::of(knight).drop_kind(),
+        MoveKind::BarbarianDrop(Kind::Knight)
+    );
+}
+
+/// Варвар вида `kind` у белых с гербами `crests` (по правилам rogue-like: `crested`).
+fn barbarian(pos: &Position, kind: Kind) -> Piece {
+    pos.crested(Piece {
+        barbarian: true,
+        ..Piece::new(kind, Color::White)
+    })
+}
+
+/// Чёрная пешка с `hp` здоровья.
+fn pawn_with(hp: i32) -> Piece {
+    Piece {
+        hp,
+        ..Piece::new(Kind::Pawn, Color::Black)
+    }
+}
+
+#[test]
+fn rogue_like_axe_sword_crest_trades_health_for_damage() {
+    let unit = crate::balance::UNIT;
+    let pos = crest_position(&[Crest::AxeSword], Color::White);
+    let knight = barbarian(&pos, Kind::Knight);
+    let plain = Piece::new(Kind::Knight, Color::White);
+    assert_eq!(knight.attack(), plain.attack() + 2 * unit);
+    assert_eq!(knight.max_hp(), rogue_knight_hp() - unit);
+    assert_eq!(knight.hp, knight.max_hp());
+    // Не варвара герб не трогает.
+    assert_eq!(pos.crested(plain).attack(), plain.attack());
+}
+
+#[test]
+fn rogue_like_axe_fangs_crest_heals_once_per_turn() {
+    let unit = crate::balance::UNIT;
+    let mut pos = crest_position(&[Crest::AxeFangs], Color::White);
+    let knight = Piece {
+        hp: unit,
+        ..barbarian(&pos, Kind::Knight)
+    };
+    pos.board[sq("e4") as usize] = Some(knight);
+    // Убивает обеих за первый удар; лечится один раз.
+    pos.board[sq("d6") as usize] = Some(pawn_with(unit));
+    pos.board[sq("f6") as usize] = Some(pawn_with(unit));
+    let strikes = pos.strike_all();
+    let feast: i32 = strikes.iter().map(|s| s.feast).sum();
+    assert_eq!(feast, unit);
+    assert_eq!(pos.piece(sq("e4")).unwrap().hp, 2 * unit);
+    let text = strike_description(strikes.iter().find(|s| s.feast > 0).unwrap());
+    assert!(text.contains("восстановил"), "{text}");
+}
+
+#[test]
+fn rogue_like_axe_queen_and_axes_crests_help_buy_barbarians() {
+    let queen = Stock::new(Kind::Queen, Power::Barbarian);
+    let pos = crest_position(&[Crest::AxeQueen], Color::White);
+    assert_eq!(pos.shop_price(queen), shop_price(queen) - 6);
+    assert_eq!(
+        pos.shop_price(Stock::new(Kind::Rook, Power::Barbarian)),
+        shop_price(Stock::new(Kind::Rook, Power::Barbarian))
+    );
+    let share = |crests: &[Crest]| {
+        let mut pos = crest_position(crests, Color::White);
+        let (mut found, mut all) = (0.0f64, 0.0f64);
+        for _ in 0..1500 {
+            pos.roll_offers();
+            for stock in pos.offers().into_iter().flatten() {
+                all += 1.0;
+                if stock.power == Power::Barbarian {
+                    found += 1.0;
+                }
+            }
+        }
+        found / all
+    };
+    assert!((share(&[]) - 1.0 / 13.0).abs() < 0.02);
+    assert!((share(&[Crest::Axes]) - 2.0 / 14.0).abs() < 0.03);
+}
+
+#[test]
+fn rogue_like_whirl_crest_turns_the_second_attack_into_a_circle() {
+    let unit = crate::balance::UNIT;
+    // С гербом топора и меча варвар бьёт на 3, а круговой удар — по 1.
+    let mut pos = crest_position(&[Crest::Whirl, Crest::AxeSword], Color::White);
+    pos.board[sq("e4") as usize] = Some(barbarian(&pos, Kind::Knight));
+    // d6 конь убивает; круговой удар — по всем в двух клетках: e5 и c6 (конём их не достать),
+    // h4 — в трёх, его нет.
+    pos.board[sq("d6") as usize] = Some(pawn_with(unit));
+    pos.board[sq("e5") as usize] = Some(pawn_with(3 * unit));
+    pos.board[sq("c6") as usize] = Some(pawn_with(3 * unit));
+    pos.board[sq("h4") as usize] = Some(pawn_with(3 * unit));
+    let strikes: Vec<(Square, bool)> = pos
+        .strike_all()
+        .iter()
+        .filter(|s| s.from == sq("e4"))
+        .map(|s| (s.hit.square, s.whirl))
+        .collect();
+    assert_eq!(strikes[0], (sq("d6"), false));
+    let mut whirl: Vec<Square> = strikes[1..].iter().map(|s| s.0).collect();
+    whirl.sort();
+    let mut expect = vec![sq("e5"), sq("c6")];
+    expect.sort();
+    assert_eq!(whirl, expect);
+    assert!(strikes[1..].iter().all(|s| s.1));
+    assert_eq!(hp(&pos, "h4"), 3 * unit);
+    assert_eq!(hp(&pos, "e5"), 2 * unit);
+    assert_eq!(hp(&pos, "c6"), 2 * unit);
+}
+
+#[test]
+fn rogue_like_fire_axe_crest_repeats_once_more_at_one_health() {
+    let unit = crate::balance::UNIT;
+    // Конь-варвар с одной единицей здоровья: d6, потом f6, потом c5 — каждая убита с одного удара.
+    let rounds = |crests: &[Crest], hp: i32| {
+        let mut pos = crest_position(crests, Color::White);
+        pos.board[sq("e4") as usize] = Some(Piece {
+            hp,
+            ..barbarian(&pos, Kind::Knight)
+        });
+        pos.board[sq("d6") as usize] = Some(pawn_with(unit));
+        pos.board[sq("f6") as usize] = Some(pawn_with(2 * unit));
+        pos.board[sq("c5") as usize] = Some(pawn_with(3 * unit));
+        pos.strike_all()
+            .iter()
+            .filter(|s| s.from == sq("e4"))
+            .count()
+    };
+    // Раунд 1: d6 убита, f6 и c5 ранены; раунд 2: f6 убита, c5 ранена; раунд 3 — только с гербом.
+    assert_eq!(rounds(&[], unit), 5);
+    assert_eq!(rounds(&[Crest::FireAxe], 3 * unit), 5, "здоровья много");
+    assert_eq!(rounds(&[Crest::FireAxe], unit), 6);
+}
+
+#[test]
+fn rogue_like_wizards_cast_meteors_on_enemy_pieces() {
+    let unit = crate::balance::UNIT;
+    let wizard = Piece {
+        wizard: true,
+        ..Piece::new(Kind::Knight, Color::White)
+    };
+    let mut pos = crest_position(&[], Color::White);
+    pos.board[sq("e4") as usize] = Some(wizard);
+    pos.board[sq("h8") as usize] = Some(pawn_with(3 * unit));
+    pos.board[sq("a7") as usize] = Some(pawn_with(unit));
+    let before = pos.clone();
+    let turn = pos.end_turn();
+    assert_eq!(turn.meteors.len(), 1, "один маг — один метеорит");
+    let (from, hit) = (turn.meteors[0].from, turn.meteors[0].hits[0]);
+    assert_eq!(from, sq("e4"));
+    assert!([sq("h8"), sq("a7")].contains(&hit.square));
+    assert_eq!(hit.damage, unit);
+    // Та же позиция — тот же метеорит.
+    let mut again = before.clone();
+    assert_eq!(again.end_turn().meteors, turn.meteors);
+    let record = Record {
+        before,
+        event: Event::EndTurn(Color::White, turn.clone()),
+        check: false,
+        loser: None,
+    };
+    assert!(record.description().contains("Метеорит мага с e4"));
+
+    // Только что выставленный маг не колдует; без чужих фигур — тоже.
+    let mut pos = crest_position(&[], Color::White);
+    pos.board[sq("e4") as usize] = Some(Piece {
+        fresh: true,
+        ..wizard
+    });
+    pos.board[sq("h8") as usize] = Some(pawn_with(3 * unit));
+    assert!(pos.end_turn().meteors.is_empty());
+    let mut pos = crest_position(&[], Color::White);
+    pos.board[sq("e4") as usize] = Some(wizard);
+    assert!(pos.end_turn().meteors.is_empty());
+
+    // Магом бывают все, кроме пешки и короля.
+    let mut pos = crest_position(&[], Color::White);
+    pos.rogue.as_mut().unwrap().shop = true;
+    let mut kinds = std::collections::HashSet::new();
+    for _ in 0..1500 {
+        pos.roll_offers();
+        for stock in pos.offers().into_iter().flatten() {
+            if stock.power == Power::Wizard {
+                kinds.insert(stock.kind);
+            }
+        }
+    }
+    assert!(!kinds.contains(&Kind::Pawn) && !kinds.contains(&Kind::King));
+    assert!(kinds.contains(&Kind::Knight) && kinds.contains(&Kind::Queen));
+    assert_eq!(shop_price(Stock::new(Kind::Knight, Power::Wizard)), 8);
+    assert_eq!(wizard.title(), "Белый конь-маг");
+    assert_eq!(
+        Stock::of(wizard).drop_kind(),
+        MoveKind::WizardDrop(Kind::Knight)
+    );
+}
+
+fn fire(kind: Kind) -> Piece {
+    Piece {
+        fire: true,
+        ..Piece::new(kind, Color::White)
+    }
+}
+
+/// Взрыв огненного коня с e4 (ход белых) с гербами `crests`: клетки и урон задетых.
+fn fire_blast(crests: &[Crest], setup: &[(&str, Piece)]) -> (Position, Vec<(Square, i32)>) {
+    let mut pos = crest_position(crests, Color::White);
+    pos.board[sq("e4") as usize] = Some(fire(Kind::Knight));
+    for &(name, piece) in setup {
+        pos.board[sq(name) as usize] = Some(piece);
+    }
+    let blasts = pos.lava_blasts();
+    let hits = blasts
+        .iter()
+        .flat_map(|b| b.hits.iter())
+        .map(|h| (h.square, h.damage))
+        .collect();
+    (pos, hits)
+}
+
+#[test]
+fn rogue_like_flame_crests_change_the_blast() {
+    let unit = crate::balance::UNIT;
+    let lava = balance().rule(Rule::LavaDamage);
+    let far = pawn_with(5 * unit);
+    let near = pawn_with(5 * unit);
+    // Без гербов — только соседи.
+    let (_, hits) = fire_blast(&[], &[("e6", far), ("e5", near)]);
+    assert_eq!(hits, vec![(sq("e5"), lava)]);
+    // Два огонька — толстый крест: 3×3 и по три клетки с каждой стороны (d6, e6, f6, c4…),
+    // угол квадрата 5×5 (g6) — нет.
+    let corner = pawn_with(5 * unit);
+    let (_, mut hits) = fire_blast(
+        &[Crest::Flames],
+        &[
+            ("e6", far),
+            ("e5", near),
+            ("d6", far),
+            ("c3", far),
+            ("g6", corner),
+        ],
+    );
+    hits.sort();
+    let mut expect = vec![
+        (sq("e5"), lava),
+        (sq("e6"), lava),
+        (sq("d6"), lava),
+        (sq("c3"), lava),
+    ];
+    expect.sort();
+    assert_eq!(hits, expect);
+    let mut pos = crest_position(&[Crest::Flames], Color::White);
+    pos.board[sq("e4") as usize] = Some(fire(Kind::Knight));
+    pos.board[sq("e6") as usize] = Some(far);
+    let blasts = pos.lava_blasts();
+    assert!(
+        blasts.len() == 1 && blasts[0].wide,
+        "только на дальней клетке — тоже взрыв"
+    );
+    // Огонь и меч — 2 урона; с бомбой — 4, и своим тоже.
+    let (_, hits) = fire_blast(&[Crest::FlameSword], &[("e5", near)]);
+    assert_eq!(hits, vec![(sq("e5"), 2 * unit)]);
+    let ally = Piece::new(Kind::Rook, Color::White);
+    let (pos, mut hits) = fire_blast(
+        &[Crest::FlameSword, Crest::Bomb],
+        &[("e5", near), ("d4", ally)],
+    );
+    hits.sort();
+    let mut expect = vec![(sq("e5"), 4 * unit), (sq("d4"), 4 * unit)];
+    expect.sort();
+    assert_eq!(hits, expect);
+    assert!(pos.piece(sq("e4")).unwrap().fire, "сама цела");
+    // С бомбой, но без врагов рядом — не взрывается.
+    let (_, hits) = fire_blast(&[Crest::Bomb], &[("d4", ally)]);
+    assert!(hits.is_empty());
+}
+
+#[test]
+fn rogue_like_flame_skull_crest_blows_up_the_fallen() {
+    let unit = crate::balance::UNIT;
+    // Ход чёрных: пешки d5 и f5 бьют огненного коня e4 с одной единицей здоровья — он гибнет
+    // и взрывается, задевая обеих.
+    let setup = |crests: &[Crest]| {
+        let mut pos = crest_position(crests, Color::Black);
+        pos.board[sq("e4") as usize] = Some(Piece {
+            hp: unit,
+            ..fire(Kind::Knight)
+        });
+        pos.board[sq("d5") as usize] = Some(pawn_with(5 * unit));
+        pos.board[sq("f5") as usize] = Some(pawn_with(5 * unit));
+        pos
+    };
+    let mut pos = setup(&[Crest::FlameSkull]);
+    let turn = pos.end_turn();
+    assert_eq!(pos.piece(sq("e4")), None);
+    let blast = turn
+        .blasts
+        .iter()
+        .find(|b| b.center == sq("e4"))
+        .expect("взрыв");
+    let mut hit: Vec<Square> = blast.hits.iter().map(|h| h.square).collect();
+    hit.sort();
+    assert_eq!(hit, vec![sq("d5"), sq("f5")]);
+    // Без герба — просто погиб.
+    let mut pos = setup(&[]);
+    assert!(pos.end_turn().blasts.iter().all(|b| b.center != sq("e4")));
+}
+
+#[test]
+fn rogue_like_flame_pawn_and_coin_crests_help_buy_fire_pieces() {
+    let pawn = Stock::new(Kind::Pawn, Power::Fire);
+    let pos = crest_position(&[Crest::FlamePawn], Color::White);
+    assert_eq!(pos.shop_price(pawn), shop_price(pawn) - 2);
+    let share = |crests: &[Crest]| {
+        let mut pos = crest_position(crests, Color::White);
+        let (mut found, mut all) = (0.0f64, 0.0f64);
+        for _ in 0..1500 {
+            pos.roll_offers();
+            for stock in pos.offers().into_iter().flatten() {
+                all += 1.0;
+                if stock.power == Power::Fire {
+                    found += 1.0;
+                }
+            }
+        }
+        found / all
+    };
+    let plain = share(&[]);
+    let coin = share(&[Crest::FlameCoin]);
+    assert!(coin > plain * 1.6, "{plain} {coin}");
+}
+
+fn shade(kind: Kind, hp: i32) -> Piece {
+    Piece {
+        shade: true,
+        hp,
+        ..Piece::new(kind, Color::White)
+    }
+}
+
+/// Ход чёрных: теневой конь e4 (здоровье `hp`) под ударами коней c3, g5 и пешек d5, f5 — по
+/// очереди c3, d5, f5, g5; удары по клетке e4.
+fn shade_under_fire(crests: &[Crest], hp: i32) -> (Position, Vec<Strike>) {
+    let mut pos = crest_position(crests, Color::Black);
+    pos.board[sq("e4") as usize] = Some(shade(Kind::Knight, hp));
+    for (name, kind) in [
+        ("c3", Kind::Knight),
+        ("d5", Kind::Pawn),
+        ("f5", Kind::Pawn),
+        ("g5", Kind::Knight),
+    ] {
+        pos.board[sq(name) as usize] = Some(Piece::new(kind, Color::Black));
+    }
+    let strikes = pos
+        .strike_all()
+        .into_iter()
+        .filter(|s| s.hit.square == sq("e4"))
+        .collect();
+    (pos, strikes)
+}
+
+#[test]
+fn rogue_like_dark_flames_crest_dodges_every_third_hit() {
+    let unit = crate::balance::UNIT;
+    let (pos, strikes) = shade_under_fire(&[Crest::DarkFlames], 10 * unit);
+    let dodged: Vec<bool> = strikes.iter().map(|s| s.dodged).collect();
+    assert_eq!(dodged, vec![false, false, true, false]);
+    assert_eq!(hp(&pos, "e4"), 7 * unit);
+    assert!(strike_description(&strikes[2]).contains("не получил"));
+    let (pos, _) = shade_under_fire(&[], 10 * unit);
+    assert_eq!(hp(&pos, "e4"), 6 * unit);
+}
+
+#[test]
+fn rogue_like_dark_portal_crest_swaps_before_death() {
+    let unit = crate::balance::UNIT;
+    // Пример пользователя: первый и второй удар проходят, третий — мимо, на четвёртом (у
+    // теневой одна единица) она уходит порталом к ближайшей обычной фигуре — пешке c2.
+    let (pos, strikes) = shade_under_fire(&[Crest::DarkFlames, Crest::DarkPortal], 3 * unit);
+    assert_eq!(strikes.len(), 4);
+    assert!(strikes[2].dodged);
+    let (other, runner) = strikes[3].swap.expect("ушла порталом");
+    assert_eq!(other, sq("c2"));
+    assert!(runner.shade);
+    assert_eq!(strikes[3].hit.target.kind, Kind::Pawn);
+    let pawn = pos.piece(sq("e4")).unwrap();
+    assert!(!pawn.shade && pawn.kind == Kind::Pawn);
+    assert_eq!(
+        pawn.hp,
+        Kind::Pawn.stats().max_hp - unit,
+        "удар приняла пешка"
+    );
+    let knight = pos.piece(sq("c2")).unwrap();
+    assert!(knight.shade && knight.hp == unit);
+    assert!(strike_description(&strikes[3]).contains("порталом на c2"));
+    // Без герба — погибла бы.
+    let (pos, _) = shade_under_fire(&[Crest::DarkFlames], 3 * unit);
+    assert_eq!(pos.piece(sq("e4")), None);
+    // С королём не меняется: остались только король и сама теневая — гибнет.
+    let mut pos = crest_position(&[Crest::DarkPortal], Color::Black);
+    for sq in 0..16 {
+        if pos.board[sq].is_some_and(|p| p.kind != Kind::King) {
+            pos.board[sq] = None;
+        }
+    }
+    pos.board[sq("e4") as usize] = Some(shade(Kind::Knight, unit));
+    pos.board[sq("f5") as usize] = Some(Piece::new(Kind::Pawn, Color::Black));
+    let strikes = pos.strike_all();
+    assert!(strikes[0].swap.is_none() && strikes[0].hit.killed);
+}
+
+#[test]
+fn rogue_like_dark_eye_crest_strikes_through_pieces() {
+    let unit = crate::balance::UNIT;
+    let hits = |crests: &[Crest]| {
+        let mut pos = crest_position(crests, Color::White);
+        pos.board[sq("e4") as usize] = Some(shade(Kind::Rook, 4 * unit));
+        pos.board[sq("e5") as usize] = Some(pawn_with(5 * unit));
+        pos.board[sq("e6") as usize] = Some(pawn_with(5 * unit));
+        let mut squares: Vec<Square> = pos
+            .strike_all()
+            .iter()
+            .filter(|s| s.from == sq("e4"))
+            .map(|s| s.hit.square)
+            .collect();
+        squares.sort();
+        squares
+    };
+    assert_eq!(hits(&[]), vec![sq("e5")]);
+    let mut both = vec![sq("e5"), sq("e6")];
+    both.sort();
+    assert_eq!(hits(&[Crest::DarkEye]), both);
+}
+
+#[test]
+fn rogue_like_dark_skull_crest_hits_jumped_pieces() {
+    let unit = crate::balance::UNIT;
+    let mut pos = crest_position(&[Crest::DarkSkull], Color::White);
+    pos.board[sq("a3") as usize] = Some(shade(Kind::Rook, 4 * unit));
+    pos.board[sq("a5") as usize] = Some(pawn_with(5 * unit));
+    pos.board[sq("a4") as usize] = Some(Piece::new(Kind::Pawn, Color::White));
+    let outcome = pos.make_move(Move::new(sq("a3"), sq("a6"), MoveKind::Quiet));
+    let attack = Kind::Rook.stats().attack;
+    assert_eq!(outcome.passed.len(), 1, "только чужие");
+    assert_eq!(outcome.passed[0].square, sq("a5"));
+    assert_eq!(hp(&pos, "a5"), 5 * unit - attack);
+    assert_eq!(hp(&pos, "a4"), Kind::Pawn.stats().max_hp);
+    // Конь «через одну»: на две и одну — через обе клетки рядом.
+    let mut passed = Position::shade_passed(sq("d4"), sq("f5"));
+    passed.sort();
+    let mut expect = vec![sq("e4"), sq("e5")];
+    expect.sort();
+    assert_eq!(passed, expect);
+    assert_eq!(Position::shade_passed(sq("d4"), sq("f6")), vec![sq("e5")]);
+    // Без герба — никого.
+    let mut pos = crest_position(&[], Color::White);
+    pos.board[sq("a3") as usize] = Some(shade(Kind::Rook, 4 * unit));
+    pos.board[sq("a5") as usize] = Some(pawn_with(5 * unit));
+    assert!(
+        pos.make_move(Move::new(sq("a3"), sq("a6"), MoveKind::Quiet))
+            .passed
+            .is_empty()
+    );
+}
+
+#[test]
+fn rogue_like_dark_rook_and_coin_crests_help_buy_shades() {
+    let rook = Stock::new(Kind::Rook, Power::Shade);
+    let pos = crest_position(&[Crest::DarkRook], Color::White);
+    assert_eq!(pos.shop_price(rook), shop_price(rook) - 4);
+    let share = |crests: &[Crest]| {
+        let mut pos = crest_position(crests, Color::White);
+        let (mut found, mut all) = (0.0f64, 0.0f64);
+        for _ in 0..1500 {
+            pos.roll_offers();
+            for stock in pos.offers().into_iter().flatten() {
+                all += 1.0;
+                if stock.power == Power::Shade {
+                    found += 1.0;
+                }
+            }
+        }
+        found / all
+    };
+    let plain = share(&[]);
+    assert!(share(&[Crest::DarkCoin]) > plain * 1.6, "{plain}");
+}
+
+#[test]
+fn rogue_like_armored_and_vampire_waves_come_on_later_levels() {
+    let unit = crate::balance::UNIT;
+    // Сколько бронированных, вампиров и всего фигур в волнах уровня `level`.
+    let count = |level: u8| {
+        let mut pos = Position::rogue_start(11);
+        let (mut armored, mut vampires, mut zombies, mut all) = (0, 0, 0, 0);
+        let mut both = 0;
+        for i in 0..200u64 {
+            for sq in 0..64 {
+                if pos.board[sq].is_some_and(|p| p.color == Color::Black) {
+                    pos.board[sq] = None;
+                }
+            }
+            let r = pos.rogue.as_mut().unwrap();
+            r.level = level;
+            r.wave = 0;
+            r.waves = 20;
+            r.seed = 2 * i + 1;
+            for (sq, kind) in pos.spawn_wave() {
+                let p = pos.piece(sq).unwrap();
+                all += 1;
+                if p.armored && p.vampire {
+                    both += 1;
+                    let base = pos.kind_max_hp(kind);
+                    assert_eq!((p.hp, p.max_hp()), (base + 3 * unit, base + 3 * unit));
+                    continue;
+                }
+                if p.armored {
+                    armored += 1;
+                    let base = pos.kind_max_hp(kind);
+                    assert_eq!((p.hp, p.max_hp()), (base + 3 * unit, base + 3 * unit));
+                    assert!(!p.vampire && !p.venom);
+                }
+                if p.vampire {
+                    vampires += 1;
+                    assert_eq!(p.max_hp(), pos.kind_max_hp(kind) + unit);
+                }
+                if p.zombie {
+                    zombies += 1;
+                    // Зомби 7-го уровня — ядовитые, 5-го — нет.
+                    assert_eq!(p.venom, level == 7);
+                    assert_eq!(p.max_hp(), pos.kind_max_hp(kind) + unit);
+                    assert!(!p.vampire && !p.armored && !p.risen);
+                }
+            }
+        }
+        let share = |n: i32| n as f64 / all as f64;
+        BOTH.with(|b| b.set(share(both)));
+        (share(armored), share(vampires), share(zombies))
+    };
+    // У каждого уровня — свой вид, половина волны: 3 — броня, 4 — вампиры, 5 — зомби; на
+    // остальных — никого.
+    assert_eq!(count(1), (0.0, 0.0, 0.0));
+    assert_eq!(count(2), (0.0, 0.0, 0.0));
+    let near = |x: f64| (x - 0.5).abs() < 0.07;
+    let (armored, vampires, zombies) = count(3);
+    assert!(
+        near(armored) && vampires == 0.0 && zombies == 0.0,
+        "{armored}"
+    );
+    let (armored, vampires, zombies) = count(4);
+    assert!(
+        armored == 0.0 && near(vampires) && zombies == 0.0,
+        "{vampires}"
+    );
+    let (armored, vampires, zombies) = count(5);
+    assert!(
+        armored == 0.0 && vampires == 0.0 && near(zombies),
+        "{zombies}"
+    );
+    // 6-й — вампиры в броне (половина волны), отдельных брони и вампиров нет.
+    assert_eq!(count(6), (0.0, 0.0, 0.0));
+    let both = BOTH.with(|b| b.get());
+    assert!((both - 0.5).abs() < 0.07, "{both}");
+    // 7-й — ядовитые зомби (половина волны).
+    let (armored, vampires, zombies) = count(7);
+    assert!(armored == 0.0 && vampires == 0.0, "{armored}");
+    assert!((zombies - 0.5).abs() < 0.07, "{zombies}");
+    assert_eq!(BOTH.with(|b| b.get()), 0.0);
+    assert_eq!(count(8), (0.0, 0.0, 0.0));
+    let piece = |armored, vampire| Piece {
+        armored,
+        vampire,
+        ..Piece::new(Kind::Rook, Color::Black)
+    };
+    assert_eq!(piece(true, false).title(), "Чёрная бронированная ладья");
+    assert_eq!(piece(false, true).title(), "Чёрная ладья-вампир");
+    let zombie = Piece {
+        zombie: true,
+        ..Piece::new(Kind::Knight, Color::Black)
+    };
+    assert_eq!(zombie.title(), "Чёрный конь-зомби");
+}
+
+/// Зомби волны на `sq` с полным здоровьем (rogue-like, по правилам `crested`).
+fn zombie_at(pos: &mut Position, name: &str, kind: Kind) {
+    let piece = pos.crested(Piece {
+        zombie: true,
+        ..Piece::new(kind, Color::Black)
+    });
+    pos.board[sq(name) as usize] = Some(piece);
+}
+
+#[test]
+fn rogue_like_zombies_rise_a_turn_after_death() {
+    let unit = crate::balance::UNIT;
+    let mut game = Game::from_position(crest_position(&[], Color::White));
+    zombie_at(&mut game.position, "d5", Kind::Pawn);
+    let zombie = game.position().piece(sq("d5")).unwrap();
+    assert_eq!(zombie.max_hp(), Kind::Pawn.stats().max_hp + unit);
+    // Конь игрока бьёт зомби (3 удара-единицы на 2-единичную пешку+1 — добиваем с запасом).
+    game.position.board[sq("d5") as usize].as_mut().unwrap().hp = 1;
+    game.position.board[sq("c3") as usize] = Some(Piece::new(Kind::Knight, Color::White));
+    // Ход игрока: удары в конце — зомби погиб, на d5 могила.
+    let mv = game.legal_moves()[0];
+    game.play(mv).unwrap();
+    if game.position().side() == Color::White {
+        assert!(game.end_turn());
+    }
+    assert!(game.position().piece(sq("d5")).is_none(), "зомби погиб");
+    assert_eq!(game.position().grave(sq("d5")), Some(Kind::Pawn));
+    // Уровень не кончается, пока могила не опустела: волны не кончились — продолжение.
+    // Ход соперника: в его конце зомби восстаёт с 1 единицей здоровья.
+    assert_eq!(game.position().side(), Color::Black);
+    assert!(game.end_turn());
+    let turn = game.history().last().unwrap().turn_end().unwrap().clone();
+    let (at, kind) = turn.risen[0];
+    assert_eq!(kind, Kind::Pawn);
+    let risen = game.position().piece(at).unwrap();
+    assert!(risen.zombie && risen.risen);
+    assert_eq!(risen.hp, unit);
+    assert_eq!(game.position().grave(sq("d5")), None);
+    let text = game.history().last().unwrap().description();
+    assert!(text.contains("Восстали зомби"), "{text}");
+    // Второй раз не восстаёт: убитый восставший могилы не оставляет.
+    let mut pos = game.position().clone();
+    pos.side = Color::White;
+    let hit = pos.wound(at, unit);
+    assert!(hit.1);
+    assert_eq!(pos.grave(at), None);
+}
+
+#[test]
+fn rogue_like_venom_zombies_rise_venomous() {
+    let unit = crate::balance::UNIT;
+    let mut pos = crest_position(&[], Color::White);
+    let zombie = pos.crested(Piece {
+        zombie: true,
+        venom: true,
+        ..Piece::new(Kind::Knight, Color::Black)
+    });
+    assert_eq!(zombie.title(), "Чёрный ядовитый конь-зомби");
+    assert_eq!(zombie.max_hp(), rogue_knight_hp() + unit);
+    pos.board[sq("d5") as usize] = Some(zombie);
+    pos.side = Color::White;
+    assert!(pos.wound(sq("d5"), 99 * unit).1);
+    pos.side = Color::Black;
+    let risen = pos.rise_zombies();
+    assert_eq!(risen, vec![(sq("d5"), Kind::Knight)]);
+    let p = pos.piece(sq("d5")).unwrap();
+    assert!(p.venom && p.zombie && p.risen);
+    assert_eq!(p.hp, unit);
+}
+
+#[test]
+fn rogue_like_zombie_grave_keeps_the_level_going_and_rises_beside_a_blocker() {
+    let unit = crate::balance::UNIT;
+    let mut pos = crest_position(&[], Color::White);
+    zombie_at(&mut pos, "e6", Kind::Knight);
+    // Погиб в ход игрока: могила, ждать один конец хода соперника.
+    pos.side = Color::White;
+    let (_, killed) = pos.wound(sq("e6"), 99 * unit);
+    assert!(killed);
+    assert!(pos.waves_left(Color::Black), "могила — ещё не конец уровня");
+    // На клетку могилы встала фигура игрока — зомби восстаёт рядом.
+    pos.board[sq("e6") as usize] = Some(Piece::new(Kind::Rook, Color::White));
+    pos.side = Color::Black;
+    let risen = pos.rise_zombies();
+    assert_eq!(risen.len(), 1);
+    let (at, kind) = risen[0];
+    assert_eq!(kind, Kind::Knight);
+    assert_ne!(at, sq("e6"));
+    assert!((file_of(at) - file_of(sq("e6"))).abs() <= 1);
+    assert!((rank_of(at) - rank_of(sq("e6"))).abs() <= 1);
+    assert_eq!(pos.grave(sq("e6")), None, "могила опустела");
+    assert!(pos.piece(at).is_some_and(|p| p.zombie && p.risen));
+    // Погиб в свой ход (о шипы, в кратере) — восстанет не в этом конце хода, а в следующем.
+    let mut pos = crest_position(&[], Color::White);
+    zombie_at(&mut pos, "c6", Kind::Bishop);
+    pos.side = Color::Black;
+    pos.wound(sq("c6"), 99 * unit);
+    assert!(pos.rise_zombies().is_empty());
+    assert_eq!(pos.grave(sq("c6")), Some(Kind::Bishop));
+    assert_eq!(pos.rise_zombies().len(), 1);
+}
+
+thread_local! {
+    /// Доля вампиров в броне в последнем подсчёте волн.
+    static BOTH: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
+}
+
+#[test]
+fn rogue_like_armored_vampires_heal_once_a_turn() {
+    let unit = crate::balance::UNIT;
+    let mut pos = crest_position(&[], Color::Black);
+    // Чёрная ладья-вампир в броне на e5 бьёт две белые фигуры по прямой.
+    let vampire = pos.crested(Piece {
+        armored: true,
+        vampire: true,
+        ..Piece::new(Kind::Rook, Color::Black)
+    });
+    assert_eq!(vampire.max_hp(), Kind::Rook.stats().max_hp + 3 * unit);
+    assert_eq!(vampire.title(), "Чёрная бронированная ладья-вампир");
+    pos.board[sq("e5") as usize] = Some(Piece {
+        hp: unit,
+        ..vampire
+    });
+    pos.board[sq("e4") as usize] = Some(Piece::new(Kind::Knight, Color::White));
+    pos.board[sq("d5") as usize] = Some(Piece::new(Kind::Knight, Color::White));
+    let strikes = pos.strike_all();
+    let feasts: Vec<i32> = strikes
+        .iter()
+        .filter(|s| s.from == sq("e5"))
+        .map(|s| s.feast)
+        .collect();
+    assert_eq!(feasts.len(), 2);
+    assert_eq!(feasts.iter().sum::<i32>(), unit, "лечится один раз за ход");
+    assert_eq!(hp(&pos, "e5"), 2 * unit);
+    // В следующий ход — снова один раз.
+    pos.side = Color::White;
+    pos.end_turn();
+    pos.side = Color::Black;
+    pos.fed = 0;
+    let strikes = pos.strike_all();
+    let healed: i32 = strikes
+        .iter()
+        .filter(|s| s.from == sq("e5"))
+        .map(|s| s.feast)
+        .sum();
+    assert_eq!(healed, unit);
+}
+
+#[test]
+fn rogue_like_vampires_heal_by_striking() {
+    let unit = crate::balance::UNIT;
+    let mut pos = crest_position(&[], Color::Black);
+    pos.board[sq("e4") as usize] = Some(Piece::new(Kind::Knight, Color::White));
+    pos.board[sq("f5") as usize] = Some(Piece {
+        vampire: true,
+        hp: unit,
+        ..Piece::new(Kind::Pawn, Color::Black)
+    });
+    let strikes = pos.strike_all();
+    let bite = strikes.iter().find(|s| s.from == sq("f5")).unwrap();
+    assert_eq!(bite.feast, unit);
+    assert_eq!(hp(&pos, "f5"), 2 * unit);
+    assert!(
+        strike_description(bite).contains("восстановила 1 HP"),
+        "{}",
+        strike_description(bite)
+    );
+    // Полное здоровье выше не поднимается.
+    let mut pos = crest_position(&[], Color::Black);
+    pos.board[sq("e4") as usize] = Some(Piece::new(Kind::Knight, Color::White));
+    let vampire = pos.crested(Piece {
+        vampire: true,
+        ..Piece::new(Kind::Pawn, Color::Black)
+    });
+    pos.board[sq("f5") as usize] = Some(vampire);
+    let strikes = pos.strike_all();
+    assert_eq!(
+        strikes.iter().find(|s| s.from == sq("f5")).unwrap().feast,
+        0
+    );
+    assert_eq!(hp(&pos, "f5"), vampire.max_hp());
+}
+
+#[test]
+fn rogue_like_winds_crest_gives_a_third_hop() {
+    // Сколько раз подряд воздушный конь может сходить за ход и сколько ходов это стоит.
+    let hops = |crests: &[Crest]| {
+        let mut pos = crest_position(crests, Color::White);
+        pos.board[sq("d4") as usize] = Some(Piece {
+            wind: true,
+            ..Piece::new(Kind::Knight, Color::White)
+        });
+        let mut game = Game::from_position(pos);
+        let mut at = sq("d4");
+        let mut hops = 0;
+        while let Some(&mv) = game
+            .legal_moves()
+            .iter()
+            .find(|m| m.from == at && rank_of(m.to) >= 2 && rank_of(m.to) <= 5)
+        {
+            game.play(mv).unwrap();
+            at = mv.to;
+            hops += 1;
+            if hops > 5 {
+                break;
+            }
+        }
+        (hops, game.position().moves_made)
+    };
+    assert_eq!(hops(&[]), (2, 1));
+    assert_eq!(hops(&[Crest::Winds]), (3, 1));
+}
+
+#[test]
+fn rogue_like_wind_sword_crest_strikes_one_target_twice() {
+    let unit = crate::balance::UNIT;
+    let strikes = |crests: &[Crest]| {
+        let mut pos = crest_position(crests, Color::White);
+        pos.board[sq("e4") as usize] = Some(Piece {
+            wind: true,
+            ..Piece::new(Kind::Knight, Color::White)
+        });
+        pos.board[sq("d6") as usize] = Some(pawn_with(5 * unit));
+        pos.board[sq("f6") as usize] = Some(pawn_with(5 * unit));
+        pos.strike_all()
+            .iter()
+            .filter(|s| s.from == sq("e4"))
+            .map(|s| (s.hit.square, s.again))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(strikes(&[]).len(), 2);
+    let double = strikes(&[Crest::WindSword]);
+    assert_eq!(double.len(), 3);
+    assert_eq!(double[2], (double[0].0, true), "первая цель — ещё раз");
+}
+
+#[test]
+fn rogue_like_wind_knight_and_coin_crests_help_buy_wind_pieces() {
+    let knight = Stock::new(Kind::Knight, Power::Wind);
+    let pos = crest_position(&[Crest::WindKnight], Color::White);
+    assert_eq!(pos.shop_price(knight), shop_price(knight) - 4);
+    let share = |crests: &[Crest]| {
+        let mut pos = crest_position(crests, Color::White);
+        let (mut found, mut all) = (0.0f64, 0.0f64);
+        for _ in 0..1500 {
+            pos.roll_offers();
+            for stock in pos.offers().into_iter().flatten() {
+                all += 1.0;
+                if stock.power == Power::Wind {
+                    found += 1.0;
+                }
+            }
+        }
+        found / all
+    };
+    let plain = share(&[]);
+    assert!(share(&[Crest::WindCoin]) > plain * 1.6, "{plain}");
+}
+
+/// Белый электрический конь e4 бьёт пешку d6 (здоровья много); `setup` — ещё чужие фигуры.
+/// Возвращает клетки, задетые молнией.
+fn spark_splash(crests: &[Crest], charge: u8, setup: &[&str]) -> Vec<Square> {
+    let unit = crate::balance::UNIT;
+    let mut pos = crest_position(crests, Color::White);
+    pos.board[sq("e4") as usize] = Some(Piece {
+        spark: true,
+        charge,
+        ..Piece::new(Kind::Knight, Color::White)
+    });
+    pos.board[sq("d6") as usize] = Some(pawn_with(9 * unit));
+    for &name in setup {
+        pos.board[sq(name) as usize] = Some(pawn_with(9 * unit));
+    }
+    let strikes = pos.strike_all();
+    let strike = strikes
+        .iter()
+        .find(|s| s.from == sq("e4") && s.hit.square == sq("d6"))
+        .expect("удар по d6");
+    let mut squares: Vec<Square> = strike.splash.iter().map(|j| j.hit.square).collect();
+    squares.sort();
+    squares
+}
+
+#[test]
+fn rogue_like_bolt_crests_widen_the_lightning() {
+    let sorted = |names: &[&str]| {
+        let mut v: Vec<Square> = names.iter().map(|&n| sq(n)).collect();
+        v.sort();
+        v
+    };
+    // Без гербов — только по диагонали и вплотную.
+    assert_eq!(spark_splash(&[], 0, &["c6", "c7", "b8"]), sorted(&["c7"]));
+    // Молния и плюс — ещё по прямым.
+    assert_eq!(
+        spark_splash(&[Crest::BoltPlus], 0, &["c6", "c7"]),
+        sorted(&["c6", "c7"])
+    );
+    // Две молнии — цепью по связанным: d6 → c7 → b8 и d6 → e7 → f8; через пустую клетку — нет.
+    assert_eq!(
+        spark_splash(&[Crest::Bolts], 0, &["c7", "b8", "e7", "f8"]),
+        sorted(&["c7", "b8", "e7", "f8"])
+    );
+    assert_eq!(spark_splash(&[], 0, &["c7", "b8"]), sorted(&["c7"]));
+    assert_eq!(spark_splash(&[Crest::Bolts], 0, &["b8"]), sorted(&[]));
+    // С плюсом цепь идёт и по прямым: d6 → d7 → d8 → e8.
+    assert_eq!(
+        spark_splash(&[Crest::Bolts, Crest::BoltPlus], 0, &["d7", "d8", "e8"]),
+        sorted(&["d7", "d8", "e8"])
+    );
+    // Красная молния: 10 зарядов — на клетку дальше.
+    assert_eq!(spark_splash(&[Crest::RedBolt], 9, &["b8"]), sorted(&[]));
+    assert_eq!(
+        spark_splash(&[Crest::RedBolt], 10, &["b8"]),
+        sorted(&["b8"])
+    );
+    let pos = crest_position(&[Crest::RedBolt], Color::White);
+    let reach = |charge| {
+        pos.spark_reach(Piece {
+            spark: true,
+            charge,
+            ..Piece::new(Kind::Knight, Color::White)
+        })
+    };
+    assert_eq!(
+        (reach(0), reach(19), reach(20), reach(30), reach(200)),
+        (1, 2, 3, 4, 4)
+    );
+}
+
+#[test]
+fn rogue_like_red_bolt_crest_charges_on_kills() {
+    let unit = crate::balance::UNIT;
+    let mut pos = crest_position(&[Crest::RedBolt], Color::White);
+    pos.board[sq("e4") as usize] = Some(Piece {
+        spark: true,
+        ..Piece::new(Kind::Knight, Color::White)
+    });
+    // Конь убивает d6, молния — c7.
+    pos.board[sq("d6") as usize] = Some(pawn_with(unit));
+    pos.board[sq("c7") as usize] = Some(pawn_with(1));
+    pos.strike_all();
+    assert_eq!(pos.piece(sq("e4")).unwrap().charge, 2);
+    // Без герба заряд не копится.
+    let mut pos = crest_position(&[], Color::White);
+    pos.board[sq("e4") as usize] = Some(Piece {
+        spark: true,
+        ..Piece::new(Kind::Knight, Color::White)
+    });
+    pos.board[sq("d6") as usize] = Some(pawn_with(unit));
+    pos.strike_all();
+    assert_eq!(pos.piece(sq("e4")).unwrap().charge, 0);
+}
+
+#[test]
+fn rogue_like_bolt_one_crest_strikes_first() {
+    let unit = crate::balance::UNIT;
+    let first = |crests: &[Crest]| {
+        let mut pos = crest_position(crests, Color::White);
+        pos.board[sq("b4") as usize] = Some(Piece::new(Kind::Knight, Color::White));
+        pos.board[sq("g4") as usize] = Some(Piece {
+            spark: true,
+            ..Piece::new(Kind::Knight, Color::White)
+        });
+        pos.board[sq("a6") as usize] = Some(pawn_with(9 * unit));
+        pos.board[sq("h6") as usize] = Some(pawn_with(9 * unit));
+        pos.strike_all()[0].from
+    };
+    assert_eq!(first(&[]), sq("b4"));
+    assert_eq!(first(&[Crest::BoltOne]), sq("g4"));
+}
+
+#[test]
+fn rogue_like_bolt_bishop_and_coin_crests_help_buy_sparks() {
+    let bishop = Stock::new(Kind::Bishop, Power::Spark);
+    let pos = crest_position(&[Crest::BoltBishop], Color::White);
+    assert_eq!(pos.shop_price(bishop), shop_price(bishop) - 4);
+    let share = |crests: &[Crest]| {
+        let mut pos = crest_position(crests, Color::White);
+        let (mut found, mut all) = (0.0f64, 0.0f64);
+        for _ in 0..1500 {
+            pos.roll_offers();
+            for stock in pos.offers().into_iter().flatten() {
+                all += 1.0;
+                if stock.power == Power::Spark {
+                    found += 1.0;
+                }
+            }
+        }
+        found / all
+    };
+    let plain = share(&[]);
+    assert!(share(&[Crest::BoltCoin]) > plain * 1.6, "{plain}");
+}
+
+#[test]
+fn rogue_like_chain_lightning_remembers_its_jumps() {
+    let unit = crate::balance::UNIT;
+    let mut pos = crest_position(&[Crest::Bolts], Color::White);
+    pos.board[sq("e4") as usize] = Some(Piece {
+        spark: true,
+        ..Piece::new(Kind::Knight, Color::White)
+    });
+    for name in ["d6", "c7", "b8"] {
+        pos.board[sq(name) as usize] = Some(pawn_with(9 * unit));
+    }
+    let strikes = pos.strike_all();
+    let strike = strikes.iter().find(|s| s.hit.square == sq("d6")).unwrap();
+    let jumps: Vec<(Square, Square)> = strike
+        .splash
+        .iter()
+        .map(|j| (j.from, j.hit.square))
+        .collect();
+    assert_eq!(jumps, vec![(sq("d6"), sq("c7")), (sq("c7"), sq("b8"))]);
+}
+
+#[test]
+fn rogue_like_pair_crests_double_their_kind_in_the_shop() {
+    let share = |crests: &[Crest], kind: Kind| {
+        let mut pos = crest_position(crests, Color::White);
+        let (mut found, mut all) = (0.0f64, 0.0f64);
+        for _ in 0..2000 {
+            pos.roll_offers();
+            for stock in pos.offers().into_iter().flatten() {
+                all += 1.0;
+                if stock.kind == kind {
+                    found += 1.0;
+                }
+            }
+        }
+        found / all
+    };
+    for (crest, kind) in [
+        (Crest::Pawns, Kind::Pawn),
+        (Crest::Bishops, Kind::Bishop),
+        (Crest::Knights, Kind::Knight),
+        (Crest::Rooks, Kind::Rook),
+        (Crest::Queens, Kind::Queen),
+    ] {
+        let plain = share(&[], kind);
+        let paired = share(&[crest], kind);
+        // Вес вида вдвое больше: доля p → 2p / (1 + p).
+        let expect = 2.0 * plain / (1.0 + plain);
+        assert!(
+            (paired - expect).abs() < 0.04,
+            "{kind:?}: {plain} → {paired}, ждали {expect}"
+        );
+        assert!(crest.description().contains("вдвое чаще"));
+    }
+}
+
+#[test]
+fn rogue_like_reroll_coin_crest_makes_rerolls_cheap() {
+    let mut game = Game::from_position(Position::rogue_start(7));
+    assert!(game.win_round());
+    assert_eq!(game.position().reroll_price(), 2);
+    game.position.rogue.as_mut().unwrap().crests[0] = Some(Crest::RerollCoin);
+    assert_eq!(game.position().reroll_price(), 1);
+    game.position.rogue.as_mut().unwrap().gold = 3;
+    assert!(game.reroll());
+    assert_eq!(game.position().rogue().unwrap().gold, 2);
+    assert!(
+        Crest::RerollCoin
+            .description()
+            .contains("1 монета вместо 2")
+    );
+}
+
+/// Ход белых: конь-маг e4 и чёрные пешки `enemies` (здоровья много); конец хода — метеориты.
+fn cast(crests: &[Crest], enemies: &[&str]) -> (Position, TurnEnd) {
+    let unit = crate::balance::UNIT;
+    let mut pos = crest_position(crests, Color::White);
+    pos.board[sq("e4") as usize] = Some(Piece {
+        wizard: true,
+        ..Piece::new(Kind::Knight, Color::White)
+    });
+    for &name in enemies {
+        pos.board[sq(name) as usize] = Some(pawn_with(9 * unit));
+    }
+    let turn = pos.end_turn();
+    (pos, turn)
+}
+
+#[test]
+fn rogue_like_hat_crests_power_up_meteors() {
+    let unit = crate::balance::UNIT;
+    // Две шляпы — два метеорита; метеорит — 2 урона.
+    let (_, turn) = cast(&[Crest::Hats, Crest::Meteor], &["h8"]);
+    assert_eq!(turn.meteors.len(), 2);
+    assert!(
+        turn.meteors
+            .iter()
+            .all(|m| m.at == sq("h8") && m.hits[0].damage == 2 * unit)
+    );
+    let (_, turn) = cast(&[], &["h8"]);
+    assert_eq!(turn.meteors.len(), 1);
+    assert_eq!(turn.meteors[0].hits[0].damage, unit);
+    // Шляпа и плюс — крестом: h8 и g8, h7 (но не g7).
+    // Клетка падения случайная: задеты она и чужие соседи по прямым, по диагонали — нет.
+    let enemies = ["h8", "g8", "h7", "g7"].map(sq);
+    let (_, turn) = cast(&[Crest::HatPlus], &["h8", "g8", "h7", "g7"]);
+    let meteor = &turn.meteors[0];
+    let at = meteor.at;
+    let mut hit: Vec<Square> = meteor.hits.iter().map(|h| h.square).collect();
+    hit.sort();
+    let mut expect: Vec<Square> = enemies
+        .into_iter()
+        .filter(|&s| {
+            let (df, dr) = (file_of(s) - file_of(at), rank_of(s) - rank_of(at));
+            df.abs() + dr.abs() <= 1
+        })
+        .collect();
+    expect.sort();
+    assert_eq!(hit, expect);
+    assert_eq!(hit.len(), 3, "в углу из четырёх — клетка и два соседа");
+    assert!(meteor.wide);
+}
+
+#[test]
+fn rogue_like_hat_meteor_crest_leaves_a_burning_crater() {
+    let unit = crate::balance::UNIT;
+    // Метеорит падает на пешку h5 (одна чужая фигура) — там кратер; ход чёрных: она шагает на h4
+    // — не в кратер, а пешка h6 шагает в кратер h5 и горит.
+    let (mut pos, turn) = cast(&[Crest::HatMeteor], &["h5"]);
+    assert!(turn.meteors[0].crater);
+    assert_eq!(pos.craters(), 1 << sq("h5"));
+    pos.board[sq("h6") as usize] = Some(pawn_with(9 * unit));
+    let turn = pos.end_turn();
+    assert!(turn.marched.contains(&(sq("h6"), sq("h5"))));
+    assert_eq!(turn.burned.len(), 1);
+    assert_eq!(
+        (turn.burned[0].square, turn.burned[0].damage),
+        (sq("h5"), unit)
+    );
+    assert_eq!(hp(&pos, "h5"), 8 * unit);
+    // К ходу белых кратер погас.
+    assert_eq!(pos.craters(), 0);
+    // Без герба кратера нет.
+    let (pos, turn) = cast(&[], &["h5"]);
+    assert!(!turn.meteors[0].crater && pos.craters() == 0);
+}
+
+#[test]
+fn rogue_like_hat_coin_and_bishop_crests_help_buy_wizards() {
+    let bishop = Stock::new(Kind::Bishop, Power::Wizard);
+    let pos = crest_position(&[Crest::HatBishop], Color::White);
+    assert_eq!(pos.shop_price(bishop), shop_price(bishop) - 4);
+    let share = |crests: &[Crest]| {
+        let mut pos = crest_position(crests, Color::White);
+        let (mut found, mut all) = (0.0f64, 0.0f64);
+        for _ in 0..1500 {
+            pos.roll_offers();
+            for stock in pos.offers().into_iter().flatten() {
+                all += 1.0;
+                if stock.power == Power::Wizard {
+                    found += 1.0;
+                }
+            }
+        }
+        found / all
+    };
+    let plain = share(&[]);
+    assert!(share(&[Crest::HatCoin]) > plain * 1.6, "{plain}");
+}
+
+fn golden(kind: Kind, hp: i32) -> Piece {
+    Piece {
+        gold: true,
+        hp,
+        ..Piece::new(kind, Color::White)
+    }
+}
+
+#[test]
+fn rogue_like_king_crests_add_gold_for_kills() {
+    let unit = crate::balance::UNIT;
+    let earned = |crests: &[Crest], kind: Kind| {
+        let mut pos = crest_position(crests, Color::White);
+        pos.board[sq("e4") as usize] = Some(golden(kind, 5 * unit));
+        pos.board[sq("d6") as usize] = Some(pawn_with(1));
+        pos.board[sq("e5") as usize] = Some(pawn_with(1));
+        let before = pos.rogue().unwrap().gold;
+        let kills = pos.strike_all().iter().filter(|s| s.hit.killed).count() as u16;
+        (pos.rogue().unwrap().gold - before, kills)
+    };
+    // Золотой конь бьёт d6: 1 за пешку + 2 за золотую фигуру; с гербом короля — ещё 1.
+    assert_eq!(earned(&[], Kind::Knight), (3, 1));
+    assert_eq!(earned(&[Crest::GoldKing], Kind::Knight), (4, 1));
+    // Золотой ферзь с гербом короля и ферзя — ещё 2 (достаёт только e5).
+    assert_eq!(earned(&[Crest::KingQueen], Kind::Queen), (1 + 2 + 2, 1));
+    assert_eq!(
+        earned(&[Crest::KingQueen], Kind::Knight),
+        (3, 1),
+        "только ферзь"
+    );
+}
+
+#[test]
+fn rogue_like_king_coin_crest_sells_at_full_price() {
+    let fire = Stock::new(Kind::Knight, Power::Fire);
+    let pos = crest_position(&[], Color::White);
+    assert_eq!(
+        pos.sell_price(fire),
+        shop_price(Stock::new(Kind::Knight, Power::Plain))
+    );
+    let pos = crest_position(&[Crest::KingCoin], Color::White);
+    assert_eq!(pos.sell_price(fire), shop_price(fire));
+    let gold = Stock::new(Kind::Knight, Power::Gold);
+    assert_eq!(pos.sell_price(gold), sell_price(gold).max(shop_price(gold)));
+}
+
+#[test]
+fn rogue_like_king_skull_crest_refunds_fallen_gold() {
+    let unit = crate::balance::UNIT;
+    let refund = |crests: &[Crest]| {
+        let mut pos = crest_position(crests, Color::Black);
+        pos.board[sq("e4") as usize] = Some(golden(Kind::Knight, unit));
+        pos.board[sq("f5") as usize] = Some(Piece::new(Kind::Pawn, Color::Black));
+        let before = pos.rogue().unwrap().gold;
+        pos.strike_all();
+        assert_eq!(pos.piece(sq("e4")), None);
+        pos.rogue().unwrap().gold - before
+    };
+    assert_eq!(refund(&[]), 0);
+    assert_eq!(
+        refund(&[Crest::KingSkull]),
+        shop_price(Stock::new(Kind::Knight, Power::Gold))
+    );
+}
+
+#[test]
+fn rogue_like_piggy_crest_pays_interest_on_gold_pieces() {
+    let mut pos = crest_position(&[Crest::Piggy], Color::White);
+    pos.board[sq("e4") as usize] = Some(golden(Kind::Knight, 900));
+    pos.gold_reserve[Color::White as usize][Kind::Pawn as usize] = 1;
+    pos.rogue.as_mut().unwrap().gold = 25;
+    assert_eq!(
+        pos.piggy_bank(),
+        4,
+        "25 золота — 2 по монете на 2 золотые фигуры"
+    );
+    let mut game = Game::from_position(Position::rogue_start(7));
+    game.position.rogue.as_mut().unwrap().crests[0] = Some(Crest::Piggy);
+    game.position.board[sq("e3") as usize] = Some(golden(Kind::Knight, 900));
+    game.position.rogue.as_mut().unwrap().gold = 30;
+    assert!(game.win_round());
+    let record = game
+        .history()
+        .iter()
+        .rev()
+        .find(|r| r.turn_end().is_some())
+        .unwrap();
+    let turn = record.turn_end().unwrap();
+    assert!(turn.interest >= 3, "{}", turn.interest);
+    assert!(record.description().contains("Свинья-копилка"));
+    let crests = crest_position(&[], Color::White);
+    assert_eq!(crests.piggy_bank(), 0);
+}
+
+#[test]
+fn rogue_like_axe_and_king_crests_open_combined_pieces_in_the_shop() {
+    use std::collections::HashSet;
+    let combos = |crests: &[Crest]| {
+        let mut pos = crest_position(crests, Color::White);
+        let mut seen = HashSet::new();
+        for _ in 0..3000 {
+            pos.roll_offers();
+            for stock in pos.offers().into_iter().flatten() {
+                if stock.with != Power::Plain {
+                    assert!(
+                        !(stock.has(Power::Wizard) && stock.kind == Kind::Pawn),
+                        "магом пешка не бывает"
+                    );
+                    seen.insert((stock.power, stock.with));
+                }
+            }
+        }
+        seen
+    };
+    assert!(combos(&[]).is_empty(), "без гербов объединённых нет");
+    assert_eq!(
+        combos(&[Crest::AxeFlame]),
+        HashSet::from([(Power::Barbarian, Power::Fire)])
+    );
+    assert_eq!(
+        combos(&[Crest::AxeHat, Crest::KingFlame]),
+        HashSet::from([
+            (Power::Barbarian, Power::Wizard),
+            (Power::Gold, Power::Fire)
+        ])
+    );
+    let all: Vec<Crest> = Crest::ALL
+        .into_iter()
+        .filter(|c| c.unlocks().is_some())
+        .collect();
+    assert_eq!(all.len(), COMBOS.len());
+    assert_eq!(combos(&all), HashSet::from(COMBOS));
+    for crest in all {
+        let text = crest.description();
+        let (base, _) = crest.unlocks().unwrap();
+        let word = match base {
+            Power::Gold => "золот",
+            Power::Wizard => "маг",
+            Power::Ice => "ледян",
+            Power::Fire => "огнен",
+            Power::Spark => "электр",
+            Power::Wind => "воздуш",
+            _ => "варвар",
+        };
+        assert!(text.contains(word) && !text.contains("  "), "{text}");
+    }
+}
+
+#[test]
+fn rogue_like_wind_combined_piece_has_both_powers_and_their_crests() {
+    let stock = Stock::combo(Kind::Rook, Power::Wind, Power::Shade);
+    let rook = stock.piece(Color::White);
+    assert!(rook.wind && rook.shade && !rook.spark);
+    assert_eq!(rook.title(), "Белая воздушная теневая ладья");
+    assert_eq!(Stock::of(rook), stock);
+    // Пары, открытые раньше, — прежние: воздушные варвар, золотая, маг, ледяная, огненная,
+    // электрическая.
+    for base in [
+        Power::Barbarian,
+        Power::Gold,
+        Power::Wizard,
+        Power::Ice,
+        Power::Fire,
+        Power::Spark,
+    ] {
+        let old = Stock::of(Stock::combo(Kind::Rook, base, Power::Wind).piece(Color::White));
+        assert_eq!((old.power, old.with), (base, Power::Wind));
+    }
+    // Скидки гербов обеих сил: ветер и конь (−4), тень и ладья (−4).
+    let pos = crest_position(&[Crest::WindKnight, Crest::DarkRook], Color::White);
+    let knight = Stock::combo(Kind::Knight, Power::Wind, Power::Shade);
+    assert_eq!(pos.shop_price(knight), shop_price(knight) - 4);
+    assert_eq!(pos.shop_price(stock), shop_price(stock) - 4);
+    // Выставление — последним номером, и по сети тоже.
+    let mut pos = crest_position(&[Crest::WindDark], Color::White);
+    pos.give_stock(rook);
+    let legal = pos.legal_moves();
+    let mv = *legal
+        .iter()
+        .find(|m| m.kind == stock.drop_kind())
+        .expect("выставление воздушной объединённой");
+    assert_eq!(mv.kind, MoveKind::ComboDrop(Kind::Rook, 27));
+    assert_eq!(
+        crate::net::decode_move(&crate::net::encode_move(mv), &legal),
+        Some(mv)
+    );
+
+    // Как теневая — сквозь пешку a2 на a3; как воздушная — второй ход даровой (и тоже сквозь).
+    let mut pos = crest_position(&[], Color::White);
+    pos.board[sq("a1") as usize] = Some(rook);
+    let left = pos.moves_left();
+    let first = *pos
+        .legal_moves()
+        .iter()
+        .find(|m| m.from == sq("a1") && m.to == sq("a3"))
+        .expect("сквозь пешку");
+    pos.make_move(first);
+    assert_eq!(pos.moves_left(), left - 1);
+    assert!(pos.can_move(sq("a3")), "второй ход воздушной");
+    pos.board[sq("a4") as usize] = Some(Piece::new(Kind::Pawn, Color::White));
+    assert!(
+        pos.legal_moves()
+            .iter()
+            .any(|m| m.from == sq("a3") && m.to == sq("a5")),
+        "второй ход — тоже сквозь фигуры"
+    );
+}
+
+#[test]
+fn rogue_like_spark_combined_piece_has_both_powers_and_their_crests() {
+    let stock = Stock::combo(Kind::Knight, Power::Spark, Power::Wind);
+    let knight = stock.piece(Color::White);
+    assert!(knight.spark && knight.wind && !knight.fire);
+    assert_eq!(knight.title(), "Белый электрический воздушный конь");
+    assert_eq!(Stock::of(knight), stock);
+    // Пары, открытые раньше, — прежние: электрические варвар, золотая, маг, ледяная, огненная.
+    for base in [
+        Power::Barbarian,
+        Power::Gold,
+        Power::Wizard,
+        Power::Ice,
+        Power::Fire,
+    ] {
+        let old = Stock::of(Stock::combo(Kind::Rook, base, Power::Spark).piece(Color::White));
+        assert_eq!((old.power, old.with), (base, Power::Spark));
+    }
+    // Скидки гербов обеих сил: молния и слон (−4), ветер и конь (−4).
+    let pos = crest_position(&[Crest::BoltBishop, Crest::WindKnight], Color::White);
+    let bishop = Stock::combo(Kind::Bishop, Power::Spark, Power::Shade);
+    assert_eq!(pos.shop_price(bishop), shop_price(bishop) - 4);
+    assert_eq!(pos.shop_price(stock), shop_price(stock) - 4);
+
+    // Электрический теневой ферзь: код выставления в сети — больше 255.
+    let queen = Stock::combo(Kind::Queen, Power::Spark, Power::Shade);
+    let mut pos = crest_position(&[Crest::BoltDark], Color::White);
+    pos.give_stock(queen.piece(Color::White));
+    let legal = pos.legal_moves();
+    let mv = *legal
+        .iter()
+        .find(|m| m.kind == queen.drop_kind())
+        .expect("выставление электрической объединённой");
+    assert_eq!(mv.kind, MoveKind::ComboDrop(Kind::Queen, 26));
+    assert!(crate::net::encode_move(mv).contains(" 260 "));
+    assert_eq!(
+        crate::net::decode_move(&crate::net::encode_move(mv), &legal),
+        Some(mv)
+    );
+
+    // Как теневая — ходит сквозь фигуры: ладья с a1 через пешку a2 на a3.
+    let mut pos = crest_position(&[], Color::White);
+    pos.board[sq("a1") as usize] =
+        Some(Stock::combo(Kind::Rook, Power::Spark, Power::Shade).piece(Color::White));
+    assert!(
+        pos.legal_moves()
+            .iter()
+            .any(|m| m.from == sq("a1") && m.to == sq("a3"))
+    );
+    // Как воздушная — первый ход тратит ход, второй даровой.
+    let mut pos = crest_position(&[], Color::White);
+    pos.board[sq("e4") as usize] = Some(knight);
+    let left = pos.moves_left();
+    let first = *pos
+        .legal_moves()
+        .iter()
+        .find(|m| m.from == sq("e4") && m.to == sq("f6"))
+        .expect("ход коня");
+    pos.make_move(first);
+    assert_eq!(pos.moves_left(), left - 1);
+    assert!(pos.can_move(sq("f6")), "второй ход воздушной");
+    // Как электрическая — молния с цели на соседнюю по диагонали.
+    let unit = crate::balance::UNIT;
+    let mut pos = crest_position(&[], Color::White);
+    pos.board[sq("e4") as usize] = Some(knight);
+    pos.board[sq("d6") as usize] = Some(pawn_with(9 * unit));
+    pos.board[sq("c7") as usize] = Some(pawn_with(9 * unit));
+    let strikes = pos.strike_all();
+    assert!(strikes.iter().any(|s| s.from == sq("e4")
+        && s.hit.square == sq("d6")
+        && s.splash.iter().any(|j| j.hit.square == sq("c7"))));
+}
+
+#[test]
+fn rogue_like_fire_combined_piece_has_both_powers_and_their_crests() {
+    let unit = crate::balance::UNIT;
+    let stock = Stock::combo(Kind::Knight, Power::Fire, Power::Spark);
+    let knight = stock.piece(Color::White);
+    assert!(knight.fire && knight.spark && !knight.icy);
+    assert_eq!(knight.title(), "Белый огненный электрический конь");
+    assert_eq!(Stock::of(knight), stock);
+    assert_eq!(
+        Stock::combo(Kind::Rook, Power::Fire, Power::Shade).name(),
+        "огненная теневая ладья"
+    );
+    // Пары, открытые раньше, — прежние: огненные варвар, золотая, маг, ледяная.
+    for base in [Power::Barbarian, Power::Gold, Power::Wizard, Power::Ice] {
+        let old = Stock::of(Stock::combo(Kind::Rook, base, Power::Fire).piece(Color::White));
+        assert_eq!((old.power, old.with), (base, Power::Fire));
+    }
+    // Скидки гербов обеих сил: огонь и пешка (−2), молния и слон (−4).
+    let pos = crest_position(&[Crest::FlamePawn, Crest::BoltBishop], Color::White);
+    let pawn = Stock::combo(Kind::Pawn, Power::Fire, Power::Wind);
+    assert_eq!(pos.shop_price(pawn), shop_price(pawn) - 2);
+    let bishop = Stock::combo(Kind::Bishop, Power::Fire, Power::Spark);
+    assert_eq!(pos.shop_price(bishop), shop_price(bishop) - 4);
+    // Выставление — своим номером, и по сети тоже.
+    let mut pos = crest_position(&[Crest::FlameBolt], Color::White);
+    pos.give_stock(knight);
+    let legal = pos.legal_moves();
+    let mv = *legal
+        .iter()
+        .find(|m| m.kind == stock.drop_kind())
+        .expect("выставление огненной объединённой");
+    assert_eq!(mv.kind, MoveKind::ComboDrop(Kind::Knight, 22));
+    assert_eq!(
+        crate::net::decode_move(&crate::net::encode_move(mv), &legal),
+        Some(mv)
+    );
+
+    // Как электрическая — молния с цели на соседнюю по диагонали; как огненная — взрыв (огонь
+    // и меч — на 2).
+    let mut pos = crest_position(&[Crest::FlameSword], Color::White);
+    pos.board[sq("e4") as usize] = Some(knight);
+    pos.board[sq("d6") as usize] = Some(pawn_with(9 * unit));
+    pos.board[sq("c7") as usize] = Some(pawn_with(9 * unit));
+    pos.board[sq("e5") as usize] = Some(pawn_with(9 * unit));
+    let strikes = pos.strike_all();
+    let strike = strikes
+        .iter()
+        .find(|s| s.from == sq("e4") && s.hit.square == sq("d6"))
+        .expect("удар по d6");
+    assert!(
+        strike.splash.iter().any(|j| j.hit.square == sq("c7")),
+        "молния на c7"
+    );
+    let blasts: Vec<(Square, i32)> = pos
+        .lava_blasts()
+        .iter()
+        .flat_map(|b| b.hits.iter())
+        .map(|h| (h.square, h.damage))
+        .collect();
+    assert_eq!(blasts, vec![(sq("e5"), 2 * unit)]);
+}
+
+#[test]
+fn rogue_like_ice_combined_piece_has_both_powers_and_their_crests() {
+    let unit = crate::balance::UNIT;
+    let stock = Stock::combo(Kind::Knight, Power::Ice, Power::Fire);
+    let knight = stock.piece(Color::White);
+    assert!(knight.icy && knight.fire && !knight.wizard);
+    assert_eq!(knight.title(), "Белый огненный ледяной конь");
+    assert_eq!(Stock::of(knight), stock);
+    assert_eq!(
+        Stock::combo(Kind::Rook, Power::Ice, Power::Shade).name(),
+        "теневая ледяная ладья"
+    );
+    // Пары, открытые раньше, — прежние: ледяной варвар, ледяная золотая, ледяной маг.
+    for base in [Power::Barbarian, Power::Gold, Power::Wizard] {
+        let old = Stock::of(Stock::combo(Kind::Rook, base, Power::Ice).piece(Color::White));
+        assert_eq!((old.power, old.with), (base, Power::Ice));
+    }
+    // Снежинка и пешка: огненная ледяная пешка — как огненная.
+    let pos = crest_position(&[Crest::Pawn], Color::White);
+    assert_eq!(
+        pos.shop_price(Stock::combo(Kind::Pawn, Power::Ice, Power::Fire)),
+        shop_price(Stock::new(Kind::Pawn, Power::Fire))
+    );
+    // Выставление — своим номером, и по сети тоже.
+    let mut pos = crest_position(&[Crest::FlameSnow, Crest::Heart], Color::White);
+    pos.give_stock(knight);
+    let legal = pos.legal_moves();
+    let mv = *legal
+        .iter()
+        .find(|m| m.kind == stock.drop_kind())
+        .expect("выставление ледяной объединённой");
+    assert_eq!(mv.kind, MoveKind::ComboDrop(Kind::Knight, 18));
+    assert_eq!(
+        crate::net::decode_move(&crate::net::encode_move(mv), &legal),
+        Some(mv)
+    );
+    // Сердце и снежинка — здоровье ледяной.
+    pos.make_move(mv);
+    let placed = pos.piece(mv.to).unwrap();
+    assert_eq!(placed.max_hp(), rogue_knight_hp() + 2 * unit);
+
+    // Как ледяная — ударивший замерзает; как огненная — взрывается (огонь и меч — на 2).
+    let mut pos = crest_position(&[Crest::FlameSword], Color::Black);
+    pos.board[sq("e4") as usize] = Some(knight);
+    pos.board[sq("e6") as usize] = Some(Piece::new(Kind::Rook, Color::Black));
+    let strikes = pos.strike_all();
+    assert!(
+        strikes.iter().any(|s| s.from == sq("e6") && s.rebound),
+        "ударивший ледяную замёрз"
+    );
+    pos.side = Color::White;
+    pos.board[sq("e5") as usize] = Some(pawn_with(5 * unit));
+    let blasts: Vec<(Square, i32)> = pos
+        .lava_blasts()
+        .iter()
+        .flat_map(|b| b.hits.iter())
+        .map(|h| (h.square, h.damage))
+        .collect();
+    assert_eq!(blasts, vec![(sq("e5"), 2 * unit)]);
+}
+
+#[test]
+fn rogue_like_wizard_combined_piece_has_both_powers_and_their_crests() {
+    let unit = crate::balance::UNIT;
+    let stock = Stock::combo(Kind::Knight, Power::Wizard, Power::Fire);
+    let knight = stock.piece(Color::White);
+    assert!(knight.wizard && knight.fire && !knight.gold);
+    assert_eq!(knight.title(), "Белый огненный конь-маг");
+    assert_eq!(Stock::of(knight), stock);
+    assert_eq!(stock.drop_kind(), MoveKind::ComboDrop(Kind::Knight, 13));
+    assert_eq!(
+        Stock::combo(Kind::Rook, Power::Wizard, Power::Ice).name(),
+        "ледяная ладья-маг"
+    );
+    // Пары, открытые раньше, — прежние: золотой маг, варвар-маг.
+    let gold = Stock::of(Stock::combo(Kind::Rook, Power::Gold, Power::Wizard).piece(Color::White));
+    assert_eq!((gold.power, gold.with), (Power::Gold, Power::Wizard));
+    // Скидка шляпы и слона — и магу-объединённому.
+    let pos = crest_position(&[Crest::HatBishop], Color::White);
+    let bishop = Stock::combo(Kind::Bishop, Power::Wizard, Power::Spark);
+    assert_eq!(pos.shop_price(bishop), shop_price(bishop) - 4);
+
+    // Как маг: метеорит (с гербом метеорита — на 2); как огненная — взрыв (с огнём и мечом — на 2).
+    let mut pos = crest_position(
+        &[Crest::HatFlame, Crest::Meteor, Crest::FlameSword],
+        Color::White,
+    );
+    pos.board[sq("e4") as usize] = Some(knight);
+    pos.board[sq("e5") as usize] = Some(pawn_with(9 * unit));
+    let meteors = pos.meteors();
+    assert_eq!(meteors.len(), 1);
+    assert_eq!(
+        meteors[0]
+            .hits
+            .iter()
+            .map(|h| (h.square, h.damage))
+            .collect::<Vec<_>>(),
+        vec![(sq("e5"), 2 * unit)]
+    );
+    let blasts: Vec<(Square, i32)> = pos
+        .lava_blasts()
+        .iter()
+        .flat_map(|b| b.hits.iter())
+        .map(|h| (h.square, h.damage))
+        .collect();
+    assert_eq!(blasts, vec![(sq("e5"), 2 * unit)]);
+}
+
+#[test]
+fn rogue_like_gold_combined_piece_has_both_powers_and_their_crests() {
+    let unit = crate::balance::UNIT;
+    let stock = Stock::combo(Kind::Knight, Power::Gold, Power::Fire);
+    let knight = stock.piece(Color::White);
+    assert!(knight.gold && knight.fire && !knight.barbarian);
+    assert_eq!(knight.title(), "Белый огненный золотой конь");
+    assert_eq!(Stock::of(knight), stock);
+    assert_eq!(
+        Stock::combo(Kind::Bishop, Power::Gold, Power::Wizard).name(),
+        "золотой слон-маг"
+    );
+    assert_eq!(
+        Stock::combo(Kind::Rook, Power::Gold, Power::Ice).name(),
+        "ледяная золотая ладья"
+    );
+    // Золотой варвар — по-прежнему варвар с золотом.
+    let both = Stock::combo(Kind::Knight, Power::Barbarian, Power::Gold);
+    assert_eq!(Stock::of(both.piece(Color::White)), both);
+    assert_eq!(both.name(), "золотой варварский конь");
+    // Выставление — своим номером, и по сети тоже.
+    let mut pos = crest_position(&[Crest::KingFlame], Color::White);
+    pos.give_stock(knight);
+    assert!(pos.reserve(Color::White).contains(&(stock, 1, 0)));
+    let legal = pos.legal_moves();
+    let mv = *legal
+        .iter()
+        .find(|m| m.kind == stock.drop_kind())
+        .expect("выставление золотой объединённой");
+    assert_eq!(mv.kind, MoveKind::ComboDrop(Kind::Knight, 7));
+    assert_eq!(
+        crate::net::decode_move(&crate::net::encode_move(mv), &legal),
+        Some(mv)
+    );
+    // Продаётся как золотая.
+    assert_eq!(
+        sell_price(stock),
+        sell_price(Stock::new(Kind::Knight, Power::Gold))
+    );
+
+    // Как золотая: победа приносит золото сверху (с гербом короля — ещё); как огненная —
+    // взрывается (с гербом огня и меча — на 2).
+    let gold_gain = |piece: Piece| {
+        let mut pos = crest_position(&[Crest::GoldKing, Crest::FlameSword], Color::White);
+        pos.board[sq("e4") as usize] = Some(piece);
+        pos.board[sq("d6") as usize] = Some(pawn_with(unit));
+        pos.board[sq("e5") as usize] = Some(pawn_with(5 * unit));
+        let before = pos.rogue().unwrap().gold;
+        pos.strike_all();
+        let gain = pos.rogue().unwrap().gold - before;
+        let hits: Vec<(Square, i32)> = pos
+            .lava_blasts()
+            .iter()
+            .flat_map(|b| b.hits.iter())
+            .map(|h| (h.square, h.damage))
+            .collect();
+        (gain, hits)
+    };
+    let (plain, plain_hits) = gold_gain(fire(Kind::Knight));
+    let (golden, golden_hits) = gold_gain(knight);
+    assert_eq!(golden - plain, 2 + 1, "бонус золотой и герб короля");
+    assert_eq!(plain_hits, vec![(sq("e5"), 2 * unit)]);
+    assert_eq!(golden_hits, plain_hits);
+
+    // Ледяная золотая: ударивший замерзает, герб снежинки и пешки — пешка как золотая.
+    let mut pos = crest_position(&[Crest::KingSnow, Crest::Pawn], Color::Black);
+    let pawn = Stock::combo(Kind::Pawn, Power::Gold, Power::Ice);
+    assert_eq!(
+        pos.shop_price(pawn),
+        shop_price(Stock::new(Kind::Pawn, Power::Gold))
+    );
+    pos.board[sq("e4") as usize] =
+        Some(Stock::combo(Kind::Rook, Power::Gold, Power::Ice).piece(Color::White));
+    pos.board[sq("e6") as usize] = Some(Piece::new(Kind::Rook, Color::Black));
+    let strikes = pos.strike_all();
+    assert!(
+        strikes.iter().any(|s| s.from == sq("e6") && s.rebound),
+        "ударивший ледяную замерз"
+    );
+}
+
+#[test]
+fn rogue_like_combined_piece_is_stored_bought_and_dropped() {
+    let stock = Stock::combo(Kind::Knight, Power::Barbarian, Power::Fire);
+    let knight = stock.piece(Color::White);
+    assert!(knight.barbarian && knight.fire && !knight.spark);
+    assert_eq!(knight.title(), "Белый огненный варварский конь");
+    assert_eq!(stock.name(), "огненный варварский конь");
+    assert_eq!(
+        Stock::combo(Kind::Bishop, Power::Barbarian, Power::Wizard).name(),
+        "варварский слон-маг"
+    );
+    assert_eq!(Stock::of(knight), stock);
+    assert_eq!(stock.drop_kind(), MoveKind::ComboDrop(Kind::Knight, 0));
+    assert_eq!(MoveKind::ComboDrop(Kind::Knight, 0).stock(), Some(stock));
+    // Цена — 300% обычной такой же.
+    assert_eq!(
+        shop_price(stock),
+        shop_price(Stock::new(Kind::Knight, Power::Plain)) * 3
+    );
+
+    // Покупка — в запас, готовой; выставление — ходом, и по сети тоже.
+    let mut pos = crest_position(&[Crest::AxeFlame], Color::White);
+    let r = pos.rogue.as_mut().unwrap();
+    r.shop = true;
+    r.gold = 50;
+    r.offers[0] = Some(stock);
+    assert!(pos.buy(0).is_some());
+    assert_eq!(pos.rogue().unwrap().gold, 50 - pos.shop_price(stock));
+    assert!(pos.reserve(Color::White).contains(&(stock, 1, 0)));
+    pos.rogue.as_mut().unwrap().shop = false;
+    let legal = pos.legal_moves();
+    let mv = *legal
+        .iter()
+        .find(|m| m.kind == stock.drop_kind())
+        .expect("выставление объединённой");
+    assert_eq!(
+        crate::net::decode_move(&crate::net::encode_move(mv), &legal),
+        Some(mv)
+    );
+    pos.make_move(mv);
+    let placed = pos.piece(mv.to).unwrap();
+    assert!(placed.barbarian && placed.fire);
+    assert!(pos.reserve(Color::White).iter().all(|&(s, ..)| s != stock));
+}
+
+#[test]
+fn rogue_like_combined_piece_has_both_powers_and_their_crests() {
+    let unit = crate::balance::UNIT;
+    // Топор и меч — герб варваров, огонь и меч — герб огненных: оба действуют.
+    let mut pos = crest_position(&[Crest::AxeSword, Crest::FlameSword], Color::White);
+    let knight =
+        pos.crested(Stock::combo(Kind::Knight, Power::Barbarian, Power::Fire).piece(Color::White));
+    let plain = Piece::new(Kind::Knight, Color::White);
+    assert_eq!(knight.attack(), plain.attack() + 2 * unit);
+    assert_eq!(knight.max_hp(), rogue_knight_hp() - unit);
+    pos.board[sq("e4") as usize] = Some(knight);
+    // Как варвар: убил d6 — бьёт f6 ещё раз.
+    pos.board[sq("d6") as usize] = Some(pawn_with(3 * unit));
+    pos.board[sq("f6") as usize] = Some(pawn_with(6 * unit));
+    pos.board[sq("e5") as usize] = Some(pawn_with(5 * unit));
+    let strikes: Vec<(Square, bool, bool)> = pos
+        .strike_all()
+        .iter()
+        .filter(|s| s.from == sq("e4"))
+        .map(|s| (s.hit.square, s.hit.killed, s.again))
+        .collect();
+    assert_eq!(
+        strikes,
+        vec![
+            (sq("d6"), true, false),
+            (sq("f6"), false, false),
+            (sq("f6"), true, true)
+        ]
+    );
+    // Как огненная: взрывается, и с гербом огня и меча — на 2.
+    let hits: Vec<(Square, i32)> = pos
+        .lava_blasts()
+        .iter()
+        .flat_map(|b| b.hits.iter())
+        .map(|h| (h.square, h.damage))
+        .collect();
+    assert_eq!(hits, vec![(sq("e5"), 2 * unit)]);
+
+    // Скидки гербов — и на объединённые: огонь и пешка (−2), топор и ферзь (−6).
+    let pos = crest_position(&[Crest::FlamePawn, Crest::AxeQueen], Color::White);
+    let pawn = Stock::combo(Kind::Pawn, Power::Barbarian, Power::Fire);
+    assert_eq!(pos.shop_price(pawn), shop_price(pawn) - 2);
+    let queen = Stock::combo(Kind::Queen, Power::Barbarian, Power::Ice);
+    assert_eq!(pos.shop_price(queen), shop_price(queen) - 6);
+    // Золотой варвар продаётся как золотой, шанс ледяных растёт и у ледяных варваров.
+    let gold = Stock::combo(Kind::Rook, Power::Barbarian, Power::Gold);
+    assert_eq!(
+        sell_price(gold),
+        sell_price(Stock::new(Kind::Rook, Power::Gold))
+    );
+    let share = |crests: &[Crest]| {
+        let mut pos = crest_position(crests, Color::White);
+        let (mut found, mut all) = (0.0f64, 0.0f64);
+        for _ in 0..2000 {
+            pos.roll_offers();
+            for stock in pos.offers().into_iter().flatten() {
+                all += 1.0;
+                if stock.with == Power::Ice {
+                    found += 1.0;
+                }
+            }
+        }
+        found / all
+    };
+    assert!(share(&[Crest::AxeSnow, Crest::Coin]) > share(&[Crest::AxeSnow]) * 1.5);
+}
+
+/// Проверки rogue-like после каждого действия: фигуры живы и не выше полного здоровья, короли на
+/// месте, уровни и волны в пределах, золото не перевалило через ноль, каждый ход переживает сеть,
+/// запас собирается обратно в те же фигуры, описания последних записей строятся.
+fn assert_rogue_sane(game: &Game, context: &str) {
+    let pos = game.position();
+    for (sq, p) in pos.pieces() {
+        assert!(p.hp > 0, "{context}: {} на {sq} с {} HP", p.title(), p.hp);
+        assert!(
+            p.hp <= p.max_hp(),
+            "{context}: {} на {sq} — {} HP из {}",
+            p.title(),
+            p.hp,
+            p.max_hp()
+        );
+    }
+    for color in [Color::White, Color::Black] {
+        if let Some(king) = pos.king_square(color) {
+            let piece = pos.piece(king).expect("король на своей клетке");
+            assert!(
+                piece.kind == Kind::King && piece.color == color && !piece.boss,
+                "{context}: на клетке короля {}",
+                piece.title()
+            );
+        }
+    }
+    let r = pos.rogue().expect("rogue-like");
+    assert!(r.wave <= r.waves && r.level <= r.levels, "{context}: {r:?}");
+    assert!(r.gold < 30_000, "{context}: золото {}", r.gold);
+    let legal = game.legal_moves();
+    for &mv in legal {
+        assert_eq!(
+            crate::net::decode_move(&crate::net::encode_move(mv), legal),
+            Some(mv),
+            "{context}: ход по сети"
+        );
+    }
+    for color in [Color::White, Color::Black] {
+        for (stock, ready, wait) in pos.reserve(color) {
+            assert!(ready + wait > 0);
+            assert_eq!(Stock::of(stock.piece(color)), stock, "{context}: запас");
+        }
+    }
+    for record in game.history().iter().rev().take(2) {
+        let _ = record.description();
+        let _ = record.notation();
+    }
+}
+
+/// Долгий прогон rogue-like: случайные гербы (иногда все), объединённые фигуры в запасе, магазин,
+/// продажа, гербы, расстановка, «Выиграть раунд», отмена — после каждого действия
+/// `assert_rogue_sane`, а отмена возвращает позицию в точности. `ROGUE_FUZZ_GAMES` — число партий
+/// (по умолчанию 40); долгий прогон — `cargo test --release rogue_like_fuzz -- --ignored`.
+fn rogue_fuzz(games: u64) {
+    let mut seed = 0x5EED_F00D_CAFE_0001u64;
+    let mut next = move |n: usize| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed % n.max(1) as u64) as usize
+    };
+    let specials = [
+        Power::Fire,
+        Power::Spark,
+        Power::Wind,
+        Power::Gold,
+        Power::Shade,
+        Power::Ice,
+        Power::Barbarian,
+        Power::Wizard,
+    ];
+    let (mut levels, mut shops, mut undos, mut actions) = (0u32, 0u32, 0u32, 0u32);
+    let (mut wins, mut losses, mut deepest) = (0u32, 0u32, 0u8);
+    for g in 0..games {
+        let mut pos = Position::rogue_start(g * 7919 + 3);
+        let r = pos.rogue.as_mut().unwrap();
+        // Гербы: в каждой четвёртой партии — все, иначе случайные.
+        let mut crests: Vec<Crest> = Crest::ALL.to_vec();
+        if g % 4 != 0 {
+            crests.retain(|_| next(3) == 0);
+        }
+        for (slot, &crest) in r.crests.iter_mut().zip(&crests) {
+            *slot = Some(crest);
+        }
+        r.gold = next(60) as u16;
+        // В запасе — несколько объединённых и особых.
+        for _ in 0..next(5) {
+            let kind = [
+                Kind::Pawn,
+                Kind::Knight,
+                Kind::Bishop,
+                Kind::Rook,
+                Kind::Queen,
+            ][next(5)];
+            let stock = if next(2) == 0 {
+                let (base, with) = COMBOS[next(COMBOS.len())];
+                Stock::combo(kind, base, with)
+            } else {
+                Stock::new(kind, specials[next(specials.len())])
+            };
+            if stock.has(Power::Wizard) && kind == Kind::Pawn {
+                continue;
+            }
+            pos.give_stock(stock.piece(Color::White));
+        }
+        let mut game = Game::from_position(pos);
+        assert_rogue_sane(&game, "начало");
+        for step in 0..1500 {
+            if game.is_over() {
+                break;
+            }
+            actions += 1;
+            let context = format!("партия {g}, шаг {step}");
+            // Изредка: действие и сразу отмена — позиция возвращается в точности.
+            let probe = next(12) == 0;
+            let before = (game.position().clone(), game.history().len());
+            let pos = game.position();
+            let moves = game.legal_moves().to_vec();
+            if pos.shop_open() {
+                shops += 1;
+                let ready: Vec<Stock> = pos
+                    .reserve(Color::White)
+                    .into_iter()
+                    .filter(|&(_, ready, _)| ready > 0)
+                    .map(|(stock, ..)| stock)
+                    .collect();
+                match next(9) {
+                    0 | 1 => {
+                        game.buy(next(5));
+                    }
+                    2 => {
+                        game.buy_crest(next(3));
+                    }
+                    3 => {
+                        game.reroll();
+                    }
+                    4 => {
+                        game.reroll_crests();
+                    }
+                    5 if !ready.is_empty() => {
+                        game.sell(ready[next(ready.len())]);
+                    }
+                    _ => {
+                        assert!(game.leave_shop(), "{context}: из магазина не уйти");
+                    }
+                }
+            } else if game.position().side() == Color::White && next(40) == 0 {
+                if game.win_round() {
+                    levels += 1;
+                }
+            } else if !game.history().is_empty() && next(25) == 0 {
+                assert!(game.undo());
+                undos += 1;
+            } else if moves.is_empty() || (pos.moved() || pos.planning()) && next(3) == 0 {
+                assert!(game.end_turn(), "{context}: ход не закончить");
+            } else {
+                let mv = moves[next(moves.len())];
+                assert!(game.play(mv).is_some(), "{context}: ход {mv:?} не сыгран");
+            }
+            assert_rogue_sane(&game, &context);
+            if probe && game.history().len() > before.1 {
+                while game.history().len() > before.1 {
+                    assert!(game.undo());
+                }
+                assert!(
+                    *game.position() == before.0,
+                    "{context}: отмена вернула не ту позицию"
+                );
+                undos += 1;
+            }
+        }
+        let r = game.position().rogue().unwrap();
+        deepest = deepest.max(r.level);
+        match game.status() {
+            Status::Victory {
+                winner: Color::White,
+            } => wins += 1,
+            Status::Victory { .. } => losses += 1,
+            _ => {}
+        }
+    }
+    eprintln!(
+        "rogue-like fuzz: партий {games}, действий {actions}, в магазине {shops}, отмен {undos}, \
+         выигранных раундов {levels}, побед {wins}, поражений {losses}, дальше всех — уровень \
+         {deepest}"
+    );
+}
+
+#[test]
+fn rogue_like_fuzz_keeps_the_game_sane() {
+    let games = std::env::var("ROGUE_FUZZ_GAMES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(40);
+    rogue_fuzz(games);
+}
+
+#[test]
+#[ignore]
+fn rogue_like_fuzz_long() {
+    rogue_fuzz(600);
 }

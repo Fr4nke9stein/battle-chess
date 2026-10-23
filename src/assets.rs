@@ -12,7 +12,7 @@ use eframe::egui::{
 };
 use resvg::{tiny_skia, usvg};
 
-use crate::game::{Color, Kind};
+use crate::game::{Color, Kind, Piece};
 
 /// Ромб верхней грани клетки, пиксели арта.
 pub const TILE: Vec2 = vec2(56.0, 42.0);
@@ -63,6 +63,484 @@ const FROZEN: [&[u8]; 12] = breach!(
     "pieces/frozen/bR.png",
     "pieces/frozen/bQ.png",
     "pieces/frozen/bK.png",
+);
+/// Золотые фигуры rogue-like (с 0.68) — вариант `gold` из `tools/breach_gilded.py` (целиком
+/// золотые), тот же холст и порядок, что у `BODIES`; тени — свои.
+const GOLD_BODIES: [&[u8]; 12] = breach!(
+    "pieces/gold/wP.png",
+    "pieces/gold/wN.png",
+    "pieces/gold/wB.png",
+    "pieces/gold/wR.png",
+    "pieces/gold/wQ.png",
+    "pieces/gold/wK.png",
+    "pieces/gold/bP.png",
+    "pieces/gold/bN.png",
+    "pieces/gold/bB.png",
+    "pieces/gold/bR.png",
+    "pieces/gold/bQ.png",
+    "pieces/gold/bK.png",
+);
+const GOLD_SHADOWS: [&[u8]; 12] = breach!(
+    "pieces/gold/wP_shadow.png",
+    "pieces/gold/wN_shadow.png",
+    "pieces/gold/wB_shadow.png",
+    "pieces/gold/wR_shadow.png",
+    "pieces/gold/wQ_shadow.png",
+    "pieces/gold/wK_shadow.png",
+    "pieces/gold/bP_shadow.png",
+    "pieces/gold/bN_shadow.png",
+    "pieces/gold/bB_shadow.png",
+    "pieces/gold/bR_shadow.png",
+    "pieces/gold/bQ_shadow.png",
+    "pieces/gold/bK_shadow.png",
+);
+/// Ледяные фигуры rogue-like (с 0.72) — `tools/breach_ice_pieces.py`, порядок как у `BODIES`.
+const ICE_BODIES: [&[u8]; 12] = breach!(
+    "pieces/ice/wP.png",
+    "pieces/ice/wN.png",
+    "pieces/ice/wB.png",
+    "pieces/ice/wR.png",
+    "pieces/ice/wQ.png",
+    "pieces/ice/wK.png",
+    "pieces/ice/bP.png",
+    "pieces/ice/bN.png",
+    "pieces/ice/bB.png",
+    "pieces/ice/bR.png",
+    "pieces/ice/bQ.png",
+    "pieces/ice/bK.png",
+);
+const ICE_SHADOWS: [&[u8]; 12] = breach!(
+    "pieces/ice/wP_shadow.png",
+    "pieces/ice/wN_shadow.png",
+    "pieces/ice/wB_shadow.png",
+    "pieces/ice/wR_shadow.png",
+    "pieces/ice/wQ_shadow.png",
+    "pieces/ice/wK_shadow.png",
+    "pieces/ice/bP_shadow.png",
+    "pieces/ice/bN_shadow.png",
+    "pieces/ice/bB_shadow.png",
+    "pieces/ice/bR_shadow.png",
+    "pieces/ice/bQ_shadow.png",
+    "pieces/ice/bK_shadow.png",
+);
+/// Ядовитые фигуры волн rogue-like (с 0.79) — `tools/breach_poison.py`, порядок как у `BODIES`.
+const POISON_BODIES: [&[u8]; 12] = breach!(
+    "pieces/poison/wP.png",
+    "pieces/poison/wN.png",
+    "pieces/poison/wB.png",
+    "pieces/poison/wR.png",
+    "pieces/poison/wQ.png",
+    "pieces/poison/wK.png",
+    "pieces/poison/bP.png",
+    "pieces/poison/bN.png",
+    "pieces/poison/bB.png",
+    "pieces/poison/bR.png",
+    "pieces/poison/bQ.png",
+    "pieces/poison/bK.png",
+);
+const POISON_SHADOWS: [&[u8]; 12] = breach!(
+    "pieces/poison/wP_shadow.png",
+    "pieces/poison/wN_shadow.png",
+    "pieces/poison/wB_shadow.png",
+    "pieces/poison/wR_shadow.png",
+    "pieces/poison/wQ_shadow.png",
+    "pieces/poison/wK_shadow.png",
+    "pieces/poison/bP_shadow.png",
+    "pieces/poison/bN_shadow.png",
+    "pieces/poison/bB_shadow.png",
+    "pieces/poison/bR_shadow.png",
+    "pieces/poison/bQ_shadow.png",
+    "pieces/poison/bK_shadow.png",
+);
+/// Варвары rogue-like (с 0.80) — `tools/breach_barbarian.py`, порядок как у `BODIES`.
+const BARBARIAN_BODIES: [&[u8]; 12] = breach!(
+    "pieces/barbarian/wP.png",
+    "pieces/barbarian/wN.png",
+    "pieces/barbarian/wB.png",
+    "pieces/barbarian/wR.png",
+    "pieces/barbarian/wQ.png",
+    "pieces/barbarian/wK.png",
+    "pieces/barbarian/bP.png",
+    "pieces/barbarian/bN.png",
+    "pieces/barbarian/bB.png",
+    "pieces/barbarian/bR.png",
+    "pieces/barbarian/bQ.png",
+    "pieces/barbarian/bK.png",
+);
+const BARBARIAN_SHADOWS: [&[u8]; 12] = breach!(
+    "pieces/barbarian/wP_shadow.png",
+    "pieces/barbarian/wN_shadow.png",
+    "pieces/barbarian/wB_shadow.png",
+    "pieces/barbarian/wR_shadow.png",
+    "pieces/barbarian/wQ_shadow.png",
+    "pieces/barbarian/wK_shadow.png",
+    "pieces/barbarian/bP_shadow.png",
+    "pieces/barbarian/bN_shadow.png",
+    "pieces/barbarian/bB_shadow.png",
+    "pieces/barbarian/bR_shadow.png",
+    "pieces/barbarian/bQ_shadow.png",
+    "pieces/barbarian/bK_shadow.png",
+);
+/// Маги rogue-like (с 0.83) — `tools/breach_wizard.py`, порядок как у `BODIES`.
+const WIZARD_BODIES: [&[u8]; 12] = breach!(
+    "pieces/wizard/wP.png",
+    "pieces/wizard/wN.png",
+    "pieces/wizard/wB.png",
+    "pieces/wizard/wR.png",
+    "pieces/wizard/wQ.png",
+    "pieces/wizard/wK.png",
+    "pieces/wizard/bP.png",
+    "pieces/wizard/bN.png",
+    "pieces/wizard/bB.png",
+    "pieces/wizard/bR.png",
+    "pieces/wizard/bQ.png",
+    "pieces/wizard/bK.png",
+);
+const WIZARD_SHADOWS: [&[u8]; 12] = breach!(
+    "pieces/wizard/wP_shadow.png",
+    "pieces/wizard/wN_shadow.png",
+    "pieces/wizard/wB_shadow.png",
+    "pieces/wizard/wR_shadow.png",
+    "pieces/wizard/wQ_shadow.png",
+    "pieces/wizard/wK_shadow.png",
+    "pieces/wizard/bP_shadow.png",
+    "pieces/wizard/bN_shadow.png",
+    "pieces/wizard/bB_shadow.png",
+    "pieces/wizard/bR_shadow.png",
+    "pieces/wizard/bQ_shadow.png",
+    "pieces/wizard/bK_shadow.png",
+);
+/// Бронированные фигуры волн rogue-like (с 0.89) — `tools/breach_armor.py`, порядок как у `BODIES`.
+const ARMOR_BODIES: [&[u8]; 12] = breach!(
+    "pieces/armor/wP.png",
+    "pieces/armor/wN.png",
+    "pieces/armor/wB.png",
+    "pieces/armor/wR.png",
+    "pieces/armor/wQ.png",
+    "pieces/armor/wK.png",
+    "pieces/armor/bP.png",
+    "pieces/armor/bN.png",
+    "pieces/armor/bB.png",
+    "pieces/armor/bR.png",
+    "pieces/armor/bQ.png",
+    "pieces/armor/bK.png",
+);
+const ARMOR_SHADOWS: [&[u8]; 12] = breach!(
+    "pieces/armor/wP_shadow.png",
+    "pieces/armor/wN_shadow.png",
+    "pieces/armor/wB_shadow.png",
+    "pieces/armor/wR_shadow.png",
+    "pieces/armor/wQ_shadow.png",
+    "pieces/armor/wK_shadow.png",
+    "pieces/armor/bP_shadow.png",
+    "pieces/armor/bN_shadow.png",
+    "pieces/armor/bB_shadow.png",
+    "pieces/armor/bR_shadow.png",
+    "pieces/armor/bQ_shadow.png",
+    "pieces/armor/bK_shadow.png",
+);
+/// Фигуры-вампиры волн rogue-like (с 0.89) — вариант «Дракула» из `tools/breach_vampire.py`.
+const VAMPIRE_BODIES: [&[u8]; 12] = breach!(
+    "pieces/vampire_dracula/wP.png",
+    "pieces/vampire_dracula/wN.png",
+    "pieces/vampire_dracula/wB.png",
+    "pieces/vampire_dracula/wR.png",
+    "pieces/vampire_dracula/wQ.png",
+    "pieces/vampire_dracula/wK.png",
+    "pieces/vampire_dracula/bP.png",
+    "pieces/vampire_dracula/bN.png",
+    "pieces/vampire_dracula/bB.png",
+    "pieces/vampire_dracula/bR.png",
+    "pieces/vampire_dracula/bQ.png",
+    "pieces/vampire_dracula/bK.png",
+);
+const VAMPIRE_SHADOWS: [&[u8]; 12] = breach!(
+    "pieces/vampire_dracula/wP_shadow.png",
+    "pieces/vampire_dracula/wN_shadow.png",
+    "pieces/vampire_dracula/wB_shadow.png",
+    "pieces/vampire_dracula/wR_shadow.png",
+    "pieces/vampire_dracula/wQ_shadow.png",
+    "pieces/vampire_dracula/wK_shadow.png",
+    "pieces/vampire_dracula/bP_shadow.png",
+    "pieces/vampire_dracula/bN_shadow.png",
+    "pieces/vampire_dracula/bB_shadow.png",
+    "pieces/vampire_dracula/bR_shadow.png",
+    "pieces/vampire_dracula/bQ_shadow.png",
+    "pieces/vampire_dracula/bK_shadow.png",
+);
+/// Вампиры в броне — волны rogue-like (с 0.106), `tools/breach_armor_vampire.py`.
+const ARMOR_VAMPIRE_BODIES: [&[u8]; 12] = breach!(
+    "pieces/armor_vampire/wP.png",
+    "pieces/armor_vampire/wN.png",
+    "pieces/armor_vampire/wB.png",
+    "pieces/armor_vampire/wR.png",
+    "pieces/armor_vampire/wQ.png",
+    "pieces/armor_vampire/wK.png",
+    "pieces/armor_vampire/bP.png",
+    "pieces/armor_vampire/bN.png",
+    "pieces/armor_vampire/bB.png",
+    "pieces/armor_vampire/bR.png",
+    "pieces/armor_vampire/bQ.png",
+    "pieces/armor_vampire/bK.png",
+);
+const ARMOR_VAMPIRE_SHADOWS: [&[u8]; 12] = breach!(
+    "pieces/armor_vampire/wP_shadow.png",
+    "pieces/armor_vampire/wN_shadow.png",
+    "pieces/armor_vampire/wB_shadow.png",
+    "pieces/armor_vampire/wR_shadow.png",
+    "pieces/armor_vampire/wQ_shadow.png",
+    "pieces/armor_vampire/wK_shadow.png",
+    "pieces/armor_vampire/bP_shadow.png",
+    "pieces/armor_vampire/bN_shadow.png",
+    "pieces/armor_vampire/bB_shadow.png",
+    "pieces/armor_vampire/bR_shadow.png",
+    "pieces/armor_vampire/bQ_shadow.png",
+    "pieces/armor_vampire/bK_shadow.png",
+);
+/// Ядовитые зомби — волны rogue-like (с 0.107), `tools/breach_poison_zombie.py`.
+const POISON_ZOMBIE_BODIES: [&[u8]; 12] = breach!(
+    "pieces/poison_zombie/wP.png",
+    "pieces/poison_zombie/wN.png",
+    "pieces/poison_zombie/wB.png",
+    "pieces/poison_zombie/wR.png",
+    "pieces/poison_zombie/wQ.png",
+    "pieces/poison_zombie/wK.png",
+    "pieces/poison_zombie/bP.png",
+    "pieces/poison_zombie/bN.png",
+    "pieces/poison_zombie/bB.png",
+    "pieces/poison_zombie/bR.png",
+    "pieces/poison_zombie/bQ.png",
+    "pieces/poison_zombie/bK.png",
+);
+const POISON_ZOMBIE_SHADOWS: [&[u8]; 12] = breach!(
+    "pieces/poison_zombie/wP_shadow.png",
+    "pieces/poison_zombie/wN_shadow.png",
+    "pieces/poison_zombie/wB_shadow.png",
+    "pieces/poison_zombie/wR_shadow.png",
+    "pieces/poison_zombie/wQ_shadow.png",
+    "pieces/poison_zombie/wK_shadow.png",
+    "pieces/poison_zombie/bP_shadow.png",
+    "pieces/poison_zombie/bN_shadow.png",
+    "pieces/poison_zombie/bB_shadow.png",
+    "pieces/poison_zombie/bR_shadow.png",
+    "pieces/poison_zombie/bQ_shadow.png",
+    "pieces/poison_zombie/bK_shadow.png",
+);
+/// Фигуры-зомби волн rogue-like (с 0.105) — `tools/breach_zombie.py`.
+const ZOMBIE_BODIES: [&[u8]; 12] = breach!(
+    "pieces/zombie/wP.png",
+    "pieces/zombie/wN.png",
+    "pieces/zombie/wB.png",
+    "pieces/zombie/wR.png",
+    "pieces/zombie/wQ.png",
+    "pieces/zombie/wK.png",
+    "pieces/zombie/bP.png",
+    "pieces/zombie/bN.png",
+    "pieces/zombie/bB.png",
+    "pieces/zombie/bR.png",
+    "pieces/zombie/bQ.png",
+    "pieces/zombie/bK.png",
+);
+const ZOMBIE_SHADOWS: [&[u8]; 12] = breach!(
+    "pieces/zombie/wP_shadow.png",
+    "pieces/zombie/wN_shadow.png",
+    "pieces/zombie/wB_shadow.png",
+    "pieces/zombie/wR_shadow.png",
+    "pieces/zombie/wQ_shadow.png",
+    "pieces/zombie/wK_shadow.png",
+    "pieces/zombie/bP_shadow.png",
+    "pieces/zombie/bN_shadow.png",
+    "pieces/zombie/bB_shadow.png",
+    "pieces/zombie/bR_shadow.png",
+    "pieces/zombie/bQ_shadow.png",
+    "pieces/zombie/bK_shadow.png",
+);
+/// Объединённые фигуры со своими спрайтами (с 0.96, `tools/breach_barbarian_combo.py` и
+/// `tools/breach_wizard_horns.py`): золотой и ледяной варвар, варвар-маг — тела, потом тени.
+const BARBARIAN_GOLD: [&[u8]; 24] = breach!(
+    "pieces/barbarian_gold/wP.png",
+    "pieces/barbarian_gold/wN.png",
+    "pieces/barbarian_gold/wB.png",
+    "pieces/barbarian_gold/wR.png",
+    "pieces/barbarian_gold/wQ.png",
+    "pieces/barbarian_gold/wK.png",
+    "pieces/barbarian_gold/bP.png",
+    "pieces/barbarian_gold/bN.png",
+    "pieces/barbarian_gold/bB.png",
+    "pieces/barbarian_gold/bR.png",
+    "pieces/barbarian_gold/bQ.png",
+    "pieces/barbarian_gold/bK.png",
+    "pieces/barbarian_gold/wP_shadow.png",
+    "pieces/barbarian_gold/wN_shadow.png",
+    "pieces/barbarian_gold/wB_shadow.png",
+    "pieces/barbarian_gold/wR_shadow.png",
+    "pieces/barbarian_gold/wQ_shadow.png",
+    "pieces/barbarian_gold/wK_shadow.png",
+    "pieces/barbarian_gold/bP_shadow.png",
+    "pieces/barbarian_gold/bN_shadow.png",
+    "pieces/barbarian_gold/bB_shadow.png",
+    "pieces/barbarian_gold/bR_shadow.png",
+    "pieces/barbarian_gold/bQ_shadow.png",
+    "pieces/barbarian_gold/bK_shadow.png",
+);
+const BARBARIAN_ICE: [&[u8]; 24] = breach!(
+    "pieces/barbarian_ice/wP.png",
+    "pieces/barbarian_ice/wN.png",
+    "pieces/barbarian_ice/wB.png",
+    "pieces/barbarian_ice/wR.png",
+    "pieces/barbarian_ice/wQ.png",
+    "pieces/barbarian_ice/wK.png",
+    "pieces/barbarian_ice/bP.png",
+    "pieces/barbarian_ice/bN.png",
+    "pieces/barbarian_ice/bB.png",
+    "pieces/barbarian_ice/bR.png",
+    "pieces/barbarian_ice/bQ.png",
+    "pieces/barbarian_ice/bK.png",
+    "pieces/barbarian_ice/wP_shadow.png",
+    "pieces/barbarian_ice/wN_shadow.png",
+    "pieces/barbarian_ice/wB_shadow.png",
+    "pieces/barbarian_ice/wR_shadow.png",
+    "pieces/barbarian_ice/wQ_shadow.png",
+    "pieces/barbarian_ice/wK_shadow.png",
+    "pieces/barbarian_ice/bP_shadow.png",
+    "pieces/barbarian_ice/bN_shadow.png",
+    "pieces/barbarian_ice/bB_shadow.png",
+    "pieces/barbarian_ice/bR_shadow.png",
+    "pieces/barbarian_ice/bQ_shadow.png",
+    "pieces/barbarian_ice/bK_shadow.png",
+);
+const WIZARD_HORNS: [&[u8]; 24] = breach!(
+    "pieces/wizard_horns/wP.png",
+    "pieces/wizard_horns/wN.png",
+    "pieces/wizard_horns/wB.png",
+    "pieces/wizard_horns/wR.png",
+    "pieces/wizard_horns/wQ.png",
+    "pieces/wizard_horns/wK.png",
+    "pieces/wizard_horns/bP.png",
+    "pieces/wizard_horns/bN.png",
+    "pieces/wizard_horns/bB.png",
+    "pieces/wizard_horns/bR.png",
+    "pieces/wizard_horns/bQ.png",
+    "pieces/wizard_horns/bK.png",
+    "pieces/wizard_horns/wP_shadow.png",
+    "pieces/wizard_horns/wN_shadow.png",
+    "pieces/wizard_horns/wB_shadow.png",
+    "pieces/wizard_horns/wR_shadow.png",
+    "pieces/wizard_horns/wQ_shadow.png",
+    "pieces/wizard_horns/wK_shadow.png",
+    "pieces/wizard_horns/bP_shadow.png",
+    "pieces/wizard_horns/bN_shadow.png",
+    "pieces/wizard_horns/bB_shadow.png",
+    "pieces/wizard_horns/bR_shadow.png",
+    "pieces/wizard_horns/bQ_shadow.png",
+    "pieces/wizard_horns/bK_shadow.png",
+);
+/// Ледяная золотая фигура и золотой маг (с 0.97, `tools/breach_gold_combo.py`) — тела, потом тени.
+const GOLD_ICE: [&[u8]; 24] = breach!(
+    "pieces/gold_ice/wP.png",
+    "pieces/gold_ice/wN.png",
+    "pieces/gold_ice/wB.png",
+    "pieces/gold_ice/wR.png",
+    "pieces/gold_ice/wQ.png",
+    "pieces/gold_ice/wK.png",
+    "pieces/gold_ice/bP.png",
+    "pieces/gold_ice/bN.png",
+    "pieces/gold_ice/bB.png",
+    "pieces/gold_ice/bR.png",
+    "pieces/gold_ice/bQ.png",
+    "pieces/gold_ice/bK.png",
+    "pieces/gold_ice/wP_shadow.png",
+    "pieces/gold_ice/wN_shadow.png",
+    "pieces/gold_ice/wB_shadow.png",
+    "pieces/gold_ice/wR_shadow.png",
+    "pieces/gold_ice/wQ_shadow.png",
+    "pieces/gold_ice/wK_shadow.png",
+    "pieces/gold_ice/bP_shadow.png",
+    "pieces/gold_ice/bN_shadow.png",
+    "pieces/gold_ice/bB_shadow.png",
+    "pieces/gold_ice/bR_shadow.png",
+    "pieces/gold_ice/bQ_shadow.png",
+    "pieces/gold_ice/bK_shadow.png",
+);
+const GOLD_WIZARD: [&[u8]; 24] = breach!(
+    "pieces/gold_wizard/wP.png",
+    "pieces/gold_wizard/wN.png",
+    "pieces/gold_wizard/wB.png",
+    "pieces/gold_wizard/wR.png",
+    "pieces/gold_wizard/wQ.png",
+    "pieces/gold_wizard/wK.png",
+    "pieces/gold_wizard/bP.png",
+    "pieces/gold_wizard/bN.png",
+    "pieces/gold_wizard/bB.png",
+    "pieces/gold_wizard/bR.png",
+    "pieces/gold_wizard/bQ.png",
+    "pieces/gold_wizard/bK.png",
+    "pieces/gold_wizard/wP_shadow.png",
+    "pieces/gold_wizard/wN_shadow.png",
+    "pieces/gold_wizard/wB_shadow.png",
+    "pieces/gold_wizard/wR_shadow.png",
+    "pieces/gold_wizard/wQ_shadow.png",
+    "pieces/gold_wizard/wK_shadow.png",
+    "pieces/gold_wizard/bP_shadow.png",
+    "pieces/gold_wizard/bN_shadow.png",
+    "pieces/gold_wizard/bB_shadow.png",
+    "pieces/gold_wizard/bR_shadow.png",
+    "pieces/gold_wizard/bQ_shadow.png",
+    "pieces/gold_wizard/bK_shadow.png",
+);
+/// Ледяной маг (с 0.98, `tools/breach_wizard_combo.py`) — тела, потом тени.
+const WIZARD_ICE: [&[u8]; 24] = breach!(
+    "pieces/wizard_ice/wP.png",
+    "pieces/wizard_ice/wN.png",
+    "pieces/wizard_ice/wB.png",
+    "pieces/wizard_ice/wR.png",
+    "pieces/wizard_ice/wQ.png",
+    "pieces/wizard_ice/wK.png",
+    "pieces/wizard_ice/bP.png",
+    "pieces/wizard_ice/bN.png",
+    "pieces/wizard_ice/bB.png",
+    "pieces/wizard_ice/bR.png",
+    "pieces/wizard_ice/bQ.png",
+    "pieces/wizard_ice/bK.png",
+    "pieces/wizard_ice/wP_shadow.png",
+    "pieces/wizard_ice/wN_shadow.png",
+    "pieces/wizard_ice/wB_shadow.png",
+    "pieces/wizard_ice/wR_shadow.png",
+    "pieces/wizard_ice/wQ_shadow.png",
+    "pieces/wizard_ice/wK_shadow.png",
+    "pieces/wizard_ice/bP_shadow.png",
+    "pieces/wizard_ice/bN_shadow.png",
+    "pieces/wizard_ice/bB_shadow.png",
+    "pieces/wizard_ice/bR_shadow.png",
+    "pieces/wizard_ice/bQ_shadow.png",
+    "pieces/wizard_ice/bK_shadow.png",
+);
+
+/// Свой спрайт объединённой фигуры: золотой варвар — 0, ледяной — 1, варвар-маг — 2, ледяная
+/// золотая — 3, золотой маг — 4, ледяной маг — 5.
+fn combo_set(piece: Piece) -> Option<usize> {
+    if piece.barbarian {
+        [piece.gold, piece.icy, piece.wizard]
+            .iter()
+            .position(|&b| b)
+    } else if piece.gold {
+        [piece.icy, piece.wizard]
+            .iter()
+            .position(|&b| b)
+            .map(|i| 3 + i)
+    } else if piece.wizard && piece.icy {
+        Some(5)
+    } else {
+        None
+    }
+}
+
+/// Король-толстосум rogue-like (с 0.73) — `tools/breach_fat_king.py`: белые, чёрные.
+const FAT_KING: [&[u8]; 4] = breach!(
+    "pieces/fat_king/wK.png",
+    "pieces/fat_king/bK.png",
+    "pieces/fat_king/wK_shadow.png",
+    "pieces/fat_king/bK_shadow.png",
 );
 /// Кромка инея (`ICE[0]` генератора): белая полоса, ползущая вверх по фигуре.
 const FROST_EDGE: [u8; 3] = [0xf2, 0xfb, 0xff];
@@ -128,13 +606,16 @@ pub use cards::{
     EMBLEM_ZOOM, POINTS_TINT, SHADOW_SHIFT, Sprite, cost_corner,
 };
 pub use ui::{
-    ARROW_HEAD, ARROW_SPACING, Aim, ArrowPart, BLESS_ANCHOR, BLESS_FIGURE, BLESS_FRAME_TIME,
-    BLESS_FRAMES, BUTTON, Button, COIN, COIN_SMALL, ELECTRIC_ANCHOR, ELECTRIC_FLASH,
+    ARROW_HEAD, ARROW_SPACING, Aim, ArrowPart, BIG_WAVE_CENTER, BIG_WAVE_FRAMES, BLESS_ANCHOR,
+    BLESS_FIGURE, BLESS_FRAME_TIME, BLESS_FRAMES, BUTTON, Button, COIN, COIN_SMALL, CRATER_CENTER,
+    CRATER_FRAME_TIME, CRATER_FRAMES, CREST, DARK_LOOP, ELECTRIC_ANCHOR, ELECTRIC_FLASH,
     ELECTRIC_FRAME_TIME, ELECTRIC_LOOP, FREEZE_CENTER, FREEZE_CLINK, FREEZE_DELAY,
     FREEZE_FRAME_TIME, FREEZE_FRAMES, FREEZE_FROST, FrameSprite, LAVA_FRAME_TIME, LAVA_FRAMES,
-    LAVA_HOLD, LAVA_IGNITE, LAVA_SPREAD, LAVA_WAVE_AT, PORTAL_CENTER, PORTAL_CUT, PORTAL_FRAME,
-    PORTAL_FRAME_TIME, PORTAL_FRAMES, PORTAL_RADII, PORTAL_SCALE, PORTAL_SINK, TARGET_PAD,
-    WAVE_CENTER, WAVE_FRAME, WAVE_FRAME_TIME, WAVE_FRAMES, WIND_LOOP,
+    LAVA_HOLD, LAVA_IGNITE, LAVA_SPREAD, LAVA_WAVE_AT, METEOR_CENTER, METEOR_FRAME_TIME,
+    METEOR_FRAMES, METEOR_IMPACT, METEOR_WAVE_FRAMES, POISON_LOOP, POISON_TRAIL_CENTER,
+    POISON_TRAIL_FRAMES, PORTAL_CENTER, PORTAL_CUT, PORTAL_FRAME, PORTAL_FRAME_TIME, PORTAL_FRAMES,
+    PORTAL_RADII, PORTAL_SCALE, PORTAL_SINK, STEP_FRAME_TIME, STEP_IN, STEP_IN_AT, STEP_OUT,
+    TARGET_PAD, WAVE_CENTER, WAVE_FRAME, WAVE_FRAME_TIME, WAVE_FRAMES, WIND_LOOP,
 };
 
 /// Значки в панелях увеличены вдвое: так они остаются резкими и в крупной карточке фигуры.
@@ -392,8 +873,21 @@ fn overlay(fill: [u8; 3], line: [u8; 3], alpha: u8, inset: f32, width: f32) -> P
 
 /// Пиксельный шрифт: буквы и цифры 6×8 с толстыми линиями, как подписи доски, и
 /// значки для чисел над фигурами. `x` — череп, `<` — стрелка ответного удара, `!` — меч,
-/// `h` — сердце, `c` — карта с ромбом, как на рубашке колоды.
-const GLYPHS: [(u8, [&str; 8]); 25] = [
+/// `h` — сердце, `c` — карта с ромбом, как на рубашке колоды, `z` — молния (заряд), `p` — пешка
+/// (ходы фигурами).
+const GLYPHS: [(u8, [&str; 8]); 27] = [
+    (
+        b'p',
+        [
+            "..###..", ".#####.", ".#####.", "..###..", "..###..", ".#####.", "#######", "#######",
+        ],
+    ),
+    (
+        b'z',
+        [
+            "....##", "...##.", "..##..", ".#####", "#####.", "..##..", ".##...", "##....",
+        ],
+    ),
     (
         b'A',
         [
@@ -600,10 +1094,14 @@ pub enum Glyph {
     Heart,
     /// Карты в колоде.
     Card,
+    /// Заряд электрической фигуры (герб красной молнии).
+    Bolt,
+    /// Ходы фигурами (rogue-like, над «Конец хода»).
+    Pawn,
 }
 
 /// Знаки шрифта в порядке текстур.
-const FONT: &[u8] = b"0123456789-+x<!hc";
+const FONT: &[u8] = b"0123456789-+x<!hczp";
 
 impl Glyph {
     fn char(self) -> u8 {
@@ -616,6 +1114,8 @@ impl Glyph {
             Glyph::Sword => b'!',
             Glyph::Heart => b'h',
             Glyph::Card => b'c',
+            Glyph::Bolt => b'z',
+            Glyph::Pawn => b'p',
         }
     }
 
@@ -689,6 +1189,30 @@ pub struct Textures {
     scale: u32,
     boards: [TextureHandle; 2],
     bodies: Vec<TextureHandle>,
+    gold_bodies: Vec<TextureHandle>,
+    gold_shadows: Vec<TextureHandle>,
+    ice_bodies: Vec<TextureHandle>,
+    ice_shadows: Vec<TextureHandle>,
+    poison_bodies: Vec<TextureHandle>,
+    poison_shadows: Vec<TextureHandle>,
+    barbarian_bodies: Vec<TextureHandle>,
+    barbarian_shadows: Vec<TextureHandle>,
+    wizard_bodies: Vec<TextureHandle>,
+    wizard_shadows: Vec<TextureHandle>,
+    armor_bodies: Vec<TextureHandle>,
+    armor_shadows: Vec<TextureHandle>,
+    /// Свои спрайты объединённых (`combo_set`): [набор][тела, потом тени].
+    combo_sprites: [Vec<TextureHandle>; 6],
+    vampire_bodies: Vec<TextureHandle>,
+    vampire_shadows: Vec<TextureHandle>,
+    zombie_bodies: Vec<TextureHandle>,
+    zombie_shadows: Vec<TextureHandle>,
+    poison_zombie_bodies: Vec<TextureHandle>,
+    poison_zombie_shadows: Vec<TextureHandle>,
+    armor_vampire_bodies: Vec<TextureHandle>,
+    armor_vampire_shadows: Vec<TextureHandle>,
+    /// Король-толстосум: тела белого и чёрного, потом их тени.
+    fat_king: Vec<TextureHandle>,
     frozen: Vec<TextureHandle>,
     frost_rims: Vec<TextureHandle>,
     frost_crests: Vec<TextureHandle>,
@@ -710,6 +1234,69 @@ impl Textures {
 
     pub fn shadow(&self, color: Color, kind: Kind) -> TextureId {
         self.shadows[index(color, kind)].id()
+    }
+
+    /// Спрайт фигуры: золотая (rogue-like) — из золотого набора.
+    pub fn piece_body(&self, piece: Piece) -> TextureId {
+        if let Some(set) = combo_set(piece) {
+            return self.combo_sprites[set][index(piece.color, piece.kind)].id();
+        }
+        if piece.boss {
+            self.fat_king[piece.color as usize].id()
+        } else if piece.gold {
+            self.gold_bodies[index(piece.color, piece.kind)].id()
+        } else if piece.icy {
+            self.ice_bodies[index(piece.color, piece.kind)].id()
+        } else if piece.venom && piece.zombie {
+            self.poison_zombie_bodies[index(piece.color, piece.kind)].id()
+        } else if piece.venom {
+            self.poison_bodies[index(piece.color, piece.kind)].id()
+        } else if piece.barbarian {
+            self.barbarian_bodies[index(piece.color, piece.kind)].id()
+        } else if piece.wizard {
+            self.wizard_bodies[index(piece.color, piece.kind)].id()
+        } else if piece.armored && piece.vampire {
+            self.armor_vampire_bodies[index(piece.color, piece.kind)].id()
+        } else if piece.armored {
+            self.armor_bodies[index(piece.color, piece.kind)].id()
+        } else if piece.vampire {
+            self.vampire_bodies[index(piece.color, piece.kind)].id()
+        } else if piece.zombie {
+            self.zombie_bodies[index(piece.color, piece.kind)].id()
+        } else {
+            self.body(piece.color, piece.kind)
+        }
+    }
+
+    pub fn piece_shadow(&self, piece: Piece) -> TextureId {
+        if let Some(set) = combo_set(piece) {
+            return self.combo_sprites[set][12 + index(piece.color, piece.kind)].id();
+        }
+        if piece.boss {
+            self.fat_king[2 + piece.color as usize].id()
+        } else if piece.gold {
+            self.gold_shadows[index(piece.color, piece.kind)].id()
+        } else if piece.icy {
+            self.ice_shadows[index(piece.color, piece.kind)].id()
+        } else if piece.venom && piece.zombie {
+            self.poison_zombie_shadows[index(piece.color, piece.kind)].id()
+        } else if piece.venom {
+            self.poison_shadows[index(piece.color, piece.kind)].id()
+        } else if piece.barbarian {
+            self.barbarian_shadows[index(piece.color, piece.kind)].id()
+        } else if piece.wizard {
+            self.wizard_shadows[index(piece.color, piece.kind)].id()
+        } else if piece.armored && piece.vampire {
+            self.armor_vampire_shadows[index(piece.color, piece.kind)].id()
+        } else if piece.armored {
+            self.armor_shadows[index(piece.color, piece.kind)].id()
+        } else if piece.vampire {
+            self.vampire_shadows[index(piece.color, piece.kind)].id()
+        } else if piece.zombie {
+            self.zombie_shadows[index(piece.color, piece.kind)].id()
+        } else {
+            self.shadow(piece.color, piece.kind)
+        }
     }
 
     /// Фигура в инее — на том же холсте, что и обычная.
@@ -740,6 +1327,28 @@ impl Textures {
 
 pub struct Art {
     bodies: Vec<Pixels>,
+    gold_bodies: Vec<Pixels>,
+    gold_shadows: Vec<Pixels>,
+    ice_bodies: Vec<Pixels>,
+    ice_shadows: Vec<Pixels>,
+    poison_bodies: Vec<Pixels>,
+    poison_shadows: Vec<Pixels>,
+    barbarian_bodies: Vec<Pixels>,
+    barbarian_shadows: Vec<Pixels>,
+    wizard_bodies: Vec<Pixels>,
+    wizard_shadows: Vec<Pixels>,
+    armor_bodies: Vec<Pixels>,
+    armor_shadows: Vec<Pixels>,
+    combo_sprites: [Vec<Pixels>; 6],
+    vampire_bodies: Vec<Pixels>,
+    vampire_shadows: Vec<Pixels>,
+    zombie_bodies: Vec<Pixels>,
+    zombie_shadows: Vec<Pixels>,
+    poison_zombie_bodies: Vec<Pixels>,
+    poison_zombie_shadows: Vec<Pixels>,
+    armor_vampire_bodies: Vec<Pixels>,
+    armor_vampire_shadows: Vec<Pixels>,
+    fat_king: Vec<Pixels>,
     frozen: Vec<Pixels>,
     /// Кромка инея: светлые пиксели фигуры и верхние края её силуэта (`frost_reveal` в
     /// breach_freeze.py).
@@ -772,6 +1381,81 @@ impl Art {
             frost_rims: bodies.iter().map(|body| frost_edge(body, false)).collect(),
             frost_crests: bodies.iter().map(|body| frost_edge(body, true)).collect(),
             shadows: SHADOWS.iter().map(|png| Pixels::decode(png)).collect(),
+            gold_bodies: GOLD_BODIES.iter().map(|png| Pixels::decode(png)).collect(),
+            gold_shadows: GOLD_SHADOWS.iter().map(|png| Pixels::decode(png)).collect(),
+            ice_bodies: ICE_BODIES.iter().map(|png| Pixels::decode(png)).collect(),
+            ice_shadows: ICE_SHADOWS.iter().map(|png| Pixels::decode(png)).collect(),
+            poison_bodies: POISON_BODIES
+                .iter()
+                .map(|png| Pixels::decode(png))
+                .collect(),
+            poison_shadows: POISON_SHADOWS
+                .iter()
+                .map(|png| Pixels::decode(png))
+                .collect(),
+            barbarian_bodies: BARBARIAN_BODIES
+                .iter()
+                .map(|png| Pixels::decode(png))
+                .collect(),
+            barbarian_shadows: BARBARIAN_SHADOWS
+                .iter()
+                .map(|png| Pixels::decode(png))
+                .collect(),
+            fat_king: FAT_KING.iter().map(|png| Pixels::decode(png)).collect(),
+            armor_bodies: ARMOR_BODIES.iter().map(|png| Pixels::decode(png)).collect(),
+            combo_sprites: [
+                &BARBARIAN_GOLD,
+                &BARBARIAN_ICE,
+                &WIZARD_HORNS,
+                &GOLD_ICE,
+                &GOLD_WIZARD,
+                &WIZARD_ICE,
+            ]
+            .map(|set| set.iter().map(|png| Pixels::decode(png)).collect()),
+            armor_shadows: ARMOR_SHADOWS
+                .iter()
+                .map(|png| Pixels::decode(png))
+                .collect(),
+            vampire_bodies: VAMPIRE_BODIES
+                .iter()
+                .map(|png| Pixels::decode(png))
+                .collect(),
+            vampire_shadows: VAMPIRE_SHADOWS
+                .iter()
+                .map(|png| Pixels::decode(png))
+                .collect(),
+            zombie_bodies: ZOMBIE_BODIES
+                .iter()
+                .map(|png| Pixels::decode(png))
+                .collect(),
+            zombie_shadows: ZOMBIE_SHADOWS
+                .iter()
+                .map(|png| Pixels::decode(png))
+                .collect(),
+            poison_zombie_bodies: POISON_ZOMBIE_BODIES
+                .iter()
+                .map(|png| Pixels::decode(png))
+                .collect(),
+            poison_zombie_shadows: POISON_ZOMBIE_SHADOWS
+                .iter()
+                .map(|png| Pixels::decode(png))
+                .collect(),
+            armor_vampire_bodies: ARMOR_VAMPIRE_BODIES
+                .iter()
+                .map(|png| Pixels::decode(png))
+                .collect(),
+            armor_vampire_shadows: ARMOR_VAMPIRE_SHADOWS
+                .iter()
+                .map(|png| Pixels::decode(png))
+                .collect(),
+            wizard_bodies: WIZARD_BODIES
+                .iter()
+                .map(|png| Pixels::decode(png))
+                .collect(),
+            wizard_shadows: WIZARD_SHADOWS
+                .iter()
+                .map(|png| Pixels::decode(png))
+                .collect(),
             hitboxes: bodies
                 .iter()
                 .enumerate()
@@ -815,6 +1499,29 @@ impl Art {
                 load(format!("board-flipped-x{scale}"), &self.boards[1]),
             ],
             bodies: all("piece", &self.bodies),
+            gold_bodies: all("gold-piece", &self.gold_bodies),
+            gold_shadows: all("gold-shadow", &self.gold_shadows),
+            ice_bodies: all("ice-piece", &self.ice_bodies),
+            ice_shadows: all("ice-shadow", &self.ice_shadows),
+            poison_bodies: all("poison-piece", &self.poison_bodies),
+            poison_shadows: all("poison-shadow", &self.poison_shadows),
+            barbarian_bodies: all("barbarian-piece", &self.barbarian_bodies),
+            barbarian_shadows: all("barbarian-shadow", &self.barbarian_shadows),
+            wizard_bodies: all("wizard-piece", &self.wizard_bodies),
+            wizard_shadows: all("wizard-shadow", &self.wizard_shadows),
+            armor_bodies: all("armor-piece", &self.armor_bodies),
+            combo_sprites: [0, 1, 2, 3, 4, 5]
+                .map(|i| all(&format!("combo-{i}"), &self.combo_sprites[i])),
+            armor_shadows: all("armor-shadow", &self.armor_shadows),
+            vampire_bodies: all("vampire-piece", &self.vampire_bodies),
+            vampire_shadows: all("vampire-shadow", &self.vampire_shadows),
+            zombie_bodies: all("zombie-piece", &self.zombie_bodies),
+            zombie_shadows: all("zombie-shadow", &self.zombie_shadows),
+            poison_zombie_bodies: all("poison-zombie-piece", &self.poison_zombie_bodies),
+            poison_zombie_shadows: all("poison-zombie-shadow", &self.poison_zombie_shadows),
+            armor_vampire_bodies: all("armor-vampire-piece", &self.armor_vampire_bodies),
+            armor_vampire_shadows: all("armor-vampire-shadow", &self.armor_vampire_shadows),
+            fat_king: all("fat-king", &self.fat_king),
             frozen: all("frozen-piece", &self.frozen),
             frost_rims: all("frost-rim", &self.frost_rims),
             frost_crests: all("frost-crest", &self.frost_crests),
@@ -1026,7 +1733,37 @@ mod tests {
 
     #[test]
     fn sprites_fit_the_board_layout() {
-        for png in BODIES.iter().chain(&SHADOWS) {
+        for png in BODIES
+            .iter()
+            .chain(&SHADOWS)
+            .chain(&GOLD_BODIES)
+            .chain(&GOLD_SHADOWS)
+            .chain(&ICE_BODIES)
+            .chain(&ICE_SHADOWS)
+            .chain(&POISON_BODIES)
+            .chain(&POISON_SHADOWS)
+            .chain(&BARBARIAN_BODIES)
+            .chain(&BARBARIAN_SHADOWS)
+            .chain(&WIZARD_BODIES)
+            .chain(&WIZARD_SHADOWS)
+            .chain(&ARMOR_BODIES)
+            .chain(&ARMOR_SHADOWS)
+            .chain(&VAMPIRE_BODIES)
+            .chain(&VAMPIRE_SHADOWS)
+            .chain(&ZOMBIE_BODIES)
+            .chain(&ZOMBIE_SHADOWS)
+            .chain(&POISON_ZOMBIE_BODIES)
+            .chain(&POISON_ZOMBIE_SHADOWS)
+            .chain(&ARMOR_VAMPIRE_BODIES)
+            .chain(&ARMOR_VAMPIRE_SHADOWS)
+            .chain(&BARBARIAN_GOLD)
+            .chain(&BARBARIAN_ICE)
+            .chain(&WIZARD_HORNS)
+            .chain(&GOLD_ICE)
+            .chain(&GOLD_WIZARD)
+            .chain(&WIZARD_ICE)
+            .chain(&FAT_KING)
+        {
             let image = Pixels::decode(png);
             assert_eq!(
                 [image.width, image.height],

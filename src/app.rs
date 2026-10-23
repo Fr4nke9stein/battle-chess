@@ -18,15 +18,19 @@ mod table;
 
 use crate::ai;
 use crate::assets::{
-    ANCHOR, Art, BLESS_ANCHOR, BLESS_FIGURE, BOARD, CURSOR, CURSOR_HOTSPOT, ELECTRIC_ANCHOR,
-    ELECTRIC_FLASH, ELECTRIC_FRAME_TIME, ELECTRIC_LOOP, FREEZE_CENTER, FREEZE_FROST, GLYPH_HEIGHT,
-    Glyph, LAVA_FRAME_TIME, LAVA_FRAMES, LAVA_HOLD, LAVA_IGNITE, LAVA_SPREAD, LAVA_WAVE_AT, Marker,
-    PORTAL_CENTER, PORTAL_CUT, PORTAL_RADII, Pointer, SPRITE, TILE, Textures, WIND_LOOP,
+    ANCHOR, Art, BLESS_ANCHOR, BLESS_FIGURE, BOARD, CRATER_CENTER, CRATER_FRAME_TIME,
+    CRATER_FRAMES, CURSOR, CURSOR_HOTSPOT, DARK_LOOP, ELECTRIC_ANCHOR, ELECTRIC_FLASH,
+    ELECTRIC_FRAME_TIME, ELECTRIC_LOOP, FREEZE_CENTER, FREEZE_FROST, GLYPH_HEIGHT, Glyph,
+    LAVA_FRAME_TIME, LAVA_FRAMES, LAVA_HOLD, LAVA_IGNITE, LAVA_SPREAD, LAVA_WAVE_AT, METEOR_CENTER,
+    METEOR_FRAME_TIME, METEOR_FRAMES, METEOR_IMPACT, METEOR_WAVE_FRAMES, Marker, POISON_LOOP,
+    POISON_TRAIL_CENTER, POISON_TRAIL_FRAMES, PORTAL_CENTER, PORTAL_CUT, PORTAL_RADII, Pointer,
+    SPRITE, STEP_FRAME_TIME, STEP_IN, STEP_IN_AT, STEP_OUT, TILE, Textures, WAVE_CENTER,
+    WAVE_FRAME_TIME, WIND_LOOP,
 };
 use crate::balance::{self, shown};
 use crate::game::{
-    self, Color, Event, Game, Hit, Kind, Move, Outcome, Piece, Position, Record, Square, Status,
-    Stock, Strike,
+    self, Color, Crest, Event, Game, Hit, Kind, Move, Outcome, Piece, Position, Record, Square,
+    Status, Stock, Strike,
 };
 use crate::net;
 use crate::settings::{FrameRate, Settings, ZOOM_MAX, ZOOM_MIN};
@@ -123,6 +127,8 @@ struct PendingPromotion {
 /// Анимация последнего хода: фигура скользит на новую клетку.
 struct MoveAnim {
     outcome: Outcome,
+    /// Теневая фигура (rogue-like) идёт теневым шагом, а не скользит.
+    step: bool,
     start: f64,
     /// Откуда фигура начала движение (в клетках доски).
     from: Vec2,
@@ -133,9 +139,17 @@ struct MoveAnim {
 impl MoveAnim {
     fn new(outcome: Outcome, from: Vec2, start: f64) -> MoveAnim {
         let distance = (center(outcome.mv.to) - from).length();
-        let slide = if distance < 0.05 { 0.0 } else { SLIDE_TIME };
+        let step = outcome.piece.shade && !outcome.mv.is_drop() && distance >= 0.05;
+        let slide = if step {
+            (STEP_IN_AT + STEP_IN) as f64 * STEP_FRAME_TIME
+        } else if distance < 0.05 {
+            0.0
+        } else {
+            SLIDE_TIME
+        };
         MoveAnim {
             outcome,
+            step,
             start,
             from,
             slide,
@@ -178,6 +192,25 @@ impl MoveAnim {
     }
 }
 
+/// Разряд молнии электрической фигуры между двумя фигурами (с 0.92): мгновенная ломаная
+/// вспышка от фигуры на клетке `from` к фигуре на `to`; `lift` — высота точек над землёй
+/// (середина фигур), пиксели арта.
+struct Zap {
+    from: Square,
+    to: Square,
+    lift: [f32; 2],
+    start: f64,
+}
+
+/// Сколько держится разряд молнии и как часто перескакивает его ломаная.
+const ZAP_TIME: f64 = 0.28;
+const ZAP_FLICKER: f64 = 0.05;
+/// Молния: голубое свечение и белое ядро.
+const ZAP_GLOW: Color32 = Color32::from_rgb(0x5f, 0xd7, 0xff);
+const ZAP_CORE: Color32 = Color32::from_rgb(0xf4, 0xff, 0xff);
+/// Заряд над головой электрической фигуры — жёлтая молния.
+const PIXEL_BOLT: Color32 = Color32::from_rgb(0xff, 0xd8, 0x40);
+
 /// Удар фигуры в конце хода: выпад к цели, в момент касания — цифра урона.
 struct StrikeAnim {
     strike: Strike,
@@ -211,7 +244,8 @@ impl StrikeAnim {
     /// Сдвиг атакующего во время выпада к выжившей цели (в клетках).
     fn lunge(&self, now: f64) -> Vec2 {
         let u = (now - self.start) / LUNGE_TIME;
-        if self.strike.advanced || !(0.0..1.0).contains(&u) {
+        // Круговой удар варвара — без выпада (анимация будет своя).
+        if self.strike.advanced || self.strike.whirl || !(0.0..1.0).contains(&u) {
             return Vec2::ZERO;
         }
         (center(self.strike.hit.square) - center(self.strike.from)) * (lunge_reach(u) * LUNGE_DEPTH)
@@ -303,9 +337,21 @@ struct Figure {
     spark: Option<usize>,
     /// Кадр вихря воздушной фигуры (rogue-like).
     wind: Option<usize>,
+    /// Кадр лужи и капель ядовитой фигуры волн (rogue-like).
+    poison: Option<usize>,
+    /// Теневая фигура (rogue-like): кадр ауры, исчезновения или появления (`Dark`).
+    dark: Option<Dark>,
     /// Лёд на фигуре: кадр заморозки (иней и глыба), вариант глыбы и сколько льда
     /// осталось — оттаивая, он тает.
     ice: Option<Ice>,
+}
+
+/// Кадр теневой фигуры: аура, исчезновение и появление теневого шага.
+#[derive(Clone, Copy)]
+enum Dark {
+    Aura(usize),
+    Out(usize),
+    In(usize),
 }
 
 #[derive(Clone, Copy)]
@@ -329,10 +375,42 @@ impl Figure {
             lava: None,
             spark: None,
             wind: None,
+            poison: None,
+            dark: None,
             ice: None,
         }
     }
 }
+
+/// Метеорит падает вдвое быстрее, чем идут кадры взрыва (с 0.85, просьба пользователя): кадр
+/// полёта — столько секунд.
+const METEOR_FALL_TIME: f64 = METEOR_FRAME_TIME / 2.0;
+
+/// Когда метеорит, начавший падать в `start`, касается клетки.
+fn meteor_impact(start: f64) -> f64 {
+    start + METEOR_IMPACT as f64 * METEOR_FALL_TIME
+}
+
+/// Кадр метеорита: полёт — по `METEOR_FALL_TIME`, взрыв — по `METEOR_FRAME_TIME`.
+fn meteor_frame(start: f64, now: f64) -> usize {
+    let impact = meteor_impact(start);
+    if now < impact {
+        ((now - start).max(0.0) / METEOR_FALL_TIME) as usize
+    } else {
+        METEOR_IMPACT + ((now - impact) / METEOR_FRAME_TIME) as usize
+    }
+}
+
+/// Погасший кратер исчезает не сразу, а через столько секунд после шагов.
+const CRATER_FADE: f64 = 0.3;
+
+/// Метеориты магов падают один за другим через столько секунд (rogue-like, с 0.83).
+const METEOR_GAP: f64 = 0.3;
+
+/// Отравленная фигура — тёмно-зелёный череп над ней (rogue-like, с 0.79).
+const POISON_SKULL: Color32 = Color32::from_rgb(0x2e, 0x8c, 0x1e);
+/// Череп на могиле зомби (rogue-like).
+const GRAVE_SKULL: Color32 = Color32::from_rgb(0xb8, 0xc4, 0xa0);
 
 /// Лава в пешке усиленного компьютера: насыщение (трещины растут) или взрыв (разгораются,
 /// огненная волна, гаснут).
@@ -562,6 +640,9 @@ pub struct BattleChessApp {
     reserve_hover: Option<(Seat, Stock)>,
     /// Rogue-like: место магазина под курсором.
     shop_hover: Option<ShopSpot>,
+    /// Rogue-like: герб под курсором (в углу или на прилавке) и его место на экране — для
+    /// подсказки.
+    crest_hover: Option<(Crest, Rect)>,
     /// Rogue-like: фигура запаса, которую несут в зону продажи, и где курсор.
     sell_drag: Option<(Stock, Pos2)>,
     drop_pick: Option<Stock>,
@@ -576,6 +657,19 @@ pub struct BattleChessApp {
     appears: Vec<(Square, f64)>,
     /// Rogue-like: шаги фигур волн вперёд (откуда, куда, когда начали).
     marches: Vec<(Square, Square, f64)>,
+    /// Rogue-like: следы ядовитых фигур, шагнувших вперёд (откуда, куда, когда начали).
+    trails: Vec<(Square, Square, f64)>,
+    /// Rogue-like: урон яда и метеоритов магов — когда покажется; до тех пор фигура прежняя.
+    due_hits: Vec<(Hit, f64)>,
+    /// Rogue-like: метеориты магов (клетка, когда начали падать, прозвучал ли удар, убил ли).
+    meteors: Vec<(Square, f64, bool, bool)>,
+    /// Разряды молний между фигурами.
+    zaps: Vec<Zap>,
+    /// Горящие кратеры метеоритов: клетка, когда загорелся (в миг касания), когда гаснет
+    /// (`None` — пока горит в позиции).
+    craters: Vec<(Square, f64, Option<f64>)>,
+    /// Волны метеоритов крестом: клетка, когда начались.
+    meteor_waves: Vec<(Square, f64)>,
     /// Когда слоны усиленного компьютера насытились электричеством.
     spark_since: f64,
     /// Время текущего кадра.
@@ -673,6 +767,7 @@ impl BattleChessApp {
 
             reserve_hover: None,
             shop_hover: None,
+            crest_hover: None,
             sell_drag: None,
             net: None,
             remote: None,
@@ -689,6 +784,12 @@ impl BattleChessApp {
             lavas: Vec::new(),
             appears: Vec::new(),
             marches: Vec::new(),
+            trails: Vec::new(),
+            due_hits: Vec::new(),
+            meteors: Vec::new(),
+            zaps: Vec::new(),
+            craters: Vec::new(),
+            meteor_waves: Vec::new(),
             spark_since: 0.0,
             now: 0.0,
             shown_history: 0,
@@ -847,6 +948,12 @@ impl BattleChessApp {
         self.lavas.clear();
         self.appears.clear();
         self.marches.clear();
+        self.trails.clear();
+        self.due_hits.clear();
+        self.meteors.clear();
+        self.zaps.clear();
+        self.craters.clear();
+        self.meteor_waves.clear();
         self.shown_history = self.game.history().len();
         self.ended_at = None;
     }
@@ -927,6 +1034,7 @@ impl BattleChessApp {
         self.game.position().shop_open()
             && self.anim.is_none()
             && self.strikes.is_empty()
+            && self.due_hits.is_empty()
             && self.marches.is_empty()
             && self.lavas.is_empty()
     }
@@ -971,7 +1079,21 @@ impl BattleChessApp {
             .flatten()
             .filter(|&sq| pos.piece(sq).is_some_and(|p| p.is_frozen()))
             .collect();
+        let passed = outcome.passed.clone();
         let anim = MoveAnim::new(outcome, drop.unwrap_or(center(mv.from)), now);
+        // Теневая фигура бьёт тех, через кого прошла, — на середине шага.
+        let at = now + anim.end() * 0.5;
+        for h in passed {
+            let hit = Hit {
+                square: h.square,
+                target: h.target,
+                damage: h.damage,
+                killed: h.killed,
+            };
+            let effect = Effect::hit(hit, at).stacked(&self.effects);
+            self.effects.push(effect);
+            self.due_hits.push((hit, at));
+        }
         if mv.is_drop() {
             self.sfx.play(Sound::Notify);
         }
@@ -1020,20 +1142,44 @@ impl BattleChessApp {
             start = start.max(last.start + STRIKE_GAP);
         }
         let mut chilled = Vec::new();
+        // Круговой удар варвара задевает всех разом: его удары — в один миг, звук — один.
+        let mut whirl_from = None;
         for record in &history[self.shown_history..] {
             let struck = !record.strikes().is_empty();
-            for &strike in record.strikes() {
+            for strike in record.strikes() {
+                // Теневая ушла порталом: сначала обмен, потом удар по вставшей на её место.
+                if let Some((other, shade)) = strike.swap {
+                    self.portals.push(Portal::swap(
+                        [strike.hit.square, other],
+                        [shade, strike.hit.target],
+                        start,
+                    ));
+                    start += Portal::length();
+                }
+                let joined = strike.whirl && whirl_from == Some(strike.from);
+                if joined {
+                    start -= STRIKE_GAP;
+                }
+                whirl_from = strike.whirl.then_some(strike.from);
                 let anim = StrikeAnim {
-                    strike,
+                    strike: strike.clone(),
                     start,
-                    sounded: false,
+                    sounded: joined,
                 };
-                let hit = Effect::hit(strike.hit, anim.impact()).stacked(&self.effects);
-                self.effects.push(hit);
+                // Не полученный теневой фигурой удар — без цифры.
+                if !strike.dodged {
+                    let hit = Effect::hit(strike.hit, anim.impact()).stacked(&self.effects);
+                    self.effects.push(hit);
+                }
                 if strike.feast > 0 {
-                    // «Воин» лечится, встав на клетку убитой цели.
+                    // Лечится ударивший — на своей клетке (встав на клетку убитой — там).
+                    let at = if strike.advanced {
+                        strike.hit.square
+                    } else {
+                        strike.from
+                    };
                     self.effects.push(Effect::note(
-                        strike.hit.square,
+                        at,
                         Mark::Heal,
                         strike.feast,
                         anim.impact() + NOTE_DELAY,
@@ -1042,10 +1188,33 @@ impl BattleChessApp {
                 if strike.chilled {
                     chilled.push((strike.hit.square, anim.impact()));
                 }
-                // Молния слона задевает фигуры вокруг цели в тот же миг.
-                for &hit in strike.splash.iter().flatten() {
+                // Ледяная цель: ударивший замерзает в момент касания.
+                if strike.rebound {
+                    chilled.push((strike.from, anim.impact()));
+                }
+                // Молния электрической фигуры задевает фигуры вокруг цели в тот же миг (между
+                // ними проскакивают разряды), шипы ледяной цели — ударившего.
+                for &hit in strike.splash.iter().map(|j| &j.hit).chain(&strike.thorns) {
                     let spark = Effect::hit(hit, anim.impact()).stacked(&self.effects);
                     self.effects.push(spark);
+                }
+                let lift = |p: Piece| self.art.height(p.color, p.kind) * 0.55;
+                for jump in &strike.splash {
+                    let source = if jump.from == strike.hit.square {
+                        Some(strike.hit.target)
+                    } else {
+                        strike
+                            .splash
+                            .iter()
+                            .find(|j| j.hit.square == jump.from)
+                            .map(|j| j.hit.target)
+                    };
+                    self.zaps.push(Zap {
+                        from: jump.from,
+                        to: jump.hit.square,
+                        lift: [source.map_or(20.0, lift), lift(jump.hit.target)],
+                        start: anim.impact(),
+                    });
                 }
                 self.strikes.push(anim);
                 start += STRIKE_GAP;
@@ -1065,7 +1234,7 @@ impl BattleChessApp {
                 });
                 let wave_at = ignite + (LAVA_WAVE_AT - LAVA_IGNITE) as f64 * LAVA_FRAME_TIME;
                 self.waves
-                    .push(Wave::new(blast.center, blast.hits.clone(), wave_at));
+                    .push(Wave::new(blast.center, blast.hits.clone(), wave_at).wide(blast.wide));
                 blasts_end = ignite + (LAVA_FRAMES - LAVA_IGNITE) as f64 * LAVA_FRAME_TIME;
                 start += 2.0 * STRIKE_GAP;
             }
@@ -1092,6 +1261,36 @@ impl BattleChessApp {
                     blast: false,
                 });
             }
+            // Метеориты магов — по очереди, когда доиграли удары и взрывы; урон — в миг касания.
+            let mut late = blasts_end;
+            for (i, meteor) in turn.meteors.iter().enumerate() {
+                let fall = blasts_end + i as f64 * METEOR_GAP;
+                let impact = meteor_impact(fall);
+                for &hit in &meteor.hits {
+                    let effect = Effect::hit(hit, impact).stacked(&self.effects);
+                    self.effects.push(effect);
+                    self.due_hits.push((hit, impact));
+                }
+                let killed = meteor.hits.iter().any(|h| h.killed);
+                self.meteors.push((meteor.at, fall, false, killed));
+                if meteor.wide {
+                    self.meteor_waves.push((meteor.at, impact));
+                }
+                if meteor.crater {
+                    self.craters.retain(|c| c.0 != meteor.at);
+                    self.craters.push((meteor.at, impact, None));
+                }
+                late = late.max(impact);
+            }
+            // Яд отравленных фигур — когда доиграли удары, взрывы и метеориты.
+            if !turn.poison.is_empty() {
+                let at = late + LUNGE_TIME;
+                for &hit in &turn.poison {
+                    let effect = Effect::hit(hit, at).stacked(&self.effects);
+                    self.effects.push(effect);
+                    self.due_hits.push((hit, at));
+                }
+            }
             // Rogue-like: волны сначала бьют, потом шагают вперёд; новая волна проявляется
             // после шага.
             // Фигуры игрока к расстановке возвращаются на места начала уровня так же.
@@ -1104,12 +1303,28 @@ impl BattleChessApp {
                 };
                 for &(from, to) in turn.marched.iter().chain(&turn.returned) {
                     self.marches.push((from, to, march_at));
+                    if self.game.position().piece(to).is_some_and(|p| p.venom) {
+                        self.trails.push((from, to, march_at));
+                    }
                 }
                 march_end = march_at + SLIDE_TIME;
                 start = start.max(march_end);
             }
-            for &(square, _) in &turn.spawned {
+            for &(square, _) in turn.spawned.iter().chain(&turn.risen) {
                 self.appears.push((square, march_end));
+            }
+            // Шагнувшие в горящий кратер горят, когда дошли.
+            for &hit in &turn.burned {
+                let effect = Effect::hit(hit, march_end).stacked(&self.effects);
+                self.effects.push(effect);
+                self.due_hits.push((hit, march_end));
+            }
+            // Кратеры гаснут к ходу игрока: после шагов этого хода соперника (и к расстановке).
+            let player = self.game.position().rogue().map(|r| r.player);
+            if Some(record.color()) != player || turn.planning.is_some() {
+                for crater in self.craters.iter_mut().filter(|c| c.2.is_none()) {
+                    crater.2 = Some(march_end.max(crater.1) + CRATER_FADE);
+                }
             }
         }
         self.shown_history = history.len();
@@ -1139,7 +1354,7 @@ impl BattleChessApp {
         self.strikes
             .iter()
             .filter(|s| now < s.impact())
-            .flat_map(|s| s.strike.hits().map(move |h| (s.start, h)))
+            .flat_map(|s| s.strike.wounded().map(move |h| (s.start, h)))
             .filter(|(_, h)| h.square == sq)
             .min_by(|a, b| a.0.total_cmp(&b.0))
             .map(|(_, h)| h.target)
@@ -1179,6 +1394,21 @@ impl BattleChessApp {
         (piece.lava || piece.fire).then(hold)
     }
 
+    /// Кадр тёмной ауры теневой фигуры: вступление с начала партии, потом повтор (сдвинут по
+    /// клетке).
+    fn dark_frame(&self, sq: Square, piece: Piece, now: f64) -> Option<usize> {
+        if !piece.shade {
+            return None;
+        }
+        let f = ((now - self.spark_since).max(0.0) / ELECTRIC_FRAME_TIME) as usize;
+        let [from, to] = DARK_LOOP;
+        Some(if f < from {
+            f
+        } else {
+            from + (f - from + sq as usize * 5) % (to - from)
+        })
+    }
+
     /// Кадр вихря воздушной фигуры: вступление с начала партии, потом повтор (у разных фигур
     /// сдвинут по клетке).
     fn wind_frame(&self, sq: Square, piece: Piece, now: f64) -> Option<usize> {
@@ -1191,6 +1421,22 @@ impl BattleChessApp {
             f
         } else {
             from + (f - from + sq as usize * 7) % (to - from)
+        })
+    }
+
+    /// Кадр лужи ядовитой фигуры: вступление с начала партии, потом повтор (сдвинут по
+    /// клетке).
+    fn poison_frame(&self, sq: Square, piece: Piece, now: f64) -> Option<usize> {
+        // У ядовитого зомби своей анимации лужи нет — рисуется его спрайт.
+        if !piece.venom || piece.zombie {
+            return None;
+        }
+        let f = ((now - self.spark_since).max(0.0) / ELECTRIC_FRAME_TIME) as usize;
+        let [from, to] = POISON_LOOP;
+        Some(if f < from {
+            f
+        } else {
+            from + (f - from + sq as usize * 5) % (to - from)
         })
     }
 
@@ -1221,10 +1467,20 @@ impl BattleChessApp {
 
     /// Фигура на клетке со своей лавой или электричеством.
     fn dressed(&self, sq: Square, piece: Piece, at: Vec2, now: f64) -> Figure {
+        let lava = self.lava_frame(sq, piece, now);
+        // Огненная с другой силой (rogue-like): в ожидании взрыва — кадры силы на теле с
+        // трещинами, а насыщение и взрыв — лава.
+        let [from, to] = LAVA_HOLD;
+        let calm = lava.is_none_or(|f| (from..to).contains(&f));
         Figure {
-            lava: self.lava_frame(sq, piece, now),
-            spark: self.spark_frame(sq, piece, now),
-            wind: self.wind_frame(sq, piece, now),
+            lava,
+            spark: self.spark_frame(sq, piece, now).filter(|_| calm),
+            wind: self.wind_frame(sq, piece, now).filter(|_| calm),
+            poison: self.poison_frame(sq, piece, now),
+            dark: self
+                .dark_frame(sq, piece, now)
+                .filter(|_| calm)
+                .map(Dark::Aura),
             ..Figure::new(at, piece)
         }
     }
@@ -1246,6 +1502,25 @@ impl BattleChessApp {
         self.appears.retain(|&(_, start)| now < start + APPEAR_TIME);
         self.marches
             .retain(|&(_, _, start)| now < start + SLIDE_TIME);
+        self.trails.retain(|&(_, _, start)| {
+            now < start + POISON_TRAIL_FRAMES as f64 * ELECTRIC_FRAME_TIME
+        });
+        self.due_hits.retain(|&(_, at)| now < at);
+        self.zaps.retain(|z| now < z.start + ZAP_TIME);
+        self.craters.retain(|c| c.2.is_none_or(|end| now < end));
+        self.meteor_waves
+            .retain(|w| now < w.1 + METEOR_WAVE_FRAMES as f64 * WAVE_FRAME_TIME);
+        for meteor in &mut self.meteors {
+            let impact = meteor_impact(meteor.1);
+            if !meteor.2 && now >= impact {
+                meteor.2 = true;
+                self.sfx
+                    .play(if meteor.3 { Sound::Kill } else { Sound::Hit });
+            }
+        }
+        self.meteors.retain(|m| {
+            now < meteor_impact(m.1) + (METEOR_FRAMES - METEOR_IMPACT) as f64 * METEOR_FRAME_TIME
+        });
         self.effects.retain(|e| now - e.start < EFFECT_TIME);
         self.tick_cards(now);
         if self.anim.is_none() && self.game.is_over() && self.ended_at.is_none() {
@@ -1393,8 +1668,12 @@ impl BattleChessApp {
             self.thinking = None;
             return;
         }
-        // Компьютер ждёт, пока доиграют ход, удары и карты соперника.
-        if self.anim.is_some() || !self.strikes.is_empty() || self.card_effect_running(now) {
+        // Компьютер ждёт, пока доиграют ход, удары (метеориты, яд) и карты соперника.
+        if self.anim.is_some()
+            || !self.strikes.is_empty()
+            || !self.due_hits.is_empty()
+            || self.card_effect_running(now)
+        {
             return;
         }
         let pos = self.game.position();
@@ -1462,6 +1741,9 @@ impl BattleChessApp {
         // Взятая карта тянется за курсором; отпущенная над рукой возвращается, в
         // другом месте — разыгрывается. Правая кнопка или Esc возвращают её в руку.
         let over_board = ui.rect_contains_pointer(board.area);
+        self.crest_hover = pointer
+            .filter(|_| over_board && self.sell_drag.is_none())
+            .and_then(|p| self.crest_under(board, p));
         if self.holding_card() {
             let at = pointer.map(|p| board.to_art(p));
             self.carry_card(at, now);
@@ -1524,6 +1806,8 @@ impl BattleChessApp {
                     ShopSpot::Reroll => self.game.reroll(),
                     ShopSpot::Leave => self.game.leave_shop(),
                     ShopSpot::Sell => false,
+                    ShopSpot::Crest(i) => self.game.buy_crest(i),
+                    ShopSpot::CrestReroll => self.game.reroll_crests(),
                 };
                 if done {
                     self.sfx.play(Sound::Move);
@@ -1993,12 +2277,12 @@ impl BattleChessApp {
             ice: self.ice(sq, piece, now),
             ..self.dressed(sq, piece, center(sq), now)
         };
-        // Убитая ударом (или молнией слона) фигура: до касания стоит на месте, после —
-        // растворяется.
+        // Убитая ударом (молнией слона, шипами ледяной цели) фигура: до касания стоит на месте
+        // (погибший о шипы — с выпадом), после — растворяется.
         let mut struck: Vec<Square> = self
             .strikes
             .iter()
-            .flat_map(|s| s.strike.hits().map(|h| h.square))
+            .flat_map(|s| s.strike.wounded().map(|h| h.square))
             .collect();
         struck.sort_unstable();
         struck.dedup();
@@ -2015,7 +2299,10 @@ impl BattleChessApp {
                 && !anim.is_some_and(|a| a.hides(sq))
                 && let Some(victim) = self.struck_piece(sq, now)
             {
-                figures.push(standing(sq, victim));
+                figures.push(Figure {
+                    ice: self.ice(sq, victim, now),
+                    ..self.dressed(sq, victim, center(sq) + self.strike_lunge(sq, now), now)
+                });
             }
         }
         // Убийца идёт на клетку цели.
@@ -2043,6 +2330,10 @@ impl BattleChessApp {
             }
         }
 
+        // Погибшая от яда или метеорита стоит, пока урон не показался.
+        for (hit, _) in self.due_hits.iter().filter(|(h, _)| h.killed) {
+            figures.push(standing(hit.square, hit.target));
+        }
         // Пока огненная волна не дошла, задетые фигуры — как до неё, погибшие — на месте.
         let victims = self.wave_victims();
         for hit in victims.iter().filter(|h| h.killed) {
@@ -2065,6 +2356,9 @@ impl BattleChessApp {
                 continue;
             }
             if let Some(hit) = victims.iter().find(|h| h.square == sq) {
+                piece = hit.target;
+            }
+            if let Some((hit, _)) = self.due_hits.iter().find(|(h, _)| h.square == sq) {
                 piece = hit.target;
             }
             // Пока удар не долетел, у цели прежнее здоровье. Пришедшая на клетку цели фигура
@@ -2102,8 +2396,28 @@ impl BattleChessApp {
 
         if let Some(a) = anim {
             let to = a.outcome.mv.to;
-            // Перехваченная конём — прежняя, пока удар не дошёл.
-            if let Some(piece) = self.struck_piece(to, now).or(pos.piece(to)) {
+            if a.step {
+                // Теневой шаг: исчезновение на исходной клетке, с кадра `STEP_IN_AT` — появление
+                // на целевой; теней нет.
+                let f = ((now - a.start).max(0.0) / STEP_FRAME_TIME) as usize;
+                if f < STEP_OUT {
+                    figures.push(Figure {
+                        dark: Some(Dark::Out(f)),
+                        shadow: false,
+                        ..Figure::new(center(a.outcome.mv.from), a.outcome.piece)
+                    });
+                }
+                if let Some(piece) = pos.piece(to)
+                    && f >= STEP_IN_AT
+                {
+                    figures.push(Figure {
+                        dark: Some(Dark::In((f - STEP_IN_AT).min(STEP_IN - 1))),
+                        shadow: false,
+                        ..Figure::new(center(to), piece)
+                    });
+                }
+            } else if let Some(piece) = self.struck_piece(to, now).or(pos.piece(to)) {
+                // Перехваченная конём — прежняя, пока удар не дошёл.
                 figures.push(Figure {
                     shake: self.shake(to, now),
                     ice: self.ice(to, piece, now),
@@ -2120,10 +2434,19 @@ impl BattleChessApp {
             }
         }
         // Огненная волна и порталы обмена: что позади — под фигурами, остальное — над ними.
+        self.paint_trails(painter, board, tex, now);
+        self.paint_graves(painter, board, tex, now);
+        self.paint_craters(painter, board, tex, false, now);
+        self.paint_meteor_waves(painter, board, tex, false, now);
         self.paint_waves(painter, board, tex, false, now);
         self.paint_portals(painter, board, tex, false, now);
         self.paint_blesses(painter, board, tex, false, now);
         self.paint_figures(painter, board, tex, &mut figures);
+        self.paint_craters(painter, board, tex, true, now);
+        self.paint_meteor_waves(painter, board, tex, true, now);
+        self.paint_skulls(painter, board, tex, &figures);
+        self.paint_meteors(painter, board, tex, now);
+        self.paint_zaps(painter, board, now);
         self.paint_freeze_over(painter, board, tex, now);
         self.paint_blesses(painter, board, tex, true, now);
         self.paint_portals(painter, board, tex, true, now);
@@ -2153,6 +2476,208 @@ impl BattleChessApp {
         self.paint_banner(painter, board, now);
     }
 
+    /// Следы ядовитых фигур, шагнувших вперёд: капля между клетками, под фигурами.
+    fn paint_trails(&self, painter: &Painter, board: &BoardGeom, tex: &Textures, now: f64) {
+        for &(from, to, start) in &self.trails {
+            // След тянется за фигурой, когда она шагает.
+            if now < start {
+                continue;
+            }
+            let frame = ((now - start) / ELECTRIC_FRAME_TIME) as usize;
+            if frame >= POISON_TRAIL_FRAMES {
+                continue;
+            }
+            let (a, b) = (board.ground(from), board.ground(to));
+            let d = b - a;
+            let direction = match (d.x >= 0.0, d.y <= 0.0) {
+                (true, true) => 0,
+                (false, false) => 1,
+                (false, true) => 2,
+                (true, false) => 3,
+            };
+            let Some(sprite) = tex.ui.poison_trail(direction, frame) else {
+                continue;
+            };
+            let mid = a + d / 2.0;
+            let origin = board.snap(mid - POISON_TRAIL_CENTER * board.scale);
+            let rect =
+                Rect::from_min_size(origin + sprite.at * board.scale, sprite.size * board.scale);
+            painter.image(sprite.texture, rect, UV, Color32::WHITE);
+        }
+    }
+
+    /// Разряды молний: ломаная от фигуры к фигуре в пикселях арта — голубое свечение в три
+    /// пикселя и белое ядро; ломаная перескакивает каждые `ZAP_FLICKER`, к концу гаснет.
+    fn paint_zaps(&self, painter: &Painter, board: &BoardGeom, now: f64) {
+        let s = board.scale;
+        for zap in &self.zaps {
+            let t = now - zap.start;
+            if !(0.0..ZAP_TIME).contains(&t) {
+                continue;
+            }
+            let fade = (1.0 - t / ZAP_TIME) as f32;
+            let a = board.to_art(board.ground(zap.from)) - vec2(0.0, zap.lift[0]);
+            let b = board.to_art(board.ground(zap.to)) - vec2(0.0, zap.lift[1]);
+            let d = b - a;
+            let n = ((d.length() / 7.0).ceil() as usize).max(2);
+            let normal = vec2(-d.y, d.x).normalized();
+            // Случайность ломаной — клетки и номер вспышки.
+            let mut state = (u64::from(zap.from) << 8 | u64::from(zap.to))
+                ^ ((t / ZAP_FLICKER) as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                | 1;
+            let mut next = move || {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                (state % 1000) as f32 / 1000.0
+            };
+            let points: Vec<Vec2> = (0..=n)
+                .map(|i| {
+                    let f = i as f32 / n as f32;
+                    let off = if i == 0 || i == n {
+                        0.0
+                    } else {
+                        (next() - 0.5) * 7.0
+                    };
+                    a + d * f + normal * off
+                })
+                .collect();
+            let mut pixels = Vec::new();
+            for seg in points.windows(2) {
+                let steps = (seg[1] - seg[0]).length().ceil().max(1.0) as usize;
+                for k in 0..=steps {
+                    let p = seg[0] + (seg[1] - seg[0]) * (k as f32 / steps as f32);
+                    pixels.push(vec2(p.x.floor(), p.y.floor()));
+                }
+            }
+            for (size, color) in [
+                (3.0, ZAP_GLOW.gamma_multiply(0.55 * fade)),
+                (1.0, ZAP_CORE.gamma_multiply(fade)),
+            ] {
+                for &p in &pixels {
+                    let min = board.art_to_screen(p - Vec2::splat((size - 1.0) / 2.0));
+                    let rect = Rect::from_min_size(min, Vec2::splat(size * s));
+                    painter.rect_filled(rect, CornerRadius::ZERO, color);
+                }
+            }
+        }
+    }
+
+    /// Горящие кратеры: огонь по краям клетки (`over` — передние языки, над фигурами). Видны
+    /// с касания метеорита до конца шагов хода соперника; кратер позиции без записи (после
+    /// отмены) — всегда.
+    fn paint_craters(
+        &self,
+        painter: &Painter,
+        board: &BoardGeom,
+        tex: &Textures,
+        over: bool,
+        now: f64,
+    ) {
+        let mask = self.game.position().craters();
+        for sq in 0..64u8 {
+            let entry = self.craters.iter().find(|c| c.0 == sq);
+            let visible = match entry {
+                Some(&(_, start, end)) => now >= start && end.is_none_or(|e| now < e),
+                None => mask & 1 << sq != 0,
+            };
+            if !visible {
+                continue;
+            }
+            let frame = (now / CRATER_FRAME_TIME) as usize + sq as usize * 5;
+            let Some(sprite) = tex.ui.crater(over, frame % CRATER_FRAMES) else {
+                continue;
+            };
+            let origin = board.snap(board.ground(sq) - CRATER_CENTER * board.scale);
+            let rect =
+                Rect::from_min_size(origin + sprite.at * board.scale, sprite.size * board.scale);
+            painter.image(sprite.texture, rect, UV, Color32::WHITE);
+        }
+    }
+
+    /// Волны метеоритов крестом: огонь расходится от клетки падения по четырём соседним.
+    fn paint_meteor_waves(
+        &self,
+        painter: &Painter,
+        board: &BoardGeom,
+        tex: &Textures,
+        over: bool,
+        now: f64,
+    ) {
+        for &(sq, start) in &self.meteor_waves {
+            if now < start {
+                continue;
+            }
+            let frame = ((now - start) / WAVE_FRAME_TIME) as usize;
+            let Some(sprite) = tex.ui.meteor_wave(over, frame) else {
+                continue;
+            };
+            let origin = board.snap(board.ground(sq) - WAVE_CENTER * board.scale);
+            let rect =
+                Rect::from_min_size(origin + sprite.at * board.scale, sprite.size * board.scale);
+            painter.image(sprite.texture, rect, UV, Color32::WHITE);
+        }
+    }
+
+    /// Метеориты магов: падают и взрываются на клетке — поверх фигур.
+    fn paint_meteors(&self, painter: &Painter, board: &BoardGeom, tex: &Textures, now: f64) {
+        for &(square, start, _, _) in &self.meteors {
+            if now < start {
+                continue;
+            }
+            let Some(sprite) = tex.ui.meteor(meteor_frame(start, now)) else {
+                continue;
+            };
+            let origin = board.snap(board.ground(square) - METEOR_CENTER * board.scale);
+            let rect =
+                Rect::from_min_size(origin + sprite.at * board.scale, sprite.size * board.scale);
+            painter.image(sprite.texture, rect, UV, Color32::WHITE);
+        }
+    }
+
+    /// Rogue-like: могилы зомби — бледный череп на клетке, мерцает (через ход зомби восстанет).
+    fn paint_graves(&self, painter: &Painter, board: &BoardGeom, tex: &Textures, now: f64) {
+        let pos = self.game.position();
+        let px = board.scale * 1.5;
+        let glow = 0.7 + 0.3 * (now * 2.5).sin() as f32;
+        for sq in 0..64u8 {
+            if pos.grave(sq).is_none() || self.struck_piece(sq, now).is_some() {
+                continue;
+            }
+            let width = self.art.glyph_width(Glyph::Skull) * px;
+            let corner =
+                board.snap(board.ground(sq) - vec2(width / 2.0, (GLYPH_HEIGHT + 2.0) * px));
+            self.pixel_text(
+                painter,
+                tex,
+                corner,
+                px,
+                &[(Glyph::Skull, GRAVE_SKULL.gamma_multiply(glow))],
+            );
+        }
+    }
+
+    /// Тёмно-зелёный череп над каждой отравленной фигурой.
+    fn paint_skulls(
+        &self,
+        painter: &Painter,
+        board: &BoardGeom,
+        tex: &Textures,
+        figures: &[Figure],
+    ) {
+        let px = board.scale * 1.5;
+        for f in figures
+            .iter()
+            .filter(|f| f.piece.poison > 0 && f.alpha > 0.5)
+        {
+            let height = self.art.height(f.piece.color, f.piece.kind);
+            let top = board.to_screen(f.at) - vec2(0.0, height + 4.0) * board.scale;
+            let width = self.art.glyph_width(Glyph::Skull) * px;
+            let corner = board.snap(top - vec2(width / 2.0, GLYPH_HEIGHT * px));
+            self.pixel_text(painter, tex, corner, px, &[(Glyph::Skull, POISON_SKULL)]);
+        }
+    }
+
     /// Тени, затем фигуры от дальних к ближним.
     fn paint_figures(
         &self,
@@ -2167,7 +2692,7 @@ impl BattleChessApp {
             |f: &Figure| board.snap(board.to_screen(f.at) + vec2(f.shake * board.unit(), 0.0));
         let tint = |f: &Figure| Color32::from_white_alpha((f.alpha.clamp(0.0, 1.0) * 255.0) as u8);
         for f in figures.iter().filter(|f| f.shadow) {
-            let texture = tex.shadow(f.piece.color, f.piece.kind);
+            let texture = tex.piece_shadow(f.piece);
             painter.image(texture, board.sprite_rect(ground(f), f.grow), UV, tint(f));
         }
         for f in figures.iter() {
@@ -2186,8 +2711,41 @@ impl BattleChessApp {
             // Усиленный компьютер: слон в электричестве — в своём кадре вокруг точки опоры,
             // пешка с лавой — кадр вместо спрайта. Замёрзшие — во льду, как все.
             if f.ice.is_none() {
+                if let Some(dark) = f.dark {
+                    let (phase, frame) = match dark {
+                        Dark::Aura(i) => (0, i),
+                        Dark::Out(i) => (1, i),
+                        Dark::In(i) => (2, i),
+                    };
+                    if let Some(sprite) = tex.ui.dark(phase, f.piece, frame) {
+                        let origin = ground(f) - ELECTRIC_ANCHOR * board.scale;
+                        let rect = Rect::from_min_size(
+                            origin + sprite.at * board.scale,
+                            sprite.size * board.scale,
+                        );
+                        painter.image(sprite.texture, rect, UV, tint(f));
+                    }
+                    // Пустой кадр шага — фигуры нет; пустой кадр ауры — обычная фигура.
+                    if !matches!(dark, Dark::Aura(_)) {
+                        continue;
+                    }
+                    if tex.ui.dark(phase, f.piece, frame).is_some() {
+                        continue;
+                    }
+                }
+                if let Some(frame) = f.poison
+                    && let Some(sprite) = tex.ui.poison(f.piece.color, f.piece.kind, frame)
+                {
+                    let origin = ground(f) - ELECTRIC_ANCHOR * board.scale;
+                    let rect = Rect::from_min_size(
+                        origin + sprite.at * board.scale,
+                        sprite.size * board.scale,
+                    );
+                    painter.image(sprite.texture, rect, UV, tint(f));
+                    continue;
+                }
                 if let Some(frame) = f.wind
-                    && let Some(sprite) = tex.ui.wind(f.piece.color, f.piece.kind, frame)
+                    && let Some(sprite) = tex.ui.wind(f.piece, frame)
                 {
                     let origin = ground(f) - ELECTRIC_ANCHOR * board.scale;
                     let rect = Rect::from_min_size(
@@ -2198,7 +2756,7 @@ impl BattleChessApp {
                     continue;
                 }
                 if let Some(frame) = f.spark
-                    && let Some(sprite) = tex.ui.electric(f.piece.color, f.piece.kind, frame)
+                    && let Some(sprite) = tex.ui.electric(f.piece, frame)
                 {
                     let origin = ground(f) - ELECTRIC_ANCHOR * board.scale;
                     let rect = Rect::from_min_size(
@@ -2209,7 +2767,7 @@ impl BattleChessApp {
                     continue;
                 }
                 if let Some(frame) = f.lava
-                    && let Some(sprite) = tex.ui.lava(f.piece.color, f.piece.kind, frame)
+                    && let Some(sprite) = tex.ui.lava(f.piece, frame)
                 {
                     let body = board.sprite_rect(ground(f), f.grow);
                     let px = body.width() / SPRITE.x;
@@ -2222,7 +2780,7 @@ impl BattleChessApp {
             match f.ice {
                 Some(ice) => self.paint_iced(painter, board, tex, f, ground(f), ice, tint(f)),
                 None => {
-                    let texture = tex.body(f.piece.color, f.piece.kind);
+                    let texture = tex.piece_body(f.piece);
                     painter.image(texture, rect, UV, tint(f));
                 }
             }
@@ -2248,7 +2806,7 @@ impl BattleChessApp {
         let frost = FREEZE_FROST[ice.frame.min(FREEZE_FROST.len() - 1)];
         let iced = tint.gamma_multiply(ice.alpha);
         if frost < 1.0 || ice.alpha < 1.0 {
-            painter.image(tex.body(color, kind), rect, UV, tint);
+            painter.image(tex.piece_body(f.piece), rect, UV, tint);
         }
         if frost > 0.0 {
             // Кромка — доля высоты фигуры (по белой фигуре, как в генераторе) от основания.
@@ -2304,7 +2862,7 @@ impl BattleChessApp {
         sink: Sink,
     ) {
         let s = board.scale;
-        let texture = tex.body(piece.color, piece.kind);
+        let texture = tex.piece_body(piece);
         let top_left = ground - ANCHOR * s + vec2(0.0, sink.depth * s);
         let (rx, ry) = (PORTAL_RADII.x * sink.scale, PORTAL_RADII.y * sink.scale);
         // Спрайт в кадре портала: его левый верхний угол без погружения.
@@ -2411,6 +2969,19 @@ impl BattleChessApp {
             let min = middle + vec2(x, -size.y / 2.0 + rise) * s;
             self.paint_plate(painter, tex, min, s, &text, alpha);
         }
+        // Герб красной молнии: заряд электрической фигуры — над головой, молния и число.
+        if piece.spark && self.game.position().has_crest(Crest::RedBolt) {
+            let charge = [
+                &[(Glyph::Bolt, PIXEL_BOLT)][..],
+                &paint(&Glyph::digits(i32::from(piece.charge)), PIXEL_WHITE),
+            ]
+            .concat();
+            let size = self.plate_size(&charge);
+            let head = board.ground(sq) - vec2(0.0, height + 4.0) * board.scale;
+            let rise = 6.0 * (1.0 - out);
+            let min = head - vec2(size.x / 2.0, size.y - rise) * s;
+            self.paint_plate(painter, tex, min, s, &charge, alpha);
+        }
     }
 
     /// Размер таблички с пиксельной строкой `text`, в пикселях шрифта.
@@ -2494,13 +3065,8 @@ impl BattleChessApp {
         };
         if let Some(piece) = self.game.position().piece(drag.from) {
             let rect = board.sprite_rect(drag.pointer + drag.grab, 1.0);
-            painter.image(
-                tex.shadow(piece.color, piece.kind),
-                rect,
-                UV,
-                Color32::WHITE,
-            );
-            painter.image(tex.body(piece.color, piece.kind), rect, UV, Color32::WHITE);
+            painter.image(tex.piece_shadow(piece), rect, UV, Color32::WHITE);
+            painter.image(tex.piece_body(piece), rect, UV, Color32::WHITE);
         }
     }
 
@@ -2872,7 +3438,8 @@ impl BattleChessApp {
             }
             Status::Ongoing if pos.shop_open() => (
                 "Магазин: покупайте фигуры в запас за золото, продавайте — перетащив из \
-                 запаса в «Продажу»; «Обновить» — другие фигуры, «Уйти» — к расстановке"
+                 запаса в «Продажу»; «Обновить» — другие фигуры, «Уйти» — к расстановке. \
+                 Гербы справа усиливают фигуры до конца забега"
                     .to_owned(),
                 theme::GOLD,
             ),
@@ -3127,14 +3694,26 @@ impl BattleChessApp {
                             .size(15.5)
                             .color(theme::TEXT_BRIGHT),
                     );
-                    let stats = piece.kind.stats();
                     ui.label(format!(
                         "Атака {}  ·  HP {}/{}",
-                        shown(stats.attack),
+                        shown(piece.attack()),
                         shown(piece.hp),
-                        shown(stats.max_hp)
+                        shown(piece.max_hp())
                     ));
-                    hp_meter(ui, piece.hp, stats.max_hp);
+                    hp_meter(ui, piece.hp, piece.max_hp());
+                    // Герб красной молнии: заряд электрической фигуры и как далеко летит молния.
+                    let pos = self.game.position();
+                    if piece.spark && pos.has_crest(Crest::RedBolt) {
+                        ui.label(format!(
+                            "Заряд {}  ·  молния летит на {}",
+                            piece.charge,
+                            match pos.spark_reach(piece) {
+                                1 => "1 клетку".to_owned(),
+                                n @ 2..=4 => format!("{n} клетки"),
+                                n => format!("{n} клеток"),
+                            }
+                        ));
+                    }
                 });
             });
         });
@@ -3289,12 +3868,11 @@ impl BattleChessApp {
                     piece_icon(ui, &self.art, Color::White, kind, 26.0);
                     ui.label(kind.title());
                     let stats = kind.stats();
+                    let max_hp = self.game.position().kind_max_hp(kind);
                     ui.label(
                         RichText::new(shown(stats.attack).to_string()).color(theme::TEXT_BRIGHT),
                     );
-                    ui.label(
-                        RichText::new(shown(stats.max_hp).to_string()).color(theme::TEXT_BRIGHT),
-                    );
+                    ui.label(RichText::new(shown(max_hp).to_string()).color(theme::TEXT_BRIGHT));
                     ui.end_row();
                 }
             });
@@ -3331,7 +3909,8 @@ impl BattleChessApp {
                     piece_icon(ui, &self.art, Color::White, attacker, 24.0);
                     for defender in Kind::ALL {
                         let dealt = attacker.stats().attack;
-                        let hits = (defender.stats().max_hp + dealt - 1) / dealt;
+                        let hp = self.game.position().kind_max_hp(defender);
+                        let hits = (hp + dealt - 1) / dealt;
                         let (rect, response) =
                             ui.allocate_exact_size(vec2(32.0, 24.0), Sense::hover());
                         // Чем меньше ударов, тем горячее клетка.
@@ -3429,6 +4008,12 @@ impl eframe::App for BattleChessApp {
         // Лава в пешках и молнии вокруг слонов усиленного компьютера движутся всю партию.
         if self.anim.is_some()
             || !self.strikes.is_empty()
+            || !self.meteors.is_empty()
+            || !self.zaps.is_empty()
+            || !self.meteor_waves.is_empty()
+            || self.game.position().craters() != 0
+            || !self.craters.is_empty()
+            || !self.due_hits.is_empty()
             || !self.marches.is_empty()
             || !self.appears.is_empty()
             || !self.lavas.is_empty()

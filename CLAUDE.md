@@ -221,6 +221,349 @@ PATH (`C:\Program Files\Git\cmd`, `C:\Program Files\GitHub CLI`). В репоз�
   сбрасывается там же, где `used`. Анимация — `wind_*` из арт-проекта (`tools/breach_wind.py`,
   40 кадров, `WIND_LOOP` = [8, 40], кадр и опора как у электричества): `Figure::wind`,
   `wind_frame` (повтор сдвинут по клетке), в запасе и магазине — `paint_stock`.
+  **0.68** (просьба пользователя): золотые фигуры — `Power::Gold`/`Piece::gold`, вес как у
+  остальных особых, цена × `Rule::RogueGoldPiecePercent` (400% — вдвое дороже огненной), запас
+  `gold_reserve`, `MoveKind::GoldDrop` (в сети 50 + вид). В `strike`: убила золотая фигура
+  игрока — ещё `Rule::RogueGoldBonus` (2) золота (входит в `TurnEnd::gold`). Спрайты — вариант
+  `gold` из арт-проекта (`tools/breach_gilded.py`, целиком золотые; `pieces/gold/`):
+  `GOLD_BODIES`/`GOLD_SHADOWS` в `assets.rs`, `Textures::piece_body`/`piece_shadow` (по
+  `Piece::gold`) — на доске, при перетаскивании, во льду и портале, в запасе и магазине;
+  хитбокс — по обычному силуэту. **0.69** (уточнение пользователя): золотая в магазине стоит как
+  другие особые (`RogueGoldPiecePercent` = 200; в `balance.ini` пользователя стояло 400 — заменено,
+  копия `balance.ini.before-0.69`), зато продаётся дороже: `sell_price` — цена обычной такой же в
+  магазине, у золотой × `Rule::RogueGoldSellPercent` (200%); огненные, электрические и воздушные
+  продаются как обычные (до 0.69 особые продавались по своей цене).
+  **0.70** (просьба пользователя): теневые фигуры — `Power::Shade`/`Piece::shade`, вес и цена как
+  у остальных особых (`Rule::RogueShadePercent` = 200%), запас `shade_reserve`,
+  `MoveKind::ShadeDrop` (в сети 60 + вид). Ходы — `shade_moves` (в `pseudo_moves` вместо обычных,
+  кроме короля): сквозь фигуры на пустые клетки — слон/ладья/ферзь по всей линии, конь — 16
+  клеток на расстоянии 2, пешка — вперёд и через одну фигуру перед собой (с начальной — на две).
+  Анимация из арт-проекта: аура `dark_fire_*` (`tools/breach_darkfire.py`, `DARK_LOOP` = [8, 40]),
+  ход — теневой шаг (`tools/breach_shadowstep.py`): `MoveAnim::step` (длится
+  (`STEP_IN_AT` + `STEP_IN`) кадров), исчезновение `shadowstep_out_*` (`STEP_OUT` = 18) на исходной
+  клетке и с кадра `STEP_IN_AT` = 7 появление `shadowstep_in_*` (`STEP_IN` = 13) на целевой, без
+  теней; `Figure::dark` (`Dark::{Aura, Out, In}`), `UiTextures::dark(phase, …)`; в запасе и
+  магазине — аура в `paint_stock`. **0.71** (просьба пользователя): теневой шаг вдвое быстрее — кадр
+  `STEP_FRAME_TIME` = 30 мс (аура — по-прежнему 60).
+  **0.72** (просьба пользователя): ледяные фигуры — `Power::Ice`/`Piece::icy`, вес и цена как у
+  остальных особых (`Rule::RogueIcePercent` = 200%), запас `ice_reserve`, `MoveKind::IceDrop` (в
+  сети 70 + вид). В `strike`: цель ледяная — ударивший замерзает (`frozen` = 3: конец этого хода,
+  начало и конец следующего — пропускает весь следующий ход), `Strike::rebound`; в `strike_all`
+  замёрзший больше в этот ход не бьёт, `march` его не двигает; в описании «… замёрз о лёд», в
+  приложении — заморозка ударившего в момент касания (`chilled` в `queue_strikes`). Спрайты —
+  `tools/breach_ice_pieces.py` (`pieces/ice/`): `ICE_BODIES`/`ICE_SHADOWS`, `piece_body`/
+  `piece_shadow` по `Piece::icy`.
+  **0.73** (просьба пользователя): король-толстосум — `Piece::boss` (вид `King`), выходит первым в
+  последней волне первого уровня (`spawn_wave`: `level == 1 && wave + 1 == waves`, клетка ближе к
+  середине крайней горизонтали). `max_hp`/`attack` — `Rule::RogueBossHp`/`RogueBossAttack` (10 и 1
+  единиц, × `UNIT`), удары — `BOSS_STRIKES` (16 клеток без преград, `strike_steps`), золото —
+  `kill_gold` (`Rule::RogueBossGold` = 10). Не король стороны: `march` и `fall` не трогают
+  `kings`/`king_lost`. Спрайт — `tools/breach_fat_king.py` (`pieces/fat_king/`, `FAT_KING`,
+  `piece_body`/`piece_shadow`); `Piece::title` — «Чёрный король-толстосум», в описании волны —
+  «король-толстосум»; карточка фигуры в панели — по `attack()`/`max_hp()`.
+  **0.74** — главное меню из арт-проекта (книга при свече, закладки-кнопки, открытие книги
+  перед партией, окно «Настройки»); **0.75** (просьба пользователя: «убери новое меню, верни как
+  было») — откатено целиком, меню снова прежнее (`title_screen`).
+  **0.76** (просьба пользователя): огненная фигура взрывается, только если волна заденет чужую
+  фигуру (`blast_reaches` в `lava_blasts`); нет — не взрывается и остаётся огненной.
+  **0.77** (просьба пользователя): гербы — `Crest` (`ALL`, `title`, `description` с числами
+  баланса), у игрока — `Rogue::crests` (в порядке покупки, до конца забега), прилавок —
+  `Rogue::crest_offers` (`Rule::RogueCrestSlots` = 3, `roll_crests` в `begin_planning`: разные, из
+  некупленных; случайность — зерно и `crest_rolls`), `RogueAction::{BuyCrest, RerollCrests}`
+  (`Game::buy_crest`/`reroll_crests`; цена `crest_price` = `Rule::RogueCrestPrice` 15, обновление
+  `crest_reroll_cost` = 5). Действие — `crest_for(color, crest)` (только сторона игрока): `Heart` —
+  `crested` даёт ледяной `bonus_hp` (`RogueCrestHeartHp` = 2 единицы; в `take_stock`, при
+  возвращении к расстановке и при покупке — фигурам на доске); `Coin` — вес ледяных в
+  `roll_offers` × `RogueCrestCoinPercent` (веса там ×100); `Snow2` — отскок замораживает на
+  `1 + 2 × RogueCrestFreezeTurns` границ; `Pawn` — `Position::shop_price` (ледяная пешка — как
+  обычная; свободная `shop_price` — без гербов); `Spikes` — `Strike::thorns` (урон ударившему ×
+  `RogueCrestSpikesPercent`, погиб — золото игроку, в `strike_all` погибший больше не бьёт;
+  `Strike::wounded` = `hits` + шипы — для анимации: цифра урона и погибший о шипы стоит с выпадом
+  до касания); `Crystal` — в `strike`: ледяная во льду урона не получает, удар до
+  `RogueCrestCrystalHp` (1 ед.) и ниже оставляет ровно столько и замораживает (`frozen` = 3,
+  `chilled`). Интерфейс (`table.rs`): панель «ГЕРБЫ» справа от магазина (`shop_layout` →
+  `[панель, гербы]`, вся группа с продажей — по центру доски; `ShopSpot::{Crest, CrestReroll}`,
+  `CREST_SLOT`), купленные — в правом верхнем углу поля (`crest_corner`, `paint_crests`),
+  подсказка — `crest_hover` (`crest_under`) → `paint_crest_tip`. Картинки — `tools/breach_crest.py`
+  (`ui/crest_<heart|coin|snow2|pawn|spikes|crystal>.png`, `CREST` 49×45, `UiTextures::crest`).
+  **0.78** (просьба пользователя): в rogue-like у коней обеих сторон своё здоровье —
+  `rogue_knight_hp` (`Rule::RogueKnightHp` = 3 единицы; у пользователя в `[piece.Knight]` стоит 2):
+  `crested` теперь и разница с обычным здоровьем коня в `bonus_hp` (вызывается в `rogue_start`,
+  `spawn_wave`, `take_stock` обоих видов запаса, `begin_planning`, превращении пешки), справка и
+  «Ударов до убийства» — по `Position::kind_max_hp`. Кристалл замораживает на `frozen` = 1:
+  фигура во льду до конца хода соперника, к своему ходу оттаивает и ходит.
+  **0.79** (просьба пользователя): ядовитые фигуры волн — `Piece::venom`, выходят в `spawn_wave` на
+  уровне `Rule::RoguePoisonLevel` (2) с шансом `RoguePoisonPercent` (50). Удар ядовитой по выжившей
+  цели без яда ставит `Piece::poison` (концов ходов её стороны до урона: бьют в ход соперника — 1,
+  в её ход — 2; `Strike::poisoned`), `poison_tick` в `end_turn` после ударов и взрывов —
+  `RoguePoisonDamage` (1 ед.), `TurnEnd::poison` (`Hit`, цель — до урона), в описании «Яд: …».
+  Расстановка лечит и яд (`Piece::new`). Арт — `tools/breach_poison.py`: спрайты
+  `pieces/poison/` (`POISON_BODIES`/`POISON_SHADOWS`, `piece_body`/`piece_shadow`), лужа с каплями
+  `effects/poison_*` (`POISON_LOOP` = [8, 40], `Figure::poison`, `poison_frame`, рисуется как
+  вихрь), след шага `effects/poison_trail_<ne|sw|nw|se>` (96×80, середина между центрами клеток,
+  30 кадров по 60 мс; `trails` в `queue_strikes` для шагнувших ядовитых, `paint_trails` — до
+  фигур, направление — по экранной разнице клеток). Череп — `Glyph::Skull` цвета `POISON_SKULL`
+  над каждой рисуемой фигурой с ядом (`paint_skulls`, после фигур). Урон яда — `Effect::hit` после
+  ударов и взрывов, до него фигура прежняя (`poison_due`), погибшая стоит.
+  **0.80** (просьба пользователя): варвары — `Power::Barbarian`/`Piece::barbarian`, вес и цена как у
+  остальных особых (`Rule::RogueBarbarianPercent` = 200%; с ними у каждой особой силы доля
+  прилавка 1/13), запас `barbarian_reserve`, `MoveKind::BarbarianDrop` (в сети 80 + вид). В
+  `strike_all` удары фигуры идут раундами (`'rounds`): варвар, убивший кого-то за раунд (и молнией
+  тоже), бьёт ещё раунд по оставшимся в досягаемости (`Strike::again`, «Снова —» в описании), не
+  больше `BARBARIAN_ROUNDS` = 16. Спрайты — `tools/breach_barbarian.py` (`pieces/barbarian/`,
+  `BARBARIAN_BODIES`/`BARBARIAN_SHADOWS`, `piece_body`/`piece_shadow`), анимации нет.
+  **0.81** (просьба пользователя): гербы варваров (`Crest::{AxeSword, AxeFangs, AxeQueen, Axes,
+  Whirl, FireAxe}`, `CRESTS` = 12, картинки `ui/crest_<axe_sword|axe_fangs|axe_queen|axes|whirl|
+  fire_axe>.png` из `tools/breach_crest.py`; в углу — по `CREST_ROW` = 6 в ряд). Повтор варвара
+  теперь ограничен `Rule::RogueBarbarianRepeats` = 1 (`barbarian_repeats`; был до 16 подряд —
+  иначе огненному топору нечего добавить). `AxeSword` — `crested`: `bonus_attack` +
+  `RogueCrestAxeAttack` (2 ед.), `bonus_hp` − `RogueCrestAxeHp` (1 ед., полное — не меньше
+  единицы); `AxeFangs` — в `strike_all` первое убийство варвара за ход лечит
+  `RogueCrestFangsHeal` (`Strike::feast`; цифра лечения теперь на клетке ударившего); `AxeQueen` —
+  `Position::shop_price` − `RogueCrestQueenDiscount` (6); `Axes` — вес варваров в `roll_offers` ×
+  `RogueCrestAxesPercent`; `Whirl` — повторный раунд бьёт всех чужих в квадрате радиуса
+  `RogueCrestWhirlRadius` (2) без проверки линий (`Strike::whirl`, «Круговой удар —», анимации нет —
+  обычные выпады); `FireAxe` — при здоровье ≤ `RogueCrestFireAxeHp` (1 ед.) ещё
+  `RogueCrestFireAxeRepeats` (1) повтор.
+  **0.82** (просьба пользователя): круговой удар — урон `Rule::RogueCrestWhirlDamage` (1 ед.)
+  каждой фигуре в радиусе (`strike_raw`, а не атака), в приложении без выпадов
+  (`StrikeAnim::lunge` — ноль у `whirl`) и разом: удары одного кругового — с одного `start`, звук
+  один (`queue_strikes`, `whirl_from`). Своя анимация кругового удара — потом.
+  **0.83** (просьба пользователя): маги — `Power::Wizard`/`Piece::wizard` (вес в `roll_offers` у пешки
+  0, короля в магазине нет), цена × `Rule::RogueWizardPercent` (200%), запас `wizard_reserve`,
+  `MoveKind::WizardDrop` (в сети 90 + вид), «Белый конь-маг». В `end_turn` после взрывов —
+  `meteors`: каждый свободный маг стороны бьёт случайную клетку с чужой фигурой (случайность —
+  зерно, `key()` и клетка мага) уроном `Rule::RogueWizardDamage` (1 ед.), `TurnEnd::meteors`
+  (клетка мага, `Hit`), «Метеорит мага с …». Спрайты — `tools/breach_wizard.py` (`pieces/wizard/`,
+  `WIZARD_BODIES`/`WIZARD_SHADOWS`). Метеорит — наш `tools/breach_meteor.py`
+  (`effects/meteor.png`, 24 кадра 112×200, центр клетки (56, 172), 50 мс, касание в кадре 9: летит
+  сверху-справа с огненным хвостом, вспышка, огненный шар, кольцо огня и подпалина в ромбе клетки,
+  осколки, дым); в приложении `meteors` (по очереди через `METEOR_GAP`, звук в миг касания,
+  `paint_meteors` поверх фигур), урон — `Effect::hit` в миг касания, до него фигура прежняя
+  (`due_hits` — бывший `poison_due`, теперь и для метеоритов; яд — после метеоритов). Компьютер и
+  магазин ждут `due_hits`.
+  **0.84** (просьба пользователя, по образцу-картинке): метеорит крупнее и «метеоритнее», анимация
+  плавнее — `tools/breach_meteor.py` переделан в арт-сессии: бугристый камень с кратерами (`ROCK_R` =
+  12, `ROCK`, медленно вращается, спереди раскалённая кромка) в огненной оболочке, широкий хвост из
+  языков (`TAIL` 60→84, за камнем шире, у камня бледно-жёлтое, к краям и концу красное, узор течёт
+  назад — `value_noise`), искры; первые 3 кадра проявляется. Полоса — 44 кадра 200×280, центр клетки
+  (72, 250), 30 мс, касание в кадре 16 (`METEOR*` в `assets/ui.rs`); взрыв — прежний, растянут на 28
+  кадров (огненный шар до 22).
+  **0.85** (просьба пользователя): метеорит падает вдвое быстрее — кадры полёта по
+  `METEOR_FALL_TIME` = `METEOR_FRAME_TIME` / 2 (15 мс), взрыв — по-прежнему 30 мс (`meteor_impact`,
+  `meteor_frame` в `app.rs`).
+  **0.86** (просьба пользователя): гербы огненных фигур (`Crest::{FlamePawn, Flames, FlameSkull,
+  FlameSword, FlameCoin, Bomb}`, `CRESTS` = 18, картинки `ui/crest_<flame_pawn|flames|flame_skull|
+  flame_sword|flame_coin|bomb>.png` из арт-проекта). Взрыв вынесен в `explode(center, us, raw)`:
+  `raw` = `None` — огненная фигура с гербами (`fire_damage`: `LavaDamage` или `RogueCrestFlameSwordDamage`
+  2 ед., + `RogueCrestBombDamage` 2 ед.; клетки — `blast_area`: 8 вокруг, с `Flames` ещё крест до
+  `RogueCrestFlamesReach` = 2; с `Bomb` задевает и своих, кроме себя), `Some` — пешка с лавой
+  усиленного компьютера (как раньше). `blast_reaches` — по той же области. `FlameSkull` — в `end_turn`
+  после ударов, взрывов, метеоритов и яда `death_blasts` (погибшие огненные игрока взрываются на
+  своей клетке, цепочкой — погибшие от них свои огненные; в `TurnEnd::blasts`, анимация — обычная
+  огненная волна 3×3, на дальних клетках креста — только цифры). `FlamePawn` —
+  `Position::shop_price` − `RogueCrestFlamePawnDiscount` (2); `FlameCoin` — вес огненных ×
+  `RogueCrestFlameCoinPercent`.
+  **0.87** (просьба пользователя): взрыв с гербом двух огоньков — толстый крест (`blast_area`: в
+  квадрате ±`RogueCrestFlamesReach` клетки, где |df| ≤ 1 или |dr| ≤ 1 — 3×3 и по три клетки с каждой
+  стороны, 20 клеток), `Blast::wide` (`wide_blast`). Анимация — наш `tools/breach_firewave_plus.py`
+  (функции и палитры `breach_firewave.py` на своём холсте: `fire_wave_plus_<under|over>.png`, 26
+  кадров 304×248, центр клетки (152, 132), 60 мс; кромка бежит квадратными кольцами до 2.62 клетки
+  только внутри креста, огоньки догорают по всему кресту) — `BIG_WAVE_*` в `assets/ui.rs`
+  (`UiTextures::big_wave`, `Strip`), `Wave::wide` в `table.rs` (`impact` = `BIG_WAVE_IMPACT` 0.36 с,
+  `length`); анимация рассчитана на крест в 2 клетки.
+  **0.88** (просьба пользователя): гербы теневых фигур (`Crest::{DarkRook, DarkSkull, DarkFlames,
+  DarkPortal, DarkCoin, DarkEye}`, `CRESTS` = 24, картинки `ui/crest_dark_<rook|skull|flames|portal|
+  coin|eye>.png` из арт-проекта). `DarkRook` — `shop_price` − `RogueCrestDarkRookDiscount` (4);
+  `DarkCoin` — вес теневых × `RogueCrestDarkCoinPercent`; `DarkEye` — в `strike_all` теневая
+  игрока бьёт без `line_clear`; `DarkSkull` — в `make_move` после `relocate` удар атакой по чужим на
+  `shade_passed` (по прямой — клетки между, ход 2×1 — две клетки рядом с обеими), `Outcome::passed`
+  (`WaveHit`), в приложении — `Effect::hit` и `due_hits` на середине шага, «Тень бьёт насквозь».
+  В начале `strike_raw`: `DarkFlames` — счётчик `Piece::dodge`, каждый `RogueCrestDarkDodgeEvery`-й
+  (3) удар — урон 0 (`Strike::dodged`, без цифры); затем `DarkPortal` — теневая с ≤
+  `RogueCrestDarkPortalHp` (1 ед.) от смертельного удара меняется местами (`board.swap`, метки
+  `origin` тоже) с `portal_partner` (ближайшая своя без силы, не король/босс), удар принимает та
+  (`Strike::swap` = (новая клетка теневой, теневая), `hit.target` — обычная); тот же атакующий
+  клетку ушедшей больше не бьёт (`skip` в `strike_all`). В приложении перед таким ударом —
+  `Portal::swap` (портал карты обмена с запомненными фигурами `Portal::pieces`), удары после него
+  сдвигаются на `Portal::length()`; в портале фигуры — `dressed`.
+  **0.89** (просьба пользователя): бронированные фигуры и вампиры волн — `Piece::{armored, vampire}`.
+  Пользователь сказал «с третьей волны» / «с четвёртой волны»; понято как уровни (продолжение: яд —
+  2-й уровень), но есть и правила волны уровня: `Rule::RogueArmor{Level, Wave, Percent, Hp}` (3, 1,
+  30%, 3 ед.) и `RogueVampire{Level, Wave, Percent, Hp, Heal}` (4, 1, 30%, 1 ед., 1 ед.). В
+  `spawn_wave` один бросок `next(100)` (только когда кто-то из них возможен; ядовитая — ни то ни
+  другое): меньше шанса брони — броня, дальше в пределах суммы — вампир. Здоровье — в `crested`
+  (`bonus_hp`). Вампир в `strike_raw`: удар с уроном лечит его на `RogueVampireHeal` (не выше полного,
+  `Strike::feast`, «Ладья восстановила 1 HP»). Спрайты: броня — `tools/breach_armor.py`
+  (`pieces/armor/`, `ARMOR_*`), вампиры — «Дракула» из `tools/breach_vampire.py`
+  (`pieces/vampire_dracula/`, `VAMPIRE_*`); `Piece::title` — «Чёрная бронированная ладья», «Чёрный
+  конь-вампир».
+  **0.90** (просьба пользователя): гербы воздушных фигур (`Crest::{Winds, WindCoin, WindKnight,
+  WindSword}`, `CRESTS` = 28, картинки `ui/crest_<winds|wind_coin|wind_knight|wind_sword>.png` из
+  арт-проекта). `Winds` — в `make_move` маска `Position::twice` (сбрасывается вместе с `airborne`):
+  после бесплатного второго хода фигура снова в `airborne` и в `twice`, третий ход — бесплатно, потом
+  `used`; `WindCoin` — вес воздушных × `RogueCrestWindCoinPercent`; `WindKnight` — `shop_price` −
+  `RogueCrestWindKnightDiscount` (4); `WindSword` — в `strike_all` после первого раунда ударов воздушная
+  бьёт ещё раз первую живую из своих целей (`order`, `Strike::again`, «Снова —»).
+  **0.91** (просьба пользователя): гербы электрических фигур (`Crest::{BoltBishop, BoltCoin, BoltPlus,
+  Bolts, RedBolt, BoltOne}`, `CRESTS` = 34, картинки `ui/crest_<bolt_bishop|bolt_coin|bolt_plus|bolts|
+  red_bolt|bolt_one>.png` из арт-проекта). Молния в `strike_raw`: по каждому направлению (`BISHOP_RAYS`,
+  с `BoltPlus` — `KING_STEPS`) от цели до `spark_reach` клеток через пустые — первая фигура, чужая
+  задета, своя или барьер останавливают; `Strike::splash` — `[Option<Hit>; SPLASH_MAX]` (8).
+  `spark_reach`: 1; `Bolts` — 7; `RedBolt` — 1 + `Piece::charge` / `RogueCrestRedBoltStep` (10), не больше
+  `RogueCrestRedBoltMax` (3). `Piece::charge` — убийства электрической (удар и молния) при гербе красной
+  молнии, переживает расстановку (`Piece::with`), в карточке фигуры — «Заряд N · молния летит на M
+  клеток». `BoltOne` — в `strike_all` очередь `strike_queue` переставлена: электрические первыми.
+  `BoltBishop` — `shop_price` − `RogueCrestBoltBishopDiscount` (4); `BoltCoin` — вес электрических ×
+  `RogueCrestBoltCoinPercent`.
+  **0.92** (просьба пользователя): `Bolts` — не «на любое расстояние», а цепь: в `strike_raw` обход в
+  ширину от цели (`sources`), с каждой задетой — те же направления и `spark_reach`, каждая клетка раз
+  (`seen`). `Strike::splash` — `Vec<Jump>` (`Jump { from, hit }`: откуда прыгнула молния), `Strike`
+  больше не `Copy`. В приложении — `Zap` (разряд от фигуры к фигуре в миг касания: ломаная в пикселях
+  арта, голубое свечение 3 пикселя `ZAP_GLOW` и белое ядро `ZAP_CORE`, перескакивает каждые
+  `ZAP_FLICKER`, гаснет за `ZAP_TIME`; `paint_zaps` после фигур). Заряд при наведении — в `paint_stats`
+  табличка над головой: знак шрифта `Glyph::Bolt` (`z`, жёлтый `PIXEL_BOLT`) и число `Piece::charge`
+  (только электрическим при гербе красной молнии).
+  **0.93** (просьба пользователя): гербы магазина `Crest::{Pawns, Bishops, Knights, Rooks, Queens,
+  RerollCoin}` (`CRESTS` = 40, картинки `ui/crest_<pawns2|bishops2|knights2|rooks2|queens2|
+  reroll_coin>.png` из арт-проекта). Пары — в `roll_offers` вес вида (всех сил) × `RogueCrestPairPercent`
+  (`paired`); `RerollCoin` — `Position::reroll_price` (`RogueCrestRerollCoinCost` = 1 вместо
+  `RogueRerollCost`), им пользуются `reroll` и магазин в `table.rs` (свободная `reroll_cost` убрана).
+  **0.94** (просьба пользователя): гербы магов `Crest::{HatCoin, Hats, HatBishop, Meteor, HatMeteor,
+  HatPlus}` (`CRESTS` = 46, картинки `ui/crest_<hat_coin|hats|hat_bishop|meteor|hat_meteor|
+  hat_plus>.png` из арт-проекта). `TurnEnd::meteors` — `Vec<Meteor>` (`from`, `at`, `hits`, `wide`,
+  `crater`). В `meteors`: `Hats` — по два на мага (второй — своим броском); урон —
+  `RogueCrestMeteorDamage` (2) с `Meteor`; `HatPlus` — ещё чужие на соседних по прямым (`ROOK_RAYS`);
+  `HatMeteor` — `Position::craters` (маска) на клетке падения, гаснет, когда ход переходит к игроку
+  (`end_turn`). `crater_burns` после `march`: шагнувшие в кратер — `RogueCrestCraterDamage` (1),
+  `TurnEnd::burned`, золото за убитых — игроку. Арт — наши `tools/breach_crater.py` (кратер: тёмная
+  воронка с тлеющими трещинами, угли и низкое пламя по краю ромба; `effects/crater_<under|over>.png`,
+  12 кадров 80×112, центр (40, 84), 80 мс по кругу; задние языки — под фигурой, передние — над) и
+  `tools/breach_meteor_wave.py` (огненная волна узким крестом на функциях `breach_firewave_plus.py`:
+  `effects/meteor_wave_<under|over>.png`, 18 кадров 184×168 как у огненной волны). В приложении:
+  `craters` (клетка, загорелся в миг касания, гаснет — после шагов следующего хода соперника +
+  `CRATER_FADE`; кратер позиции без записи — всегда), `paint_craters` (до и после фигур),
+  `meteor_waves`/`paint_meteor_waves`; урон горящих — `Effect::hit`/`due_hits` к концу шагов.
+  **0.95** (просьба пользователя): гербы золотых фигур `Crest::{GoldKing, KingCoin, Kings2, KingQueen,
+  KingSkull, Piggy}` (`CRESTS` = 52, картинки `ui/crest_<gold_king|king_coin|kings2|king_queen|
+  king_skull|piggy>.png` из арт-проекта). В `strike`: победа золотой фигурой игрока —
+  `RogueGoldBonus` + `RogueCrestGoldKingBonus` (1) с `GoldKing` + `RogueCrestKingQueenBonus` (2) у
+  ферзя с `KingQueen`. `KingCoin` — `Position::sell_price` (не меньше `shop_price`; «полная стоимость»
+  понята для всех фигур запаса — золотые и так продаются за свою цену), им пользуются `sell` и зона
+  продажи. `Kings2` — вес золотых × `RogueCrestKings2Percent`. `KingSkull` — в `fall`: погибшая
+  золотая игрока возвращает `shop_price`. `Piggy` — `piggy_bank` в `end_turn` перед
+  `begin_planning`: (золото / `RogueCrestPiggyStep`) × золотых на доске и в `gold_reserve`,
+  `TurnEnd::interest`, «Свинья-копилка: +N». Числа гербов в описании через `coins` — со склонением.
+  **0.96** (просьба пользователя): объединённые фигуры — варвар с другой силой. `Stock::with` (вторая
+  сила, у одиночных `Power::Plain`), `Stock::combo(kind, with)` (`power` = `Barbarian`), `Stock::has`,
+  `Stock::name` («огненный варварский конь»), `COMBOS` = [Fire, Spark, Wind, Gold, Shade, Ice, Wizard];
+  у фигуры — оба флага (`Stock::piece`, `Stock::of`, `Piece::has_power`), поэтому правила и гербы
+  обеих сил действуют сами (огненный варвар взрывается и бьёт повторно, на нём «топор и меч» и
+  «огонь и меч»); скидки гербов в `Position::shop_price` — по `stock.kind` и `stock.has` (снежинка и
+  пешка: ледяной варвар-пешка — как обычный варвар), продажа золотого — по `has(Gold)`, копилка
+  считает и золотых варваров запаса (`reserve`). Открывают гербы `Crest::{AxeFlame, AxeBolt, AxeWind,
+  AxeKing, AxeDark, AxeSnow, AxeHat}` (`CRESTS` = 59, `Crest::unlocks`, `Position::combo_open`;
+  картинки `ui/crest_axe_<flame|bolt|wind|king|dark|snow|hat>.png` из арт-проекта). Прилавок
+  (`roll_offers`): одиночные — прежним порядком (`power_percent` — множители гербов «… и монеты» и
+  двух топоров), за ними открытые объединённые с весом × `Rule::RogueComboWeightPercent` (100%) ×
+  множители обеих сил (маг-пешки нет); цена — обычная × `RogueShopPercent` × `RogueComboPercent`
+  (300%). Запас — `combo_reserve` [номер в `COMBOS`][сторона][`Kind`], готовы всегда, в `reserve()`
+  первыми (`charged_stock`/`charged_stock_mut`); выставление — `MoveKind::ComboDrop(kind, номер)` (в
+  сети 100 + номер × 6 + вид). `Piece::title` — все силы прилагательными по порядку, маг — «-маг» в
+  конце. Арт-проект: спрайты `pieces/barbarian_gold`, `pieces/barbarian_ice`, `pieces/wizard_horns`
+  (`BARBARIAN_GOLD`/`BARBARIAN_ICE`/`WIZARD_HORNS`, `combo_set` в `piece_body`/`piece_shadow` —
+  первыми), анимации на спрайте варвара `effects/barbarian/<lava_crack|electric_hold|wind|dark_fire|
+  shadowstep_out|shadowstep_in>_<код>.png` — в полосах `UiTextures` следом за обычными (`BARBARIAN`
+  = 12, `strip_index`); `lava`/`electric`/`wind`/`dark` теперь берут `Piece`. В `paint_stock`
+  объединённая анимируется по второй силе.
+  **0.97** (просьба пользователя: «то же самое для золотых»): `COMBOS` — пары (основа, сила), 13:
+  прежние 7 варварских (номера и сетевые коды не менялись), за ними золотые с огнём, молнией,
+  ветром, тенью, льдом, магом (золотой варвар — по-прежнему `(Barbarian, Gold)`, `Stock::of` ищет
+  пару по порядку). `Stock::combo(kind, основа, сила)`, `Crest::unlocks` → `(основа, сила)`,
+  `combo_open(пара)`; в `roll_offers` множители основы и силы (`power_percent`). Гербы
+  `Crest::{KingFlame, KingBolt, KingWind, KingDark, KingSnow, KingHat}` (`CRESTS` = 65, картинки
+  `ui/crest_king_<flame|bolt|wind|dark|snow|hat>.png` из арт-проекта). Снежинка и пешка: ледяная
+  объединённая пешка — как её основа. `Piece::title`: основы ближе к имени — «огненный золотой
+  конь», «ледяная золотая ладья», «золотой варварский конь», «золотой слон-маг». Арт —
+  `tools/breach_gold_combo.py`: спрайты `pieces/gold_ice`, `pieces/gold_wizard` (`GOLD_ICE`,
+  `GOLD_WIZARD`, `combo_set` 3 и 4), анимации `effects/gold/…` — в полосах `UiTextures` после
+  варварских (`GOLD` = 24 в `strip_index`: варвар — свой набор, иначе золотая — свой).
+  **0.98** (просьба пользователя: «то же самое для магов»): `COMBOS` — 18, в конце маги с огнём,
+  молнией, ветром, тенью, льдом (золотой маг и варвар-маг — прежние пары). Гербы `Crest::{HatFlame,
+  HatBolt, HatWind, HatDark, HatSnow}` (`CRESTS` = 70, картинки `ui/crest_hat_<flame|bolt|wind|dark|
+  snow>.png` из арт-проекта). Маг-пешки нет ни у одной пары с магом (`roll_offers`). Названия —
+  «огненный конь-маг», «ледяная ладья-маг». Арт — `tools/breach_wizard_combo.py`: спрайт
+  `pieces/wizard_ice` (`WIZARD_ICE`, `combo_set` 5), анимации `effects/wizard/…` — в полосах после
+  золотых (`WIZARD` = 36 в `strip_index`: варвар, иначе золотая, иначе маг).
+  **0.99** (просьба пользователя: «то же самое для ледяных»): `COMBOS` — 22, в конце ледяные с огнём,
+  молнией, ветром, тенью (ледяные варвар, золотая и маг — прежние пары). Гербы `Crest::{FlameSnow,
+  SnowBolt, SnowWind, SnowDark}` (`CRESTS` = 74, картинки `ui/crest_flame_snow.png`,
+  `ui/crest_snow_<bolt|wind|dark>.png` из арт-проекта). Снежинка и пешка: у ледяной основы цена — как у
+  второй силы (огненная ледяная пешка — как огненная). Названия — «огненный ледяной конь», «теневая
+  ледяная ладья». Спрайт — обычный ледяной; анимации `tools/breach_ice_combo.py` (`effects/ice/…`) — в
+  полосах после магов (`ICE` = 48 в `strip_index`: варвар, золотая, маг, ледяная). Код хода в сети —
+  `u16` (`encode_move`/`decode_move`): `100 + номер × 6 + вид` у следующих пар перевалит за 255.
+  **0.100** (просьба пользователя): над «Конец хода» в rogue-like — табличка ходов фигурами
+  (`paint_moves_left` в `table.rs`, `MOVES_GAP`): знак `Glyph::Pawn` (`p` в шрифте) и
+  `Position::moves_left` (кончились — красным `MOVES_SPENT`); только в ход игрока, не в расстановке и
+  не в магазине. Воздушная тратит ход первым шагом, даровые следующие счётчик не убавляют.
+  **0.101** (просьба пользователя): огненные объединённые — `COMBOS` 25, в конце огонь с молнией,
+  ветром, тенью; гербы `Crest::{FlameBolt, FlameWind, FlameDark}` (`CRESTS` = 77, картинки
+  `ui/crest_flame_<bolt|wind|dark>.png` из арт-проекта). Названия — «огненный электрический конь».
+  Анимации — `tools/breach_fire_combo.py` (`effects/fire/…`: кадры силы на теле с трещинами ожидания)
+  в полосах после ледяных (`FIRE` = 60; `strip_index` — огонь, только если нет другой основы,
+  `base_set`; у `lava` своего набора огня нет — обычная). В `dressed`: пока кадр лавы не в
+  `LAVA_HOLD` (насыщение, взрыв), кадры другой силы (`spark`/`wind`/аура `dark`) не рисуются — видна
+  лава.
+  **0.102** (просьба пользователя): электрические объединённые — `COMBOS` 27, в конце молния с ветром и
+  тенью; гербы `Crest::{BoltWind, BoltDark}` (`CRESTS` = 79, картинки `ui/crest_bolt_<wind|dark>.png`
+  из арт-проекта). Названия — «электрический воздушный конь». Анимации — `tools/breach_spark_combo.py`
+  (`effects/spark/…`: вихрь или тёмная аура вместе с молниями, 40 кадров) в полосах вихря и тени после
+  огненных (`SPARK` = 72 в `strip_index`); у электричества своего набора нет — `electric_index`
+  (основа или огонь). В `paint_figures` вихрь и аура рисуются раньше электричества, так что у
+  объединённой видна полоса набора молнии. Коды выставления в сети теперь доходят до 261 (`u16`).
+  **0.103** (просьба пользователя): воздушные теневые — последняя пара, `COMBOS` 28 (все пары особых
+  сил, сеть — до 267); герб `Crest::WindDark` (`CRESTS` = 80, `ui/crest_wind_dark.png` из арт-проекта).
+  Анимации — `tools/breach_wind_combo.py` (`effects/wind/<dark_fire|shadowstep_*>`) после электрических
+  (`WIND` = 84). Выбор набора — `strip_index(piece, анимация)`: основа (варвар, золотая, маг, ледяная),
+  иначе набор другой силы, если в нём есть эта анимация (огонь — всё, кроме лавы; молния — вихрь и
+  тень; ветер — тень); тест `every_special_piece_finds_its_animation_strips` в `assets/ui.rs`
+  проверяет, что у всех пар номера полос в границах.
+  **0.104** (просьба пользователя): в начале rogue-like в запасе 2 пешки и вместо слона и коня одна
+  особая фигура — `Position::starting_special(seed)` в `rogue_start`: вид по `shop_weights` без пешки
+  (ферзь реже всех), сила — одна из восьми поровну, случайность — зерно партии; кладётся
+  `give_stock`. Старые тесты, которым нужен обычный конь в запасе, кладут его сами.
+  **0.105** (просьба пользователя): на уровне `Rule::RogueArmorSkipLevel` (4) брони нет — её шанс
+  прибавляется вампирам (60%), с 5-го снова как было. Зомби волн — `Piece::{zombie, risen}`, с
+  `Rule::RogueZombieLevel` (5) с шансом `RogueZombiePercent` (30, тот же бросок `next(100)` после брони
+  и вампиров: на 5+ уровнях по 30% у каждой), здоровье + `RogueZombieHp` (1 ед., в `crested`).
+  Гибель — в `fall`: зомби соперника без `risen` оставляет `Position::graves[sq]` (`Grave { kind,
+  wait }`: погиб в ход игрока — 1, в свой — 2 конца хода своей стороны). `rise_zombies` в `end_turn`
+  соперника после `march`/`crater_burns`, до волны: восстаёт с `RogueZombieRiseHp` (1 ед.), `risen`,
+  на своей клетке или ближайшей свободной соседней (`KING_STEPS`), иначе ждёт; `TurnEnd::risen`
+  («Восстали зомби: …», «Зомби ↑N»). Уровень не пройден и соперник не побеждён, пока есть могилы
+  (`waves_left` в `end_turn` и `defeated`); `win_round` и `start_round` могилы стирают. Спрайты —
+  `tools/breach_zombie.py` (`pieces/zombie/`, `ZOMBIE_BODIES`/`ZOMBIE_SHADOWS`, `piece_body`/
+  `piece_shadow`); «Чёрный конь-зомби». В приложении: восставшие проявляются как волна (`appears`
+  после шагов), могила — череп `Glyph::Skull` цвета `GRAVE_SKULL`, мерцает (`paint_graves`, до фигур;
+  на клетке ещё стоящей убитой — нет).
+  **0.105.1** (уточнение пользователя: «50% волны — обычные, 50% — те, что я скажу, других нет, пока
+  не скажу обратное»): у каждого уровня один вид усиленных — `spawn_wave` проверяет уровень на
+  равенство: `RoguePoisonLevel` 2 — ядовитые, `RogueArmorLevel` 3 — броня, `RogueVampireLevel` 4 —
+  вампиры, `RogueZombieLevel` 5 — зомби, шансы `…Percent` = 50; на 1-м и с 6-го — только обычные.
+  `rogue_armor_skip_level` убран (в `RETIRED_RULES`). В `balance.ini` пользователя проценты брони,
+  вампиров, зомби 30 → 50, строка пропуска удалена, копия `balance.ini.before-0.105.1`.
+  **0.106** (просьба пользователя): вампиры в броне — фигура волны с `armored` и `vampire` сразу, на
+  уровне `Rule::RogueArmoredVampireLevel` (6) с шансом `RogueArmoredVampirePercent` (50); здоровье +
+  `RogueArmoredVampireHp` (3 ед., в `crested` вместо брони и вампира); лечение ударом — один раз за
+  ход (`Position::fed`, маска клеток, сбрасывается со сменой хода). «Чёрная бронированная ладья-вампир».
+  Спрайты — `tools/breach_armor_vampire.py` (`pieces/armor_vampire/`, `ARMOR_VAMPIRE_*`, в
+  `piece_body`/`piece_shadow` раньше брони).
+  **0.107** (просьба пользователя): ядовитые зомби — `venom` и `zombie` сразу, на уровне
+  `Rule::RogueVenomZombieLevel` (7) с шансом `RogueVenomZombiePercent` (50); здоровье — как у зомби;
+  `Grave::venom` — восстаёт ядовитым. Спрайты — `tools/breach_poison_zombie.py`
+  (`pieces/poison_zombie/`, `POISON_ZOMBIE_*`, в `piece_body`/`piece_shadow` раньше ядовитых); лужи-анимации
+  у них нет (`poison_frame` — `None` у зомби), след шага остаётся.
 - `src/net.rs` (с 0.45, просьба пользователя: «очень простой мультиплеер») — клиент ретранслятора
   `tools/mp_server.py` (Python 3, без библиотек, `python3 mp_server.py [порт]`, порт 47900):
   сервер сажает двух подключившихся за доску (первый — белые), шлёт `WAIT`/`START white|black`/
@@ -350,7 +693,26 @@ PATH (`C:\Program Files\Git\cmd`, `C:\Program Files\GitHub CLI`). В репоз�
 - `src/editor.rs` (с 0.38, просьба пользователя: сохранять одной кнопкой; Chrome не открывает AppData в окнах выбора файла) — сервер редактора на `127.0.0.1:PORT` (47823, занят — любой), поднимается в `BattleChessApp::new` (`editor::start`), поток `balance-editor`; адрес `http://127.0.0.1:47823/<ключ>/`, ключ — `%APPDATA%\BattleChess\editor.key`; сверяются `Host` и `Origin`. GET `/<ключ>/` — `tools/deck_builder.html` (`include_str!`, вшит в exe), GET `balance.ini` — `balance::file_text`, POST `balance.ini` — `balance::save_text` (через `.tmp` и переименование, прежний — `.bak`, ответ — предупреждения) и флаг `take_saved` → меню перечитывает баланс (посреди партии — нет). Кнопка «Править баланс» — `editor::open` (браузер через `rundll32 url.dll,FileProtocolHandler`; не вышло — Блокнот `open_in_editor`). Страница: `fromGame` (http) — грузит файл игры (`loadFromGame`, `parseIni(text, freshState())`), одна плавающая кнопка `#save` «Сохранить в игру» (Ctrl+S, `savedText`/`dirty`, `beforeunload`); открытая с диска — «Скачать balance.ini».
 - Код колоды (с 0.37, просьба пользователя: вставлять колоду прямо в игре): `game/decks.rs` — `encode_deck_code`/`decode_deck_code` (`BC1-` + base64url без «=» от байтов [пар, (номер `CardKind as usize`, копий)…, контрольный байт `checksum`]; пробелы в коде игнорируются; ошибки — русские тексты), порядок `CardKind::ALL` закреплён тестом (новые карты только в конец). Экран выбора колоды (`menu.rs`): `Event::Paste` → `import_deck_code` → `balance::set_deck_in_file` (точечная замена раздела `[deck.Имя]` через `replace_deck_section`, копия `balance.ini.bak`, проверка чтением обратно) → `reload_balance`; `Event::Copy` копирует код выбранной колоды (`ctx.copy_text`); `deck_message` — строка результата, под колодами число карт. Страница `tools/deck_builder.html` — те же `encodeDeck`/`decodeDeck` (в данных карт поле `index`), пункты «Скопировать код колоды» / «Вставить код колоды…»; коды стандартных колод закреплены в тесте как контроль совпадения Rust и JS.
 - `src/game/decks.rs` (с 0.35, состав — из `tools/deck_builder.html`, присланный пользователем 2026-10-15) — пять колод по номерам меню: `RECIPES` (стандартный состав — действующий берётся из `balance.ini`, `deck_cards` читает `balance().deck`; `DECK_NAMES` — названия, их же берёт `menu::DECKS`; список «карта — число копий»; Лазурная — 30 карт, ледяная, без простых; остальные четыре пока классические по 34), `deck_cards(i)`, `DECK_COUNT` = 5 (= `DECK_SKINS`), `MAX_DECK` = 64 (длина массива в `Cards`), `UNSHUFFLED` — колода позиций из FEN для тестов. `Position::with_shuffled_cards(seed, [белые, чёрные])`, `Game::new([белые, чёрные])`: игра даёт обеим сторонам выбранную колоду. Чтобы изменить колоды — править `RECIPES`, потом `cargo test --release refresh_deck_builder -- --ignored` (обновит страницу-конструктор).
-- `src/game/tests.rs` — тесты правил, случайные партии (с картами, волнами и обменами).
+- `src/game/tests.rs` — тесты правил, случайные партии (с картами, волнами и обменами). С 0.103.1
+  (просьба пользователя: «прогони геймплейные тесты») — `rogue_fuzz`: случайные rogue-like партии со
+  случайными гербами (каждая четвёртая — со всеми), объединёнными фигурами в запасе, магазином, продажей,
+  гербами, расстановкой, «Выиграть раунд» и отменой; после каждого действия `assert_rogue_sane`
+  (фигуры живы и не выше полного здоровья, короли на месте, уровни и волны в пределах, золото не
+  перевалило через ноль, каждый ход переживает `encode_move`/`decode_move`, запас собирается обратно
+  в те же `Stock`, описания строятся), пробная отмена возвращает позицию в точности.
+  `rogue_like_fuzz_keeps_the_game_sane` — 40 партий (`ROGUE_FUZZ_GAMES`), `rogue_like_fuzz_long` — 600
+  (`--ignored`). Проверка с переполнениями и `debug_assert` — в отдельной папке, чтобы не сбивать кэш:
+  `CARGO_TARGET_DIR=target/checked CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS=true
+  CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true cargo test --release -- --include-ignored --skip
+  two_games_stay_in_sync --skip refresh_deck_builder` (~2 ГБ, после — удалить). Проверка в окне —
+  временный демо-код автоигры (`BC_AUTOPLAY` = секунды, `BC_SEED`, `BC_AUTOPLAY_LOG`): случайные
+  действия человека через те же `play`/`end_turn`/`undo`/магазин, когда доиграли анимации, обычные
+  партии против усиленного компьютера через раз, паника — в лог (`panic::set_hook`), «застряли» — нет
+  записей 30 с; для символов в трассе — `CARGO_PROFILE_RELEASE_STRIP=false` и
+  `CARGO_PROFILE_RELEASE_DEBUG=line-tables-only` (в `[profile.release]` стоит `strip = true`). В 0.103.1
+  34 сессии по 5–7 минут: падений и зависаний нет; дважды в сборке с `debug_assert` сработала проверка
+  egui `gamma_multiply` (множитель < 0 или NaN) — не повторилась ни в одном из следующих 26 прогонов,
+  наши вызовы с проверкой множителя чисты; в обычной сборке проверки нет.
 - `src/ai.rs` — компьютер (альфа-бета: ход в переборе — `make_turn`, ход и удары в конце хода;
   досчёта нет — ударов ходом нет; сила одна — `DEPTH` = 2, `THINK_TIME` 0,8 с, `NOISE` = 40,
   бывший уровень 2 «любитель»: с 0.31 уровней нет, просьба пользователя; `decided` —
@@ -620,6 +982,376 @@ PATH (`C:\Program Files\Git\cmd`, `C:\Program Files\GitHub CLI`). В репоз�
   `assets/breach/effects/wind_<цвет><фигура>.png` (с 2026-10-18 — все 12 фигур, просьба пользователя; вихрь
   считается по силуэту каждой, кони не изменились), 40 кадров — вступление [0, 8), повтор [8, 40). Превью —
   `preview_wind.gif` (кони), `preview_wind_all.gif` (остальные), `preview_wind_frames.png`. Не встроено.
+- `tools/breach_gilded.py` (арт-проект, 2026-10-19, просьба пользователя: «золотая или gilded фигура с
+  роскошными украшениями») — те же 3D-фигуры `breach_art.py` с украшениями прямо на теле (новые материалы
+  `FILI` — узор, `GEM` — камни, `PEARL` — жемчуг; палитры подставляются в `art.PALETTES` и рисует
+  `art.render_piece`): нитка жемчуга по уступу основания, крупные камни на поясе и короне, пояс филиграни
+  (два кольца + выпуклые бусины; у короля — одно кольцо), у ферзя шары короны — жемчуг и камень сверху, у
+  короля камень в кресте, у ладьи золотой край зубцов и рамка бойницы с камнями на зубцах, у коня розетка с
+  камнем на уздечке; самые светлые пиксели золота — белый блеск. Варианты: `gilded` (корпус в цвете
+  стороны, отделка — золото; камни: белые — сапфиры, чёрные — рубины) и `gold` (белые — жёлтое золото +
+  белая эмаль + сапфиры, чёрные — красное золото + чёрная эмаль + рубины). Спрайты как обычные (64×84,
+  опора 32,66, отдельная тень): `assets/breach/pieces/<gilded|gold>/<цвет><фигура>.png` и `_shadow.png`;
+  превью `pieces/preview_gilded.png` (обычные / позолоченные / золотые) и `preview_gilded_board.png`.
+  Не встроено.
+- `tools/breach_darkfire.py` (арт-проект, 2026-10-19, просьба пользователя: чёрно-фиолетовое пламя; первый вариант
+  с отдельными языками и огнём по клетке пользователю не понравился, переделан «как аура электрической фигуры, чуть
+  гуще») — аура по образцу `breach_arcs.py`: вокруг силуэта по бокам колышется (`SIDE` = 4.5 + 5.5·шум, у
+  электрической 3.5 + 4.5), вверх — языки (`UP` = 7 + 25·шум², у электрической 5 + 22), узор бежит вверх (`RISE`,
+  период = длине повтора). Цвета: нутро почти чёрное `FILL` (альфа 215), ближе к фигуре `DEEP`, вплотную —
+  тёмно-фиолетовая кайма `LINER` (отделяет чёрный контур фигуры), под контуром `GLOW`, снаружи фиолетовый контур
+  `CONTOUR`, кончики языков — сиреневые `GLINT`, искорки в ауре. Фигура чуть темнеет (`TINT`), по краю мерцает
+  отсвет `RIM`. Кадры — замена спрайта на холсте 120×120, опора (60, 92), как у `electric_*`, 60 мс:
+  `assets/breach/effects/dark_fire_<цвет><фигура>.png` (все 12), 40 кадров — вступление [0, 8), повтор [8, 40).
+  Превью — `preview_dark_fire.gif`, `preview_dark_fire_frames.png`. Не встроено.
+- `tools/breach_shadowstep.py` (арт-проект, 2026-10-19, просьба пользователя: фигуры с тёмной аурой прыгают с клетки
+  на клетку, игнорируя фигуры, — «между warp-прыжком из Warhammer 40 000 и теневым шагом из аниме, с еле заметным
+  силуэтом на пару мгновений») — две полосы на фигуру (все 12), холст 120×120, опора (60, 92), 60 мс.
+  `shadowstep_out_<цвет><фигура>.png` (`OUT_LEN` = 18, на исходной клетке): кадры ауры `dark_fire_*` → фигура
+  чернеет до силуэта с фиолетовым контуром (`darken`), по полу сходится кольцо (`floor_ring`), за ней раскрывается
+  варп-разлом (`rift`: рваная линза, нутро `VOID` с завихрениями `SWIRL`, кромка `LIP`, контур и двойное свечение;
+  ширина по кадрам `RIFT_OUT`; с 2026-10-19 по просьбе пользователя ниже — высота 0.5 × рост фигуры + 12 — и быстрее:
+  раскрывается за 2 кадра, схлопывается за 1), фигуру втягивает — сжатие по ширине (`squash`, `SQUASH_OUT`; в рывке силуэт светлее
+  нутра — `DASH_BODY`/`DASH_EDGE`), теневые полосы рывка (`speed_lines`), осколки в разлом, схлопывание со вспышкой;
+  с кадра 5 — оставленный силуэт (`ghost`: тёмно-фиолетовый с контуром, тает построчно и мерцает до конца полосы).
+  Фигуры (и её тени) нет с кадра `VANISH` = 7. `shadowstep_in_<цвет><фигура>.png` (`IN_LEN` = 13, на целевой
+  клетке; начинается в кадре исчезновения `IN_AT` = 7): разлом (`RIFT_IN`), с кадра `EMERGE` = 2 фигура выходит
+  (`SQUASH_IN`), кольцо по полу, с кадра 5 — кадры вступления ауры (`dark.render`), последний кадр = `dark_fire`
+  кадр 7, дальше — повтор ауры с `darkfire.LOOP_START`. Следа между клетками нет. Превью — `preview_shadowstep.gif`
+  (конь и ферзь прыгают через фигуры), `preview_shadowstep_frames.png`. Не встроено.
+- `tools/breach_ice_pieces.py` (арт-проект, 2026-10-19, просьба пользователя: «иссиня-голубые фигуры с участками,
+  обмёрзшими льдом») — те же 3D-фигуры `breach_art.py` с материалами `ICE` (прозрачный лёд) и `RIME` (иней):
+  корпус и отделка синие (белые — иссиня-голубые, чёрные — глубокий тёмно-синий; огоньки — как у сторон), наледь в
+  `iced`: крупные пятна льда по 3D-шуму `noise3` (ячейка 6.5) с инеем по краю, иней шапками на верхних поверхностях
+  (по нормали вверх), лёд от основания; сосульки (`icicle`, цепочка шариков) из-под поясов и короны (`ICICLES`), у
+  коня — из-под челюсти; три ледяных кристалла у основания (`shard`); белые искры на самом светлом льду. Спрайты как
+  обычные: `assets/breach/pieces/ice/<цвет><фигура>.png` и `_shadow.png`; превью `pieces/preview_ice_pieces.png`
+  (обычные / ледяные) и `preview_ice_pieces_board.png`. Не встроено.
+- `tools/breach_fat_king.py` (арт-проект, 2026-10-19, просьба пользователя: «король-толстосум — на основе золотого
+  короля, большое пузо и свисающие украшения») — палитры варианта `gold` из `breach_gilded.py` (белые — жёлтое золото,
+  белая эмаль, сапфиры; чёрные — красное золото, чёрная эмаль, рубины); тело `BODY` = профиль `PROFILE` (круглое брюхо
+  вместо ножки, снизу подворачивается к подставке) плавно слит (`smin`) с выпирающим вперёд животом-эллипсоидом
+  (`BELLY_C`/`BELLY_R`); пояс эмали `BELT` под пузом с пряжкой-камнем; две нитки по пузу (`necklace`, бусины кладутся
+  на поверхность через `surface_r`: крупный жемчуг; камни через жемчужину с медальоном-камнем в оправе); с боков
+  короны — нитки жемчуга с каплями-камнями, с пояса — короткие подвески (`dangle`); крест и камни как у золотого
+  короля. Спрайт как обычный: `assets/breach/pieces/fat_king/<w|b>K.png` и `_shadow.png`; превью
+  `pieces/preview_fat_king.png` (золотой король и толстосум, ниже — на доске среди золотых фигур). Не встроено.
+- `tools/breach_menu.py` (арт-проект, 2026-10-19, просьба пользователя: картинка главного меню — книга на деревянном
+  столе при свече, кнопки — закладки справа; вторая версия по замечаниям: без названия, чернильницы, монет и фигур,
+  свеча слева вверху, закладки тёмные, поменьше и извиваются, книга — узкий высокий классический том, как присланный
+  образец) — сцена 480×270 (при 1920×1080 ровно ×4, как пиксели меню `FIELD`): стол из досок (`paint_table`), книга
+  (`paint_book`): обложка `BOOK` = (120, 10, 300, 234) в бордовой коже (с 2026-10-19 шире — просьба пользователя), рамка-«плетёнка» — косая золотая сетка между
+  двойными золотыми линиями, медальон с королём (`breach_coin.KING[24]` ×2) посередине обложки, веточки над и под ним;
+  толщина `STRIP` = 30 со сдвигом `KX` = 0.3: снизу доски и страницы, слева круглый корешок с бинтами, золотыми
+  линиями и тёмной плашкой. Свеча слева вверху (`paint_candle`, огонёк `flame_image`, свечение `glow`), свет —
+  `light()` от `LIGHT_GROUND` = (46, 74), виньетка, тени вправо-вниз (`Scene.cast`). Файлы `assets/breach/menu/`:
+  `menu_background.png` (с огоньком), `menu_background_noflame.png` + `menu_flame.png` (`FLAME_FRAMES` = 8 кадров
+  18×32, 90 мс, верх фитиля — `FLAME_ANCHOR` (9, 29) в кадре, `FLAME_AT` (46, 33) на фоне). Закладки (`tab_image`):
+  приглушённые тёмные ленты (`TAB_COLORS`: wine, plum, teal, ochre, forest, navy, umber, slate) с раздвоенным концом и
+  прострочкой; от книги прямые, дальше извиваются (`tab_wave`: размах `TAB_WAVE` = 2, шаг `TAB_PERIOD` = 64, фаза —
+  `tab_phase` по месту в `SLOTS`); буквы шрифта 5×7 (`FONT`) целиком сдвигаются по волне. Высота ленты `TAB_BODY_H` = 13,
+  холст `TAB_W`×`TAB_H` = 148×20 (тень внутри); закладка k: холст в (`BOOK_RIGHT` − 1, `TAB_Y0` + k·`TAB_PITCH` −
+  `TAB_WAVE`) = (299, 52 + 17k); состояния `normal` (длина `TAB_LEN` = 140), `hover` (+5, на тон светлее, надпись
+  светлее), `pressed` (+2, темнее, надпись ниже). `tab_<имя>_<состояние>.png` для `TABS` (play «Начать игру», rogue,
+  multiplayer, boost_off/on, advance_off «Взятие: на месте»/advance_on «Взятие: с перемещением», balance, settings
+  «Настройки» — в меню пока нет, quit), пустые `tab_blank_<цвет>_<состояние>.png`; надпись не длиннее `TEXT_MAX` = 123.
+  Превью — `preview_menu.png` (×2), `preview_menu.gif`. Открытие книги (2026-10-19, просьба пользователя: «книга
+  легко приоткрывается, из неё идёт свет»; затем по просьбе закладки остаются на месте и свет экран не заливает) —
+  `menu_open.png`: `OPEN_FRAMES` = 30 кадров 480×270 в ряд по `OPEN_MS` = 70 мс (огонёк свечи уже в кадрах, закладок
+  нет — игра рисует их поверх на прежних местах): обложка поворачивается на корешке до `OPEN_MAX` = 9° к кадру ~16
+  (`warped`: правый край выше и правее, снизу видна доска, подсвеченная светом), из щели под ней — лучи вниз-вправо по
+  страницам и столу, они переливаются до конца полосы (`open_frame`); последний кадр можно держать. Обложка отдельно —
+  `menu_open_cover.png` (те же кадры, RGBA: только обложка с доской и контуром): порядок рисования — кадр
+  `menu_open`, закладки, поверх `menu_open_cover` (закладки выходят из-под приподнятой обложки, а не лежат на ней). Превью —
+  `preview_menu_open.gif`, `preview_menu_open_frames.png`. Было встроено в 0.74, в 0.75 убрано (просьба пользователя).
+- `tools/breach_crest.py` (арт-проект, 2026-10-20, по эскизу пользователя; маленький треугольный вариант 15×16
+  заменён) — герб 49×45 с контуром (на 40% больше `coin_32`): симметричный щит (`shield`: верх вогнут на `TOP_DIP`,
+  углы — рожки, бока почти прямые до `WAIST` = 0.55, дальше дугой к острию), тонкий обод из тёмного металла `IRON` с
+  фаской, золотые уголки-треугольники на рожках с искрой, поле очень тёмное бордовое `WINE` с тенью под ободом,
+  золотая молния-зигзаг (`BOLT`) с бликом и тенью. Файл `assets/breach/ui/crest.png` (тени нет), превью
+  `preview_crest.png` (крупно и рядом с монетой в размере игры). Второй вариант (просьба пользователя) — тот же герб
+  со снежинкой: `crest("snow")` → `crest_snow.png` (шесть лучей через 60° с двумя парами веточек — `snowflake`,
+  лёд `ICE` бело-голубой), превью `preview_crest_snow.png`. Третий вариант (по эскизу пользователя) — молния и
+  снежинка вместе: `crest("both")` → `crest_both.png` (золотая молния слева, ×0.72; снежинка справа, радиус 7.6, центр ровно в пикселе (29.5, 22.5) — симметрична; обе
+  ближе к центру щита и ниже — просьба пользователя; по
+  одной паре веточек), превью `preview_crest_both.png`. Четвёртый вариант (просьба пользователя) — снежинка и сердце: `crest("heart")` → `crest_heart.png` (снежинка как в `both`, слева красное сердце `heart` — кривая (x² + y² − 1)³ ≤ x²y³, s = 4.8, центр (16.5, 22.5), палитра `RED`), превью `preview_crest_heart.png`. Пятый — снежинка и монета: `crest("coin")` → `crest_coin.png` (слева вклеена `coin_16.png` со своим контуром, центр x = 15.5, тень на поле), превью `preview_crest_coin.png`. Шестой — две снежинки: `crest("snow2")` → `crest_snow2.png` (снежинки как в `both`, центры (15.5, 22.5) и (31.5, 22.5) — симметрично), превью `preview_crest_snow2.png`. Седьмой — пешка и снежинка: `crest("pawn")` → `crest_pawn.png` (золотая пешка `PAWN` по пикселям 9×14 со столбцом 16 посередине, снежинка — центр (30.5, 22.5)), превью `preview_crest_pawn.png`. Восьмой — шипы и снежинка: `crest("spikes")` → `crest_spikes.png` (стальные шипы `SPIKES` по пикселям 11×12, палитра `STEEL`), девятый — снежинка в ледяном кристалле: `crest("crystal")` → `crest_crystal.png` (шестигранник посередине щита, грани палитры `CRYSTAL` — верхние скаты светлее, левая сторона к свету, кромка с бликом; снежинка r = 7.6 почти белая, без каймы, с тенью на лёд), превью `preview_crest_spikes.png`, `preview_crest_crystal.png`. Встроены с 0.77 (гербы rogue-like): `heart`, `coin`, `snow2`, `pawn`, `spikes`, `crystal`. Топоры (2026-10-21, просьба
+  пользователя): топор — `axe(w, h, hx, yc, size, side, haft_len)` — маски топорища (`WOOD`), золотых обмотки и навершия,
+  стального лезвия (шейка у топорища, веер к выпуклой кромке ≈ 7.6·size); `axe_sword` (топор слева, лезвием наружу, ось
+  x = 20; справа меч по пикселям: клинок `STEEL`, гарда и навершие `GOLD`, рукоять `LEATHER`), `axe_fangs` (справа два
+  клыка `fang` цвета `BONE`, концы загнуты друг к другу), `axe_queen` (справа золотой ферзь `QUEEN` по пикселям 11×17),
+  `axes` (два топора зеркально, оси 20 и 27), `whirl` (топор ×0.9 посередине в красном вихре `whirl`: три дуги-струи по
+  кругу r = 12.5, голова толстая, хвост тонкий и доходит до следующей головы, палитра `WHIRL`; вихрь — слой `under`,
+  под знаками, со своей каймой), `fire_axe` (топор посередине ниже обычного, топорище короче; за ним языки пламени
+  `FLAMES` → `flames`: от круглого основания к острому изогнутому кончику, слои `FIRE` снаружи красные, к середине
+  жёлтые, искры). Файлы `crest_<axe_sword|axe_fangs|axe_queen|axes|whirl|fire_axe>.png`, превью у каждого и все шесть
+  рядом — `preview_crest_axes.png`. Огонёк (2026-10-22, просьба пользователя): `crest("flame")` → `crest_flame.png` — посередине пламя
+  слоями `FLAME_LAYERS` (через `flames`: красный — главный язык и два боковых, оранжевый, жёлтый, бледное ядро), кайма и
+  тень `WINE[4]`, кончики языков светлее, на поле два круга отсвета, четыре искры; превью `preview_crest_flame.png`. Ещё шесть (там же, просьба
+  пользователя): общий помощник `draw_flame` (слои, кайма, тень, отсвет по желанию), малый огонёк `small_flame(cx, base,
+  k = 0.62)` слева (x 16) — `flame_pawn` (справа пешка `PAWN`), `flame_skull` (череп `SKULL` по пикселям 11×11, `BONE`),
+  `flame_sword` (меч, как у топора, ось x 31), `flame_coin` (`coin_16` с центром x 31.5); `flames` — два малых огонька
+  (x 15.5 и 31.5); `bomb` — авиабомба (как ядерная, по просьбе пользователя вместо круглой «игровой» с фитилём) падает носом
+  вниз посередине: корпус `hull` — овал с конусом к хвосту (`BOMB`, военный оливковый, блик), жёлтая полоса `HAZARD`,
+  оперение `fins` — два стабилизатора, ребро и рамка поверху (`FINS`, светлая сталь — тёмная сливалась с полем), по бокам полосы падения. Маски
+  бомбы нельзя звать `body` — это маска щита, иначе пропадает контур. Файлы `crest_<flame_pawn|flames|flame_skull|flame_sword|flame_coin|
+  bomb>.png`, рядом — `preview_crest_fires.png`.
+  Чёрно-фиолетовый огонёк (просьба пользователя: под цвет теневых фигур): `crest("dark_flame")` → `crest_dark_flame.png` —
+  те же `FLAME_LAYERS`, `draw_flame` с цветами `DARK_FIRE` (снаружи внутрь: фиолетовая кромка, тёмно-фиолетовый, почти
+  чёрный, чёрное нутро — как аура `breach_darkfire.py`), кончики `DARK_TIP`, отсвет `DARK_GLOW`, искры `DARK_SPARK`. С ним
+  ещё шесть (просьба пользователя): малый тёмный огонёк слева (`small_flame(16, 27)` с `DARK_FIRE`) и справа —
+  `dark_rook` (золотая ладья `ROOK` по пикселям 11×13), `dark_skull` (череп `SKULL`), `dark_portal` (овальный портал
+  rx 6.2, ry 9.2 с центром x 31.5: кайма `DARK_FIRE`, нутро `VOID`, закрученные струи `cos(2·угол + 7.5·r)`, светлая
+  кромка сверху-слева, искра в глубине), `dark_coin` (`coin_16`), `dark_eye` (демонический глаз: линза-миндаль по формуле
+  13×8, светящийся край века, тёмное белко, радужка, зрачок-щель `VOID`, блик, три шипа над веком; пробовали глаз по
+  пикселям — пользователю первый вариант понравился больше, возвращён); `dark_flames` — два тёмных
+  огонька (x 15.5 и 31.5). Файлы `crest_dark_<rook|skull|flames|portal|coin|eye>.png`, рядом — `preview_crest_darks.png`.
+  Воздушный смерч (2026-10-22, просьба пользователя): `crest("wind")` → `crest_wind.png` — посередине воронка из 13 витков
+  (`tornado_strokes`: дуги эллипсов, сверху широкие, к низу уже и с изгибом, каждый виток повёрнут; голова струи белая,
+  хвост голубой, задняя половина витка темнее — палитра `AIR`, как у вихря воздушных фигур), тёмная кайма, у основания
+  облачко пыли из пяти клубов (`DUST`); превью `preview_crest_wind.png`. С ним ещё четыре (просьба
+  пользователя): помощник `draw_tornado(mid, top, bottom, width, n, base_y, taper)` (`taper` < 1 — ровный конус; малый
+  смерч с чашей сверху был похож на бокал), малый смерч слева (x 15.5, ширина 5.2, 12 витков, `taper` 0.8) и справа —
+  `wind_coin` (`coin_16`), `wind_knight` (золотой конь `KNIGHT` по пикселям 12×15), `wind_sword` (меч, как у огонька);
+  `winds` — два малых смерча (x 15 и 32). Файлы `crest_<winds|wind_coin|wind_knight|wind_sword>.png`, рядом —
+  `preview_crest_winds.png`.
+  Молнии (там же, просьба пользователя): `bolt_mask(k, ox, oy)` — молния `BOLT` в масштабе и сдвиге; слева малая (как в
+  `both`: k 0.72, сдвиг −0.31, −0.07) и справа — `bolt_bishop` (золотой слон `BISHOP` по пикселям 9×15), `bolt_coin`
+  (`coin_16`), `bolt_plus` (толстый плюс `PLUS` 11×11 голубой `CYAN`); `bolts` — две молнии (k 0.62, сдвиги −0.365 и
+  0.315); `red_bolt` — большая молния первого герба палитрой `RED`. Файлы `crest_<bolt_bishop|bolt_coin|bolt_plus|bolts|
+  red_bolt>.png`, рядом — `preview_crest_bolts.png`. `bolt_one` — малая молния и цифра 1 (`ONE` по пикселям 7×13,
+  светлая сталь `STEEL`), `crest_bolt_one.png`. Пары фигур (просьба пользователя): две золотые одинаковые фигуры
+  симметрично середине щита (`pairs`: сетка и левый/правый край) — `pawns2`, `bishops2`, `rooks2` (ладья `ROOK`),
+  `queens2` (ферзь `QUEEN`), `knights2` (кони `KNIGHT` мордами друг к другу — левый отражён); `reroll_coin` — знак
+  обновления `reroll_arrow` (кольцо r 5.4 с разрывом справа сверху и наконечником, голубой `CYAN`) слева и `coin_16`
+  справа. Файлы `crest_<pawns2|bishops2|knights2|rooks2|queens2|reroll_coin>.png`, рядом — `preview_crest_pairs.png`.
+  Магическая шляпа (2026-10-23, просьба пользователя): `crest("wizard_hat")` → `crest_wizard_hat.png` — посередине синяя
+  (`HAT`, как у белых магов) шляпа `wizard_hat`: ровный конус, ось гнётся только у кончика (`4.8·t^4.5`; при раннем изгибе
+  край выходил отвесным — «парус»), поля — эллипс, тень полей на тулье, золотая лента `GOLD`, две звёздочки-крестика и две
+  точки на тулье, три искорки вокруг (`STARLIGHT`); превью `preview_crest_wizard_hat.png`. С ней ещё (просьба
+  пользователя): `wizard_hat(x, y, cx, by, k)` — шляпа с серединой полей и масштабом, `draw_hat` (знаки, тень полей,
+  звёздочка); малая шляпа слева (x 16, поля на y 29.5, k 0.62) и справа — `hat_coin` (`coin_16`), `hat_bishop` (слон
+  `BISHOP`), `hat_plus` (плюс `PLUS`, `CYAN`), `hat_meteor` (малый метеорит); `hats` — две шляпы (x 15 и 32, k 0.6);
+  `meteor` — метеорит посередине (`draw_meteor(cx, cy, r, length)`: бугристый камень `ROCK` как в игре, кратеры со светлой
+  кромкой, спереди — вниз-влево — раскалённая кромка, вокруг ореол, хвост пламени вверх-вправо слоями `FIRE`, искры).
+  Файлы `crest_<hat_coin|hats|hat_bishop|hat_meteor|hat_plus|meteor>.png`, рядом — `preview_crest_hats.png`.
+  Золотые короли (2026-10-23, просьба пользователя): `gold_king` — большой король `KING_BIG` по пикселям 13×20 посередине
+  (корона с тремя зубцами — круглая была похожа на пешку, — крест, рубины `RUBY` в обруче), малый `KING_SMALL` 9×16 слева
+  (x 11) и справа — `king_coin` (`coin_16`), `king_queen` (малый ферзь `QUEEN_SMALL` 9×14 — ниже короля, основания на одной линии; обычный
+  `QUEEN` был больше короля), `king_skull` (череп `SKULL`); `kings2` — два
+  малых короля (x 11 и 27); `piggy` — розовая свинка-копилка мордой влево (`PIG`: пухлое тело, голова, ухо с тёмной серединкой,
+  пятачок — светлый диск с обводкой и двумя ноздрями, хвостик-завиток, глаз, прорезь на спине; ножки `PIG_LEG` — только две,
+  короткие, толстые, тоном темнее, с копытцами: четыре тонких под брюхом походили на вымя), сверху падает золотая монетка. Файлы `crest_<gold_king|
+  king_coin|kings2|king_queen|king_skull|piggy>.png`, рядом — `preview_crest_kings.png`.
+  Топор с другими силами (2026-10-23, просьба пользователя): топор слева, как в `axe_sword` (ось x 20), справа —
+  `axe_flame` (малый огонёк x 31.5), `axe_snow` (снежинка x 30.5), `axe_bolt` (малая молния, сдвиг 0.29), `axe_hat`
+  (малая шляпа x 31), `axe_dark` (малый чёрно-фиолетовый огонёк), `axe_wind` (малый смерч x 31.5), `axe_king` (малый
+  король x 27). Файлы `crest_axe_<flame|snow|bolt|hat|dark|wind|king>.png`, рядом — `preview_crest_axe_mix.png`.
+  Встроены с 0.96 (открывают варваров-объединённых).
+  Золотой король с другими силами (там же): малый король `KING_SMALL` слева (x 11), справа те же малые знаки —
+  `king_flame`, `king_bolt`, `king_snow`, `king_wind`, `king_dark`, `king_hat`; король с варваром — уже есть `axe_king`.
+  Файлы `crest_king_<flame|bolt|snow|wind|dark|hat>.png`, рядом — `preview_crest_king_mix.png`. Встроены с 0.97
+  (открывают золотые объединённые фигуры).
+  Шляпа мага с другими силами (там же): малая шляпа слева (`draw_hat(16, 29.5, 0.62)`), справа — `hat_flame`, `hat_snow`,
+  `hat_bolt`, `hat_wind`, `hat_dark`; шляпа с топором и с королём — уже есть `axe_hat`, `king_hat`. Файлы
+  `crest_hat_<flame|snow|bolt|wind|dark>.png`, рядом — `preview_crest_hat_mix.png`. Встроены с 0.98 (открывают
+  магов-объединённых).
+  Огонёк с другими силами (там же): малый огонёк слева (`small_flame(16, 27)`), справа — `flame_snow`, `flame_bolt`,
+  `flame_wind`, `flame_dark`; огонёк с топором, королём, шляпой — уже есть `axe_flame`, `king_flame`, `hat_flame`. Файлы
+  `crest_flame_<snow|bolt|wind|dark>.png`, рядом — `preview_crest_flame_mix.png`. `flame_<bolt|wind|dark>` встроены
+  с 0.101 (огненные объединённые).
+  Снежинка с другими силами (там же): снежинка слева (центр (16.5, 22.5)), справа — `snow_bolt` (зеркально к `both`, где
+  молния слева), `snow_wind`, `snow_dark`; снежинка с огоньком, топором, королём, шляпой — уже есть. Файлы
+  `crest_snow_<bolt|wind|dark>.png`, рядом — `preview_crest_snow_mix.png`. Встроены с 0.99 (вместе с `flame_snow`
+  открывают ледяных-объединённых).
+  Молния с другими силами (2026-10-23, просьба пользователя): малая молния слева (`bolt_mask(0.72, -0.31, -0.07)`, как
+  в `both`), справа — `bolt_wind` (малый смерч), `bolt_dark` (малый чёрно-фиолетовый огонёк); молния с огоньком,
+  снежинкой, королём, топором, шляпой — уже есть. Файлы `crest_bolt_<wind|dark>.png`, рядом —
+  `preview_crest_bolt_mix.png`. Встроены с 0.102 (электрические объединённые). Ветер и тень (там же): малый смерч
+  слева (как у `wind_coin`), справа — малый чёрно-фиолетовый огонёк — `crest_wind_dark.png`, превью
+  `preview_crest_wind_dark.png`; теперь гербы есть у всех пар сил. Встроен с 0.103.
+- `tools/breach_poison.py` (арт-проект, 2026-10-21, просьба пользователя: ядовитые фигуры — частично облиты зелёной
+  жидкостью, капают в лужу под собой, при шаге вперёд оставляют пропадающий след) — спрайты: 3D-фигуры `breach_art.py` с
+  материалом `SLIME` (палитра `SLIME_RAMP`, у сторон корпус и огни прежние): шапка жидкости на макушке (`COAT` = 0.2 высоты,
+  кромка по шуму), потёки вниз (`drips`: полуэллипс по азимуту, 6 к зрителю разной длины), на концах длинных — капли-шарики,
+  на уступах — редкие лужицы; самые светлые пиксели — блики `GLINT`. `assets/breach/pieces/poison/<код>.png` и `_shadow.png`
+  (как обычные: 64×84, опора 32,66). Анимация — замена спрайта на холсте 120×120, опора (60, 92), как у `electric_*`,
+  60 мс: `assets/breach/effects/poison_<код>.png` (все 12), 40 кадров — вступление [0, 8) (лужа растекается), повтор
+  [8, 40): лужа под фигурой (`blob`: неровный эллипс 4:3, `PUDDLE_RX` = 17, в ромбе клетки, с брызгами рядом, кромка
+  колышется, блики мерцают), с концов потёков на теле (`drop_sources`, до трёх) набухают и падают капли шириной 2 пикселя
+  (с тёмной обводкой), всплеск и круги в луже, по потёку сбегает блик, раз за повтор лопается пузырь. След шага —
+  `poison_trail_<ne|sw|nw|se>.png` (ne — к восьмой горизонтали без переворота доски, сдвиг клетки на экране (±28, ±21)):
+  30 кадров 96×80, середина между центрами клеток — (48, 40); рисовать до фигур. Форма — капля (по рисунку пользователя,
+  2026-10-21): голова `TRAIL_HEAD` = 14 там, куда фигура встала (под её лужей), хвост `TRAIL_HEAD` · t^`TAIL_POW` (1.4)
+  сужается к исходной клетке, остриё — за её центром на `TAIL_OVER` = 0.25 шага. Кадры [0, 4) — скольжение (SLIDE_TIME
+  0,2 с), капля вытягивается за фигурой; [4, 30) — хвост втягивается от острия к голове, след темнеет, распадается на
+  пятна, поднимается зелёный пар. Лужа самой фигуры едет вместе с ней (она в кадрах анимации). Превью —
+  `pieces/preview_poison_pieces.png`, `effects/preview_poison.gif` (все фигуры), `effects/preview_poison_step.gif` (волна
+  ядовитых шагает вперёд), `effects/preview_poison_trail.png`, `effects/preview_poison_frames.png`. Не встроено.
+- `tools/breach_poison.py` (арт-проект) — ядовитые фигуры (облиты зелёной жидкостью, лужа, капли,
+  след шага); встроено с 0.79 — см. выше.
+- `tools/breach_barbarian.py` (арт-проект, 2026-10-21, просьба пользователя: «фигуры варваров с рогатым шлемом») — те же
+  3D-фигуры `breach_art.py`, корпус и огоньки в цветах сторон; голова под шлемом тёмного железа (`HELM`) с бронзовым ободом
+  (`BRONZE`) и заклёпками (`HELMETS`: высота купола, обод, центр и радиус головы), по бокам — рога-кость цепочкой шаров
+  наружу и вверх, к концу тоньше и темнее (`horn`, `HORNS`, `HORN`/`TIP`); отделка корпуса и грива коня — мех (`FUR`,
+  клоки `FUR_DARK` по шуму), основание — как было. Ферзь — бронзовые шипы вместо шаров короны, верхний камень светится;
+  король — крест над шлемом; ладья — железные зубцы, рога по бокам башни; конь — налобник с бронзовой кромкой, рога у ушей
+  назад и вверх. Спрайты как обычные (64×84, опора 32,66): `assets/breach/pieces/barbarian/<код>.png` и `_shadow.png`;
+  превью `pieces/preview_barbarian_pieces.png` (обычные / варвары) и `preview_barbarian_board.png`. Встроено с 0.80 (варвары rogue-like).
+- `tools/breach_barbarian_combo.py` (арт-проект, 2026-10-23, просьба пользователя: «объединённый спрайт и анимацию
+  варвара со всеми остальными особыми фигурами») — основа — варвар `breach_barbarian.py`. Анимации — те же генераторы
+  особых фигур на спрайте варвара: `from_barbarian` подменяет `Image.open` (путь `pieces/<код>.png` → `pieces/barbarian/`),
+  генераторы не тронуты; полосы `effects/barbarian/<lava_crack|electric_hold|wind|dark_fire|shadowstep_out|shadowstep_in>_
+  <код>.png` (все 12) — разметка кадров и опоры как у обычных (`breach_lava`, `breach_arcs` без концовки — `LOOP_END`,
+  `breach_wind`, `breach_darkfire`, `breach_shadowstep`). Спрайты — объёмные заново: `pieces/barbarian_gold/` (корпус и
+  шлем — золото варианта `gold` из `breach_gilded`, у чёрных красное; обод и заклёпки — эмаль; рога — кость; мех) и
+  `pieces/barbarian_ice/` (`iced_barbarian`: части через `ip.iced`, сосульки и кристаллы как у ледяных, шлем — заиндевелое
+  железо `FROST_IRON`; лёд и иней — материалы 11 и 12: `ip.ICE`/`ip.RIME` подменяются в `main`, иначе спорят со шлемом и
+  ободом варвара — 5 и 6). Маг с варварскими рогами — отдельный набор `breach_wizard_horns.py`. Превью
+  `pieces/preview_barbarian_combo.png` (ряды: варвар, золотой, ледяной, кадр огненного, электрического, воздушного,
+  теневого) и `effects/preview_barbarian_combo.gif`. Встроено с 0.96 (объединённые фигуры).
+- `tools/breach_gold_combo.py` (арт-проект, 2026-10-23, просьба пользователя: золотые фигуры со всеми анимациями и
+  спрайтами особых фигур — как `breach_barbarian_combo.py`) — основа — золотые фигуры игры (`breach_gilded`, вариант
+  `gold`, `pieces/gold/`). Анимации — те же генераторы на золотом спрайте (`from_gold` подменяет `Image.open`: `pieces/
+  <код>.png` → `pieces/gold/`): `effects/gold/<lava_crack|electric_hold|wind|dark_fire|shadowstep_out|shadowstep_in>_<код>.png`
+  (все 12, разметка как у обычных). Спрайты — объёмные заново: `pieces/gold_ice/` (`iced_gold`: украшенная золотая фигура
+  через `ip.iced`, сосульки и кристаллы как у ледяных; лёд и иней — материалы 11 и 12, у золотых 5–7 — узор, камни,
+  жемчуг) и `pieces/gold_wizard/` (маг `breach_wizard.wizard` с золотым корпусом и эмалью, шляпа — в цвете стороны);
+  белый блеск на самом светлом золоте (`shine`). Золотой варвар — уже есть, `pieces/barbarian_gold/`. Превью
+  `pieces/preview_gold_combo.png` (ряды: золотые, ледяные, варвары, маги, кадр огненного, электрического, воздушного,
+  теневого) и `effects/preview_gold_combo.gif`. Встроено с 0.97 (золотые объединённые фигуры).
+- `tools/breach_wizard_combo.py` (арт-проект, 2026-10-23, просьба пользователя: маги со всеми анимациями «по такому же
+  принципу», что варвары и золотые) — основа — маги `pieces/wizard/`. Анимации — те же генераторы на спрайте мага
+  (`from_wizard` подменяет `Image.open`): `effects/wizard/<lava_crack|electric_hold|wind|dark_fire|shadowstep_out|
+  shadowstep_in>_<код>.png` (все 12, разметка как у обычных). Спрайт — `pieces/wizard_ice/` (`iced_wizard`: маг через
+  `ip.iced`, корпус иссиня-голубой, сосульки с полей шляпы и из-под поясов, у ферзя и короля верхний пояс под шляпой —
+  без сосулек; кристаллы у основания; шляпа в цвете стороны; лёд и иней — материалы 11 и 12). Золотой маг —
+  `pieces/gold_wizard/`, маг с рогами — `pieces/wizard_horns/`. Превью `pieces/preview_wizard_combo.png` (ряды: маги,
+  ледяные, золотые, с рогами, кадр огненного, электрического, воздушного, теневого) и `effects/preview_wizard_combo.gif`.
+  Встроено с 0.98 (маги-объединённые).
+- `tools/breach_ice_combo.py` (арт-проект, 2026-10-23, просьба пользователя: ледяные фигуры со всеми анимациями — как
+  у варваров, золотых и магов) — основа — ледяные фигуры игры `pieces/ice/`. Анимации — те же генераторы на ледяном
+  спрайте (`from_ice` подменяет `Image.open`): `effects/ice/<lava_crack|electric_hold|wind|dark_fire|shadowstep_out|
+  shadowstep_in>_<код>.png` (все 12, разметка как у обычных). Ледяные спрайты с другими силами уже есть: `gold_ice`,
+  `barbarian_ice`, `wizard_ice`. Превью `pieces/preview_ice_combo.png` (ряды: ледяные, золотые, варвары, маги, кадр
+  огненного, электрического, воздушного, теневого) и `effects/preview_ice_combo.gif`. Встроено с 0.99.
+- `tools/breach_fire_combo.py` (арт-проект, 2026-10-23, просьба пользователя: огненные фигуры со всеми анимациями;
+  единственное изменение — часть струй вихря огненно-оранжевая) — основа — огненная фигура в ожидании взрыва: тело —
+  кадры трещин `lava_crack` 13–16 (`HOLD`, как `LAVA_HOLD` в игре). У генераторов сил для этого необязательный
+  `bodies(f)` — своё тело фигуры в кадре f на холсте 120×120 (`arcs.render`, `wind.render`, `dark.render`,
+  `step.render` передаёт в ауру): аура строится по обычному силуэту, тело — кадр трещин `13 + f % 4` (повторы сил
+  кратны 4 — шва нет), искры лавы за силуэтом тоже рисуются; без `bodies` вывод прежний (проверено побайтно). У вихря
+  ещё `hot` — палитра второй спирали (`arc(..., pal=…)`): огненные струи `k` = 0 (и π/2 у земли), по клетке —
+  половина колец; `HOT` — `#ffe08a`, `#ff9a2e`, `#f0641e`, `#a8260c`, подводка `#3d0a04` (янтарные `FIRE[3]`
+  сливались с трещинами). Полосы `effects/fire/<electric_hold|wind|dark_fire|shadowstep_out|shadowstep_in>_<код>.png`
+  (все 12, разметка как у обычных); набухание и взрыв — обычная `lava_crack`. Огонь на других основах уже есть —
+  `effects/<ice|gold|barbarian|wizard>/lava_crack_*`. Превью `pieces/preview_fire_combo.png` (ряды: огненные, огненные
+  ледяные, золотые, варвары, маги, кадр электрического, воздушного, теневого) и `effects/preview_fire_combo.gif`.
+  Встроено с 0.101.
+- `tools/breach_spark_combo.py` (арт-проект, 2026-10-23, просьба пользователя: электрические фигуры со всеми
+  анимациями; у электрической теневой золотую ауру заменить фиолетовой) — основа — `electric_hold`. У `arcs.render`
+  для этого ещё `length` (столько кадров без концовки: после `LOOP_END` повтор продолжается, первые 24 кадра — как у
+  `electric_hold`) и `under(f)` — свой слой вместо золотой ауры (контур фигуры тогда золотом не подсвечивается); что
+  `bodies` выносит за силуэт, теперь накладывается по альфе (искры лавы непрозрачны — огненные полосы не изменились,
+  проверено). Воздушная — `arcs.render(length=40, bodies=кадры wind.render)`: золотая аура позади, вихрь, передние
+  молнии поверх; теневая — `under` — тёмная аура `dark.render` без фигуры, `bodies` — её фигура, голубые молнии те же;
+  теневой шаг — `step.render(..., aura=эти кадры)` (молнии гаснут с аурой при втягивании, при появлении —
+  вступление электричества со вспышкой). Полосы `effects/spark/<wind|dark_fire|shadowstep_out|shadowstep_in>_<код>.png`
+  (все 12, по 40 кадров, разметка как у `wind`/`dark_fire`, шаг — как у обычного). Электричество на других основах
+  уже есть — `effects/<ice|gold|barbarian|wizard|fire>/electric_hold_*`. Превью `pieces/preview_spark_combo.png` (ряды:
+  электрические, ледяные, золотые, варвары, маги, огненные, воздушные, теневые) и `effects/preview_spark_combo.gif`.
+  Встроено с 0.102.
+- `tools/breach_wind_combo.py` (арт-проект, 2026-10-23, просьба пользователя: воздушные фигуры с теневыми;
+  единственное изменение — часть струй вихря фиолетовая) — `wind.render(code, bodies=кадры dark.render, hot=SHADE)`:
+  задние струи, тёмная аура (что `bodies` выносит за силуэт, у `wind.render` теперь ложится по альфе — огненные полосы
+  не изменились, проверено), фигура, дымка, передние струи; вторая спираль — `SHADE` (`#e2c8ff`, `#b583ff`, `#8644f2`,
+  `#5a2aa8`, подводка `#1e0f33` — тона бликов и контура тёмной ауры). Теневой шаг — `step.render(..., aura=эти
+  кадры)`: вихрь втягивается с аурой и при появлении набирается заново. Полосы
+  `effects/wind/<dark_fire|shadowstep_out|shadowstep_in>_<код>.png` (все 12, 40 кадров, разметка как у
+  `dark_fire`/`wind`). Воздух на других основах уже есть — `effects/<ice|gold|barbarian|wizard|fire|spark>/wind_*`.
+  Превью `pieces/preview_wind_combo.png` (ряды: воздушные, ледяные, золотые, варвары, маги, огненные, электрические,
+  теневые) и `effects/preview_wind_combo.gif`. Встроено с 0.103.
+- `tools/breach_wizard.py` (арт-проект, 2026-10-21, просьба пользователя: «фигуры с шляпой мага») — те же 3D-фигуры
+  `breach_art.py` в цветах сторон, макушка срезана (`HATS`: срез, поля — высота и радиус, тулья — радиус и высота), сверху
+  остроконечная шляпа: поля — скруглённый диск (`disc`), тулья — шары вдоль изогнутой оси, к концу тоньше, кончик заломлен
+  влево по экрану и чуть назад (`crown`, `LEAN`, изгиб 0.5 высоты), у основания золотая лента (`GOLD`), на тулье золотые
+  звёздочки (`STAR`, `stars`). Шляпа белых синяя, чёрных багровая (`HAT_COLORS`). Кончик: ферзь — светящийся камень (шары
+  короны убраны), король — золотой крестик (крест фигуры убран), слон — звезда; у коня шляпа на макушке. Спрайты как
+  обычные (64×84, опора 32,66): `assets/breach/pieces/wizard/<код>.png` и `_shadow.png`; превью
+  `pieces/preview_wizard_pieces.png` (обычные / маги) и `preview_wizard_board.png`. Встроено с 0.83.
+- `tools/breach_wizard_horns.py` (арт-проект, 2026-10-23, просьба пользователя: отдельный спрайт «шляпа мага с
+  варварскими рогами», не в анимациях `breach_barbarian_combo.py`) — фигуры-маги `breach_wizard.wizard` (шляпа, лента,
+  звёзды, корпус без изменений), из боков тульи над полями (`HATS`: высота полей + 3.6; у коня — над шляпой на макушке)
+  растут рога варвара `bb.horn` (`HORN_SHAPE` — наружу 1.05, вверх 1.3, толщина 0.34 радиуса; `HORN_SCALE` = 1.3 радиуса
+  тульи — меньше их прятали поля), материалы рогов — 13 и 14 (`HORN_M`, `TIP_M`: у мага 5–7 — шляпа, лента, звёзды). По
+  ширине до 4 пикселей за обычный спрайт (ладья). Спрайты как обычные: `assets/breach/pieces/wizard_horns/<код>.png` и
+  `_shadow.png`; превью `pieces/preview_wizard_horns.png` (маги / маги с рогами) и `preview_wizard_horns_board.png`.
+  Встроено с 0.96 (варвары-маги).
+- `tools/breach_armor.py` (арт-проект, 2026-10-21, просьба пользователя: фигуры в латах; два варианта отвергнуты —
+  пластины и кольчуга рисунком на теле («латы незаметны») и объёмная броня «как у космодесантников» (наплечники-купола,
+  нагрудник) — нужны просто латы, заметнее первого варианта) — те же 3D-фигуры `breach_art.py`: корпус и шлем — сталь
+  `PLATE` (у белых светлая, у чёрных воронёная; `steel`), отделка — `BRASS` (у чёрных медь); от основания до шеи
+  (`LAMES`) — объёмные полосы лат (`lames`: тело, раздутое от `FLARE` = 0.1 у верхнего края до 2.0 у нижнего, высота
+  `LAME` = 5.2 — ниже похоже на пружину; нижняя кромка нависает над следующей и даёт тень, по ней латунная кайма `EDGE`);
+  ступенчатые наплечники (`spaulder`: купол и две полосы ниже, заклёпка; `SPAULDERS`, у пешки, слона, ферзя, короля);
+  основание и огоньки — как у сторон. Ферзь — латунные шары короны, верхний камень светится; король — латунный крест с
+  камнем; конь — латы только на шее (морда цельная), грива — латунь. Спрайты как обычные (64×84, опора 32,66):
+  `assets/breach/pieces/armor/<код>.png` и `_shadow.png`; превью `pieces/preview_armor_pieces.png` (обычные / в латах) и
+  `preview_armor_board.png`. Встроено с 0.89 (бронированные фигуры волн).
+- `tools/breach_shield.py` (арт-проект, 2026-10-21, просьба пользователя: фигуры с большим треугольным, немного
+  выпуклым щитом в правой руке, фигура смотрит на противника — к середине доски, щит перед ней; соседей не загораживать) —
+  те же 3D-фигуры `breach_art.py` + отдельная объёмная деталь `shield`: треугольник (`heater`: прямой верх, бока почти
+  прямые до 0.42 высоты, дальше дугой к острию), выпуклое лицо (`BULGE` = 1.1, толщина `THICK`), развёрнут поперёк корпуса
+  (`n = взгляд − 0.45 · правая рука`: плоскостью к зрителю, а не ребром), отклонён назад. Взгляд — `FACING`: белые вверх по
+  доске (от зрителя), чёрные вниз (к зрителю); правая рука — `cross(взгляд, Y)`; `SHIELDS`: высота центра, вынос вперёд и
+  вправо, высота, ширина. Белые: щит справа, к зрителю тыльной стороной (доски `WOOD`/`WOOD_DARK`, кожаные ремни
+  `LEATHER`, кайма), вынесен правее (иначе закрыт корпусом); чёрные: щит слева впереди, лицом к зрителю (поле `FIELD`
+  багровое, у белых синее, кайма `BRASS`/медь, светящийся ромб `GLOW`). По ширине спрайт выходит за обычный не больше чем
+  на 2 пикселя у белых и 4 у чёрных. При перевёрнутой доске стороны смотрели бы не туда. Спрайты как обычные (64×84,
+  опора 32,66): `assets/breach/pieces/shield/<код>.png` и `_shadow.png`; превью `pieces/preview_shield_pieces.png` и
+  `preview_shield_board.png`. Не встроено.
+- `tools/breach_vampire.py` (арт-проект, 2026-10-22, просьба пользователя: «несколько вариантов внешнего вида фигур в
+  вампирском стиле»; выбран объединённый «Дракула» — см. ниже) — те же 3D-фигуры `breach_art.py`, у всех огоньки кроваво-
+  красные (`BLOOD_GLOW`). Варианты: `count` «Граф» — стоячий воротник плаща за головой (`collar`, `COLLARS`: оболочка
+  сзади, к верху шире, верх зубцами; снаружи `CAPE` чёрный, изнутри `LINING` алый), отделка `CRIMSON`, брошь `GLOW` на
+  груди (`BROOCH`), у коня воротника нет (плащ на шее выходил бруском); `blood` «Кровь» — бледный корпус `PALE` (белые —
+  кость, чёрные — чёрно-винные), облиты кровью — форма `breach_poison.poisoned`, жидкость `BLOOD`; `bat` «Нетопырь» —
+  перепончатые крылья по бокам головы (`wing`: силуэт `WING` с фестонами, пальцы `FINGERS` и верхняя кромка — `RIB`,
+  перепонка `MEMBRANE`, обращены к зрителю, кончик заведён назад; `HEADS`), выходят за обычный спрайт до 6 пикселей в
+  каждую сторону. Спрайты как обычные: `assets/breach/pieces/vampire_<count|blood|bat>/<код>.png` и `_shadow.png`;
+  превью `pieces/preview_vampire_pieces.png` (ряды: обычные, «Граф», «Кровь», «Нетопырь»). Выбор пользователя —
+  `dracula` «Дракула» («Граф» и «Кровь» вместе, крови меньше): воротник, багровая отделка и брошь «Графа», корпус
+  `DRACULA_SKIN` (белые — кость, чёрные — почти чёрный с винным отливом: чёрно-винный «Крови» сливался с кровью), кровь
+  `bloody` — тонкая кайма `LITTLE_COAT` = 0.07 и четыре узких коротких потёка, без лужиц и капель. Спрайты
+  `pieces/vampire_dracula/<код>.png` и `_shadow.png`, превью `preview_vampire_dracula.png` (обычные / «Дракула») и
+  `preview_vampire_dracula_board.png`; `py tools/breach_vampire.py assets/breach/pieces dracula` — только он. «Дракула» встроен с 0.89 (вампиры волн).
+- `tools/breach_armor_vampire.py` (арт-проект, 2026-10-23, просьба пользователя: объединённая версия бронированных и
+  вампиров) — `armor.armour` (сталь `PLATE`, полосы лат, наплечники) + от «Дракулы» воротник `vp.collar`, брошь, огни
+  `vp.BLOOD_GLOW` и кровь `vp.bloody` (на исходных материалах корпуса до `armor.steel`, те же зерно и потёки, что у
+  «Дракулы»); латунь лат — багровый металл. Номера материалов генераторов совпадают — `recolor` переносит их: сталь 5,
+  багровое 13, плащ 14, подкладка 15, кровь 16. У коня воротника нет. Спрайты как обычные (64×84, опора 32,66):
+  `assets/breach/pieces/armor_vampire/<код>.png` и `_shadow.png`; превью `pieces/preview_armor_vampire.png` (ряды: в латах,
+  «Дракула», вместе) и `preview_armor_vampire_board.png`. Встроено с 0.106 (вампиры в броне).
+- `tools/breach_zombie.py` (арт-проект, 2026-10-23, просьба пользователя: «дизайн спрайта фигур в тематике зомби») — те же
+  3D-фигуры `breach_art.py`: кожа трупная (`SKIN`: белые — бледная серо-зелёная, чёрные — тёмная болотная), пятна гнили
+  `ROT` по `ip.noise3` (у белых синюшные, у чёрных тёмные синяки — светлая плесень на тёмном выглядела камуфляжем);
+  отделка — тряпьё `RAG` с лохмотьями вниз от кромок поясов (`RAGS`, полосы по 11° азимута разной длины) и дырами до кожи,
+  короны — позеленевшая бронза `RUST` (`CROWNS`); вырванные куски (`CHUNKS` → `chunk_spheres`/`bitten`: шар вычтен из
+  тела, `wounds` красит срез — мясо `FLESH` с рёбрами `BONE`, на голове — кость, у ладьи обломанные зубцы — гниль); шрамы
+  со стежками (`SCARS`, `scar_mask`, `SEAM`); основание в земле `EARTH` с мхом `MOSS`, ступня — камень цвета отделки
+  (рук, тянущихся к противнику, по просьбе пользователя нет — спрайт по ширине как обычный); огни `GLOWS` — у белых
+  гнилостно-зелёные, у чёрных янтарные. Пешка — светящийся глаз, пустая глазница и рот с зубами (`pawn_face`), ферзь —
+  костяные шишки короны (двух нет), король — покосившийся костяной крест (`crooked_cross`), конь — рваное ухо, вырванный
+  бок шеи с рёбрами, зубы, свалявшаяся грива `HAIR` с вырванными клоками (`zombie_knight`). Материалы 5–12. Спрайты как
+  обычные (64×84, опора 32,66): `assets/breach/pieces/zombie/<код>.png` и `_shadow.png`; превью
+  `pieces/preview_zombie_pieces.png` (обычные / зомби) и `preview_zombie_board.png`. Встроено с 0.105 (зомби волн).
+- `tools/breach_poison_zombie.py` (арт-проект, 2026-10-23, просьба пользователя: объединённая версия ядовитых и зомби) —
+  зомби `zb.zombie` целиком, сверху облит ядовитой жидкостью, как ядовитые фигуры (`slimed` — логика `bp.slimy`
+  поверх материалов зомби: шапка `bp.COAT`, потёки и лужицы на уступах выше основания; потёки — `drips_of`, те же зерно и
+  длины, что у `bp.poisoned`; набухшие капли на концах длинных потёков; блики `bp.GLINT`). Заливает `WET` — кожу, гниль,
+  тряпьё, бронзу, гриву; огни, рот и глазница пешки, шрамы (`SEAM`), раны и земля — видны. Жидкость — материал 13
+  (`SLIME`, палитра `bp.SLIME_RAMP`), у зомби заняты 5–12. Спрайты как обычные (64×84, опора 32,66):
+  `assets/breach/pieces/poison_zombie/<код>.png` и `_shadow.png`; превью `pieces/preview_poison_zombie.png` (ряды:
+  ядовитые, зомби, вместе) и `preview_poison_zombie_board.png`. Встроено с 0.107 (ядовитые зомби).
 - `tools/breach_portal.py` — портал под фигурой для карты обмена (16 кадров 80×116,
   60 мс, центр верхней грани клетки — `CX, CY` = 40, 88) в `assets/breach/effects/`:
   `portal_vanish_*` и `portal_appear_*`, слои `_under` (вихрь, задняя половина кольца,

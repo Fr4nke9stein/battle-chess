@@ -213,14 +213,20 @@ pub fn version_line() -> String {
 /// короткая и длинная рокировка, 10 + `Kind` — выставление из запаса; превращение — 0 или
 /// 1 + `Kind`.
 pub fn encode_move(mv: Move) -> String {
-    let kind = match mv.kind {
+    let kind: u16 = match mv.kind {
         MoveKind::Quiet => 0,
         MoveKind::CastleShort => 1,
         MoveKind::CastleLong => 2,
-        MoveKind::Drop(k) => 10 + k as u8,
-        MoveKind::FireDrop(k) => 20 + k as u8,
-        MoveKind::SparkDrop(k) => 30 + k as u8,
-        MoveKind::WindDrop(k) => 40 + k as u8,
+        MoveKind::Drop(k) => 10 + k as u16,
+        MoveKind::FireDrop(k) => 20 + k as u16,
+        MoveKind::SparkDrop(k) => 30 + k as u16,
+        MoveKind::WindDrop(k) => 40 + k as u16,
+        MoveKind::GoldDrop(k) => 50 + k as u16,
+        MoveKind::ShadeDrop(k) => 60 + k as u16,
+        MoveKind::IceDrop(k) => 70 + k as u16,
+        MoveKind::BarbarianDrop(k) => 80 + k as u16,
+        MoveKind::WizardDrop(k) => 90 + k as u16,
+        MoveKind::ComboDrop(k, i) => 100 + u16::from(i) * 6 + k as u16,
     };
     let promotion = mv.promotion.map_or(0, |k| 1 + k as u8);
     format!("M {} {} {kind} {promotion}", mv.from, mv.to)
@@ -229,13 +235,23 @@ pub fn encode_move(mv: Move) -> String {
 /// Ход из строки `encode_move` — только если он есть среди законных `legal`.
 pub fn decode_move(line: &str, legal: &[Move]) -> Option<Move> {
     let mut parts = line.strip_prefix("M ")?.split_whitespace();
-    let mut number = || parts.next()?.parse::<u8>().ok();
+    // Код хода — до u16: объединённых фигур в запасе много.
+    let mut number = || parts.next()?.parse::<u16>().ok();
     let (from, to, kind, promotion) = (number()?, number()?, number()?, number()?);
-    let kind_of = |n: u8| Kind::ALL.into_iter().find(|&k| k as u8 == n);
+    let (from, to) = (u8::try_from(from).ok()?, u8::try_from(to).ok()?);
+    let kind_of = |n: u16| Kind::ALL.into_iter().find(|&k| k as u16 == n);
     let kind = match kind {
         0 => MoveKind::Quiet,
         1 => MoveKind::CastleShort,
         2 => MoveKind::CastleLong,
+        n @ 100.. => {
+            MoveKind::ComboDrop(kind_of((n - 100) % 6)?, u8::try_from((n - 100) / 6).ok()?)
+        }
+        n @ 90.. => MoveKind::WizardDrop(kind_of(n - 90)?),
+        n @ 80.. => MoveKind::BarbarianDrop(kind_of(n - 80)?),
+        n @ 70.. => MoveKind::IceDrop(kind_of(n - 70)?),
+        n @ 60.. => MoveKind::ShadeDrop(kind_of(n - 60)?),
+        n @ 50.. => MoveKind::GoldDrop(kind_of(n - 50)?),
         n @ 40.. => MoveKind::WindDrop(kind_of(n - 40)?),
         n @ 30.. => MoveKind::SparkDrop(kind_of(n - 30)?),
         n @ 20.. => MoveKind::FireDrop(kind_of(n - 20)?),

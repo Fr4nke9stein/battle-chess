@@ -55,10 +55,11 @@ GROUND_PASSES = 2  # сколько раз каждое кольцо прохо�
 GROUND_MAX = 26.0  # до какого радиуса расходятся (край верхней грани клетки)
 
 
-def arc(layer, cx, h, rx, theta, length, alpha, front, thick=False):
+def arc(layer, cx, h, rx, theta, length, alpha, front, thick=False, pal=AIR):
     """Струя: дуга изометрического эллипса (ry = rx / 2) с центром (cx, FAY − h); голова в
     theta, хвост тянется назад на length. front — передняя (True) или задняя половина;
-    thick — голова и середина в два пикселя (у основания вихрь плотнее)."""
+    thick — голова и середина в два пикселя (у основания вихрь плотнее); pal — пять тонов струи
+    (голова, середина, хвост, конец хвоста, подводка)."""
     if alpha <= 0.02 or rx < 2:
         return
     cy = FAY - h
@@ -74,23 +75,26 @@ def arc(layer, cx, h, rx, theta, length, alpha, front, thick=False):
             pts[(x, y)] = t
     for (x, y), t in pts.items():
         if t < 0.18:
-            col, a = AIR[0], 255
+            col, a = pal[0], 255
         elif t < 0.45:
-            col, a = AIR[1], 240
+            col, a = pal[1], 240
         elif t < 0.75:
-            col, a = AIR[2], 200
+            col, a = pal[2], 200
         else:
-            col, a = AIR[3], 130
+            col, a = pal[3], 130
         a = int(a * alpha)
         if y + 1 < FH and t < 0.6 and layer[y + 1, x, 3] < 100:  # подводка снизу
-            layer[y + 1, x] = (*AIR[4], int(150 * alpha))
+            layer[y + 1, x] = (*pal[4], int(150 * alpha))
         if thick and t < 0.5 and y - 1 >= 0 and layer[y - 1, x, 3] < a:
-            layer[y - 1, x] = (*AIR[1], int(a * 0.9))
+            layer[y - 1, x] = (*pal[1], int(a * 0.9))
         if layer[y, x, 3] <= a:
             layer[y, x] = (*col, a)
 
 
-def render(code):
+def render(code, bodies=None, hot=None):
+    """Кадры вихря. bodies(f) — своё тело фигуры в кадре f (холст FW×FH; вихрь облегает обычный
+    силуэт; что тело выносит за силуэт, ложится поверх задних струй по альфе), hot — палитра струй,
+    которыми закручена вторая спираль (у огненной и теневой фигуры)."""
     sprite = np.array(Image.open(os.path.join(art.ROOT, "assets", "breach", "pieces", f"{code}.png")).convert("RGBA"))
     canvas = np.zeros((FH, FW, 4), np.uint8)
     canvas[SY : SY + sprite.shape[0], SX : SX + sprite.shape[1]] = sprite
@@ -126,8 +130,9 @@ def render(code):
             r = r0 + (GROUND_MAX - r0) * u
             a = grow * min(1.0, u / 0.12) * (1 - u) ** 1.3
             for k in (0.0, math.pi):
+                pal = hot if hot is not None and k == 0.0 else AIR
                 for layer, is_front in ((back, False), (front, True)):
-                    arc(layer, FAX, -0.5, r, theta * 0.8 + 2.0 * i + k, 2.2 - 0.8 * u, a, is_front)
+                    arc(layer, FAX, -0.5, r, theta * 0.8 + 2.0 * i + k, 2.2 - 0.8 * u, a, is_front, pal=pal)
         for i in range(n_rings):
             h = (i * RING_STEP + climb) % span
             p = h / span  # 0 — у земли, 1 — верх столба
@@ -141,10 +146,20 @@ def render(code):
             dense = h < DENSE_H
             strength = fade * grow * (1 - THIN * p)
             for k in ((0.0, math.pi / 2, math.pi, 1.5 * math.pi) if dense else (0.0, math.pi)):  # струи по кругу
+                pal = hot if hot is not None and k in (0.0, math.pi / 2) else AIR
                 for layer, is_front in ((back, False), (front, True)):
-                    arc(layer, cx, hh, rx, ph + k, ln, strength, is_front, thick=dense)
+                    arc(layer, cx, hh, rx, ph + k, ln, strength, is_front, thick=dense, pal=pal)
         img = back.copy()
-        img[sil] = canvas[sil]
+        src = canvas if bodies is None else bodies(f)
+        img[sil] = src[sil]
+        loose = (src[..., 3] > 0) & ~sil  # искры лавы, тёмная аура
+        if loose.any():
+            sa = src[..., 3:4].astype(float) / 255
+            da = img[..., 3:4].astype(float) / 255
+            oa = sa + da * (1 - sa)
+            rgb = (src[..., :3] * sa + img[..., :3] * da * (1 - sa)) / np.maximum(oa, 1e-6)
+            img[loose, :3] = np.round(rgb[loose]).astype(np.uint8)
+            img[loose, 3] = np.round(oa[loose, 0] * 255).astype(np.uint8)
         # дымка столба: белёсая завеса по объёму вихря, к краям гуще
         yy, xx = np.mgrid[0:FH, 0:FW]
         mist = np.zeros((FH, FW))
