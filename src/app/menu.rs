@@ -1,5 +1,6 @@
-//! Меню при запуске: «Начать играть», «Выбрать колоду», «Коллекция карт», «Выйти» —
-//! тёмно-синие плашки с кромкой, как панели Into the Breach. Выбор колоды: пять стопок
+//! Меню при запуске: «Начать играть», «Мультиплеер», «Взятие», «Настройки», «Правила»,
+//! «Править баланс», «Выйти» — тёмно-синие плашки с кромкой, как панели Into the Breach.
+//! «Настройки» и «Правила» (с 0.114, вместо левой панели партии) — экраны с панелями egui. Выбор колоды: пять стопок
 //! рубашкой вверх разных цветов (полная колода белых с повёрнутым оттенком); выбранная
 //! поднята и обведена. Выбранная колода (Settings::deck) определяет состав карт обеих
 //! сторон в новой партии. Коллекция: все карты игры по 12 на странице, стрелки по бокам листают.
@@ -10,7 +11,7 @@ use eframe::egui::{
 };
 
 use super::table::{paint_card_text, paint_title};
-use super::{BattleChessApp, UV, paint_backdrop};
+use super::{BattleChessApp, UV, paint_backdrop, rules_section};
 use crate::assets::{CARD, CardPic, DECK_SKINS, Pointer, SHADOW_SHIFT};
 use crate::balance::{self, balance, plural};
 use crate::game::{CardKind, Color, collection};
@@ -43,6 +44,10 @@ pub enum Screen {
     Menu,
     /// Мультиплеер: адрес сервера, подключение, ожидание соперника.
     Lobby,
+    /// Настройки: звук, частота кадров, масштаб доски (с 0.114).
+    Settings,
+    /// Правила, характеристики фигур и сколько ударов нужно на фигуру (с 0.114).
+    Rules,
     Decks,
     Collection,
     Game,
@@ -51,17 +56,16 @@ pub enum Screen {
 /// Что нажали в меню.
 #[allow(dead_code)] // колоды и коллекция скрыты (0.40)
 enum Choice {
+    /// Новая rogue-like партия (с 0.108 — основной режим).
     Play,
-    /// Rogue-like режим: фигуры соперника приходят волнами.
-    Rogue,
     /// Экран мультиплеера, подключиться, отменить подключение.
     Multiplayer,
     Connect,
     Disconnect,
-    /// Компьютер с обычными или усиленными фигурами.
-    Boost,
     /// Взятие с перемещением или без.
     Advance,
+    Settings,
+    Rules,
     Decks,
     Collection,
     Balance,
@@ -117,6 +121,8 @@ impl BattleChessApp {
                 self.cursor_scale = physical as u32;
                 choice = match self.screen {
                     Screen::Lobby => self.lobby_screen(ui, painter, &field, pointer),
+                    Screen::Settings => self.settings_screen(ui, painter, &field, pointer),
+                    Screen::Rules => self.rules_screen(ui, painter, &field, pointer),
                     Screen::Decks => self.deck_screen(ctx, painter, &field, pointer, physical),
                     Screen::Collection => {
                         self.collection_screen(ctx, painter, &field, pointer, physical)
@@ -125,6 +131,13 @@ impl BattleChessApp {
                 }
                 .filter(|_| response.clicked());
             });
+        // Из настроек и правил Esc — назад в меню.
+        if matches!(self.screen, Screen::Settings | Screen::Rules)
+            && choice.is_none()
+            && ctx.input(|i| i.key_pressed(egui::Key::Escape))
+        {
+            choice = Some(Choice::Back);
+        }
         // Коллекцию листают и стрелками клавиатуры, Esc — назад в меню.
         if self.screen == Screen::Collection && choice.is_none() {
             choice = ctx.input(|i| {
@@ -166,11 +179,8 @@ impl BattleChessApp {
             }
         }
         match choice {
+            // С 0.108 rogue-like — основной режим: «Начать играть» начинает его.
             Some(Choice::Play) => {
-                self.new_game(self.draft);
-                self.screen = Screen::Game;
-            }
-            Some(Choice::Rogue) => {
                 self.new_rogue_game();
                 self.screen = Screen::Game;
             }
@@ -184,7 +194,11 @@ impl BattleChessApp {
                 self.net_status = "Подключение отменено".to_owned();
             }
             Some(Choice::Decks) => self.screen = Screen::Decks,
-            Some(Choice::Boost) => self.settings.boosted = !self.settings.boosted,
+            Some(Choice::Settings) => self.screen = Screen::Settings,
+            Some(Choice::Rules) => {
+                self.reload_balance();
+                self.screen = Screen::Rules;
+            }
             Some(Choice::Advance) => self.settings.advance = !self.settings.advance,
             Some(Choice::Balance) => {
                 if let Err(e) = crate::editor::open(ctx) {
@@ -300,6 +314,48 @@ impl BattleChessApp {
         picked
     }
 
+    /// Настройки (с 0.114 — здесь, а не в левой панели партии): громкость, частота кадров,
+    /// FPS, масштаб доски.
+    fn settings_screen(
+        &mut self,
+        ui: &mut egui::Ui,
+        painter: &Painter,
+        field: &Field,
+        pointer: Option<Pos2>,
+    ) -> Option<Choice> {
+        heading(painter, field, 40.0, "Настройки", 22.0);
+        let rect = field.rect(vec2(80.0, 58.0), vec2(200.0, 116.0));
+        panel(ui, painter, field, rect, "settings", |ui| {
+            self.settings_section(ui)
+        });
+        let back = vec2((FIELD.x - BUTTON.x) / 2.0, 186.0);
+        self.button(painter, field, back, "Назад", pointer)
+            .then_some(Choice::Back)
+    }
+
+    /// Правила rogue-like (с 0.114 — здесь, а не в левой панели партии): слева — список
+    /// правил, справа — характеристики фигур и сколько ударов нужно на целую фигуру.
+    fn rules_screen(
+        &mut self,
+        ui: &mut egui::Ui,
+        painter: &Painter,
+        field: &Field,
+        pointer: Option<Pos2>,
+    ) -> Option<Choice> {
+        heading(painter, field, 20.0, "Правила", 18.0);
+        let left = field.rect(vec2(12.0, 34.0), vec2(182.0, 166.0));
+        let right = field.rect(vec2(200.0, 34.0), vec2(148.0, 166.0));
+        panel(ui, painter, field, left, "rules", rules_section);
+        panel(ui, painter, field, right, "stats", |ui| {
+            self.stats_section(ui);
+            ui.add_space(12.0);
+            self.damage_section(ui);
+        });
+        let back = vec2((FIELD.x - BUTTON.x) / 2.0, 208.0);
+        self.button(painter, field, back, "Назад", pointer)
+            .then_some(Choice::Back)
+    }
+
     /// Заглавный экран: название, кнопки и предупреждения о `balance.ini`, если они есть.
     fn title_screen(
         &mut self,
@@ -315,17 +371,12 @@ impl BattleChessApp {
             FontId::proportional(6.0 * field.scale),
             theme::TEXT_DIM,
         );
-        let strength = if self.settings.boosted {
-            "Компьютер: усиленный"
-        } else {
-            "Компьютер: обычный"
-        };
         let buttons = [
             ("Начать играть", Choice::Play),
-            ("Rogue-like режим", Choice::Rogue),
             ("Мультиплеер", Choice::Multiplayer),
-            (strength, Choice::Boost),
             (advance_label(self.settings.advance), Choice::Advance),
+            ("Настройки", Choice::Settings),
+            ("Правила", Choice::Rules),
             ("Править баланс", Choice::Balance),
             ("Выйти", Choice::Quit),
         ];
@@ -676,6 +727,51 @@ impl BattleChessApp {
         }
         hovered
     }
+}
+
+/// Панель меню с содержимым egui: плашка в стиле кнопок (тень, тёмный контур, кромка), внутри
+/// — прокрутка, если содержимое не помещается.
+fn panel(
+    ui: &mut egui::Ui,
+    painter: &Painter,
+    field: &Field,
+    rect: Rect,
+    id: &str,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    let s = field.scale;
+    painter.rect_filled(
+        rect.translate(vec2(2.0, 3.0) * s),
+        CornerRadius::ZERO,
+        Color32::from_black_alpha(77),
+    );
+    painter.rect_filled(
+        rect,
+        CornerRadius::ZERO,
+        Color32::from_rgb(0x0d, 0x0f, 0x17),
+    );
+    let inner = rect.shrink(s);
+    painter.rect_filled(
+        inner,
+        CornerRadius::ZERO,
+        Color32::from_rgb(0x18, 0x1c, 0x29),
+    );
+    painter.rect_stroke(
+        inner,
+        CornerRadius::ZERO,
+        Stroke::new(s, Color32::from_rgb(0x49, 0x5c, 0x79)),
+        StrokeKind::Inside,
+    );
+    let content = inner.shrink(4.0 * s);
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content), |ui| {
+        egui::ScrollArea::vertical()
+            .id_salt(id)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                add_contents(ui);
+            });
+    });
 }
 
 /// Подпись переключателя «перемещение при взятии».

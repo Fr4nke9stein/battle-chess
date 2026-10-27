@@ -211,16 +211,14 @@ pub struct Piece {
     /// Прибавка к атаке и к полному здоровью («Северный воин»).
     pub bonus_attack: i16,
     pub bonus_hp: i16,
-    /// Пешка усиленного компьютера насыщена лавой: в конце хода своей стороны взорвётся
-    /// огненной волной по чужим фигурам вокруг.
-    pub lava: bool,
-    /// Слон усиленного компьютера насыщен электричеством: урон его удара расходится на чужие
-    /// фигуры по диагонали вокруг цели.
+    /// Электрическая фигура (rogue-like, из магазина): урон её удара расходится молнией на
+    /// чужие фигуры вокруг цели.
     pub spark: bool,
     /// Только что выставлена из запаса: в конце этого хода не бьёт.
     pub fresh: bool,
-    /// Огненная фигура (rogue-like, из магазина, с 0.63): как пешка с лавой у усиленного
-    /// компьютера взрывается в конце каждого своего хода, но огонь не уходит.
+    /// Огненная фигура (rogue-like, из магазина, с 0.63): в конце каждого своего хода
+    /// взрывается огненной волной по чужим фигурам вокруг (с 0.76 — если волна кого-то
+    /// заденет); огонь не уходит.
     pub fire: bool,
     /// Воздушная фигура (rogue-like, с 0.67): ходит дважды за один ход, тратя один.
     pub wind: bool,
@@ -254,11 +252,17 @@ pub struct Piece {
     pub barbarian: bool,
     /// Маг (rogue-like, с 0.83): в конце своего хода — метеорит по случайной чужой фигуре.
     pub wizard: bool,
+    /// Маг копит метеорит (с 0.108): сколько ещё своих концов хода он пропустит (0 — метеорит
+    /// в этот конец хода; после метеорита — `Rule::RogueWizardEvery` − 1).
+    pub rest: u8,
     /// Отравлена: через столько концов ходов своей стороны получит `Rule::RoguePoisonDamage`
     /// (0 — не отравлена; яд не копится).
     pub poison: u8,
     /// Сколько раз фигура уже возвращалась из запаса (не больше `MAX_REBIRTHS`).
     pub reborn: u8,
+    /// Фигура волны уровня N (rogue-like, с 0.122): здоровье × (`Rule::RogueLevelHpPercent` /
+    /// 100) в степени N − 1 (`Piece::scaled`).
+    pub tough: u8,
 }
 
 impl Piece {
@@ -274,7 +278,6 @@ impl Piece {
             frost_touch: false,
             bonus_attack: 0,
             bonus_hp: 0,
-            lava: false,
             spark: false,
             fresh: false,
             fire: false,
@@ -292,8 +295,10 @@ impl Piece {
             risen: false,
             barbarian: false,
             wizard: false,
+            rest: 0,
             poison: 0,
             reborn: 0,
+            tough: 0,
         }
     }
 
@@ -320,7 +325,7 @@ impl Piece {
 
     pub fn max_hp(self) -> i32 {
         if self.boss {
-            return balance().rule(Rule::RogueBossHp).max(1) * crate::balance::UNIT;
+            return self.scaled(balance().rule(Rule::RogueBossHp).max(1) * crate::balance::POINT);
         }
         let base = self.kind.stats().max_hp;
         let base = if self.champion {
@@ -328,18 +333,47 @@ impl Piece {
         } else {
             base
         };
-        base + self.bonus_hp as i32
+        self.scaled(base + self.bonus_hp as i32)
+    }
+
+    /// Здоровье `hp` фигуры волны своего уровня (`tough`): × `Rule::RogueLevelHpPercent` / 100 за
+    /// каждый уровень после первого; больше `i32::MAX` не бывает.
+    pub fn scaled(self, hp: i32) -> i32 {
+        if self.tough == 0 {
+            return hp;
+        }
+        let step = f64::from(balance().rule(Rule::RogueLevelHpPercent)) / 100.0;
+        (f64::from(hp) * step.powi(i32::from(self.tough)))
+            .round()
+            .min(f64::from(i32::MAX)) as i32
     }
 
     pub fn attack(self) -> i32 {
         if self.boss {
-            return balance().rule(Rule::RogueBossAttack).max(0) * crate::balance::UNIT;
+            return balance().rule(Rule::RogueBossAttack).max(0) * crate::balance::POINT;
         }
         let step = balance().param(Param::ChampionPercent);
         self.kind.stats().attack * (100 + step * self.boost as i32) / 100 + self.bonus_attack as i32
     }
 
     /// Есть ли у фигуры сила `power` (флаг).
+    /// Фигура с ещё одной силой `power` (карта силы, с 0.111).
+    pub fn with_power(self, power: Power) -> Piece {
+        let mut piece = self;
+        match power {
+            Power::Plain => {}
+            Power::Fire => piece.fire = true,
+            Power::Spark => piece.spark = true,
+            Power::Wind => piece.wind = true,
+            Power::Gold => piece.gold = true,
+            Power::Shade => piece.shade = true,
+            Power::Ice => piece.icy = true,
+            Power::Barbarian => piece.barbarian = true,
+            Power::Wizard => piece.wizard = true,
+        }
+        piece
+    }
+
     pub fn has_power(self, power: Power) -> bool {
         match power {
             Power::Plain => false,
@@ -490,7 +524,7 @@ pub enum MoveKind {
 }
 
 /// Сила фигуры rogue-like из магазина: обычная, огненная (с 0.63: `Piece::fire`) или
-/// электрическая (с 0.64: `Piece::spark`, как слоны усиленного компьютера до 0.41).
+/// электрическая (с 0.64: `Piece::spark`) и другие особые.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Power {
     Plain,
@@ -511,7 +545,163 @@ pub enum Power {
     Wizard,
 }
 
+/// Особые силы фигур — по одной карте силы на каждую (с 0.111).
+pub const SPECIAL_POWERS: [Power; 8] = [
+    Power::Fire,
+    Power::Spark,
+    Power::Wind,
+    Power::Gold,
+    Power::Shade,
+    Power::Ice,
+    Power::Barbarian,
+    Power::Wizard,
+];
+
+/// Карта rogue-like в руке (с 0.111 — карты сил, с 0.112 — ещё семь): из сундука карт, играется в
+/// свой ход.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Card {
+    /// Карта силы: своя фигура навсегда получает силу.
+    Power(Power),
+    /// Маска: превращается в последнюю сыгранную карту.
+    Mask,
+    /// Герб: случайный герб, которого ещё нет.
+    Crest,
+    /// Две монеты: золото удваивается.
+    Double,
+    /// Монета: золота — сколько стоит всё, что можно продать (запас и гербы).
+    Coin,
+    /// Зеркало (редкая, `Rule::RogueRareCardPercent`): своя фигура становится копией другой своей.
+    Mirror,
+    /// Стрелка вверх: фигура — на ранг выше (пешка → конь → слон → ладья → ферзь).
+    Rank,
+    /// Перо: две случайные карты в руку.
+    Feather,
+}
+
+impl Card {
+    /// Все карты: силы по порядку `SPECIAL_POWERS`, потом остальные (порядок картинок
+    /// `POWER_CARDS` в `assets/ui.rs`).
+    pub const ALL: [Card; 15] = [
+        Card::Power(Power::Fire),
+        Card::Power(Power::Spark),
+        Card::Power(Power::Wind),
+        Card::Power(Power::Gold),
+        Card::Power(Power::Shade),
+        Card::Power(Power::Ice),
+        Card::Power(Power::Barbarian),
+        Card::Power(Power::Wizard),
+        Card::Mask,
+        Card::Crest,
+        Card::Double,
+        Card::Coin,
+        Card::Mirror,
+        Card::Rank,
+        Card::Feather,
+    ];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Card::Power(power) => power.card_title(),
+            Card::Mask => "Карта маски",
+            Card::Crest => "Карта герба",
+            Card::Double => "Карта двух монет",
+            Card::Coin => "Карта монеты",
+            Card::Mirror => "Карта зеркала",
+            Card::Rank => "Карта ранга",
+            Card::Feather => "Карта пера",
+        }
+    }
+
+    pub fn description(self) -> String {
+        match self {
+            Card::Power(power) => power.card_description(),
+            Card::Mask => "Превращается в последнюю сыгранную карту (кроме маски).".to_owned(),
+            Card::Crest => "Даёт случайный герб, которого у вас ещё нет.".to_owned(),
+            Card::Double => "Удваивает ваше золото.".to_owned(),
+            Card::Coin => "Даёт столько золота, сколько стоит всё, что можно продать: фигуры \
+                           запаса и гербы."
+                .to_owned(),
+            Card::Mirror => "Редкая. В свой ход выберите свою фигуру, потом другую свою: первая \
+                             станет копией второй — вид и силы (короля — нельзя)."
+                .to_owned(),
+            Card::Rank => "В свой ход сыграйте на свою фигуру: она станет фигурой рангом выше \
+                           (пешка → конь → слон → ладья → ферзь), с полным здоровьем и своими \
+                           силами."
+                .to_owned(),
+            Card::Feather => "Даёт две случайные карты (кроме пера).".to_owned(),
+        }
+    }
+
+    /// Сколько своих фигур выбрать, чтобы сыграть: 0 — играется сразу.
+    pub fn picks(self) -> usize {
+        match self {
+            Card::Power(_) | Card::Rank => 1,
+            Card::Mirror => 2,
+            _ => 0,
+        }
+    }
+}
+
+/// Вид фигуры рангом выше (карта ранга): пешка → конь → слон → ладья → ферзь.
+fn next_rank(kind: Kind) -> Option<Kind> {
+    match kind {
+        Kind::Pawn => Some(Kind::Knight),
+        Kind::Knight => Some(Kind::Bishop),
+        Kind::Bishop => Some(Kind::Rook),
+        Kind::Rook => Some(Kind::Queen),
+        Kind::Queen | Kind::King => None,
+    }
+}
+
+/// Сыгранная карта (с 0.112) — для истории: цели, фигура после, золото, герб, взятые карты (у
+/// маски — во что превратилась).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CardUse {
+    pub card: Card,
+    pub targets: [Option<Square>; 2],
+    pub piece: Option<Piece>,
+    pub gold: u16,
+    pub crest: Option<Crest>,
+    pub cards: [Option<Card>; 2],
+}
+
 impl Power {
+    /// Карта силы (rogue-like, с 0.111): «Карта огня».
+    pub fn card_title(self) -> &'static str {
+        match self {
+            Power::Plain => "Карта",
+            Power::Fire => "Карта огня",
+            Power::Spark => "Карта молнии",
+            Power::Wind => "Карта ветра",
+            Power::Gold => "Карта золота",
+            Power::Shade => "Карта тени",
+            Power::Ice => "Карта льда",
+            Power::Barbarian => "Карта варвара",
+            Power::Wizard => "Карта мага",
+        }
+    }
+
+    /// Что делает карта силы.
+    pub fn card_description(self) -> String {
+        // Кем станет фигура: «огненной», «варваром».
+        let becomes = match self {
+            Power::Plain => "обычной",
+            Power::Fire => "огненной",
+            Power::Spark => "электрической",
+            Power::Wind => "воздушной",
+            Power::Gold => "золотой",
+            Power::Shade => "теневой",
+            Power::Ice => "ледяной",
+            Power::Barbarian => "варваром",
+            Power::Wizard => "магом",
+        };
+        format!(
+            "В свой ход сыграйте на свою фигуру (не короля): обычная навсегда станет {becomes}, \
+             особая с одной силой — объединённой. Ходов не тратит."
+        )
+    }
+
     /// «огненный », «электрическая »; у обычной — пусто.
     pub fn adjective(self, feminine: bool) -> &'static str {
         match (self, feminine) {
@@ -775,9 +965,6 @@ pub struct Strike {
     /// Цель — ледяная фигура (rogue-like, с 0.72): атакующий замёрз и больше в этот ход не
     /// бьёт.
     pub rebound: bool,
-    /// Герб снежинки и шипов (с 0.77): ледяная цель вернула урон атакующему (его клетка —
-    /// `from`).
-    pub thorns: Option<Hit>,
     /// Ядовитый атакующий отравил цель (rogue-like, с 0.79).
     pub poisoned: bool,
     /// Повторный удар варвара после убийства (rogue-like, с 0.80).
@@ -796,11 +983,6 @@ impl Strike {
     pub fn hits(&self) -> impl Iterator<Item = &Hit> {
         std::iter::once(&self.hit).chain(self.splash.iter().map(|j| &j.hit))
     }
-
-    /// Все, кому удар снял здоровье: задетые (`hits`) и атакующий, получивший урон шипов.
-    pub fn wounded(&self) -> impl Iterator<Item = &Hit> {
-        self.hits().chain(self.thorns.iter())
-    }
 }
 
 /// Взрыв пешки, насыщенной лавой, в конце хода её стороны: огненная волна только по чужим
@@ -818,10 +1000,8 @@ pub struct Blast {
 pub struct TurnEnd {
     /// Удары фигур — по очереди.
     pub strikes: Vec<Strike>,
-    /// Взрывы пешек, насыщенных лавой, — после ударов.
+    /// Взрывы огненных фигур — после ударов.
     pub blasts: Vec<Blast>,
-    /// Пешки усиленной стороны, насытившиеся лавой к ходу соперника.
-    pub charged: Vec<Square>,
     /// Rogue-like: фигуры новой волны соперника, вышедшие к следующему ходу.
     pub spawned: Vec<(Square, Kind)>,
     /// Rogue-like: после расстановки начался этот уровень (его первая волна уже вышла).
@@ -866,7 +1046,7 @@ pub struct Meteor {
 /// волнами выходят на его крайнюю горизонталь в конце каждого его хода («туман войны» — на
 /// будущее) и шагают вперёд (`march`); игрок за свой ход
 /// делает до `Rule::RogueMoves` ходов разными фигурами; «шведки» нет, зато в запасе с начала
-/// две пешки, слон и конь. Отбил все волны — победа.
+/// две пешки и особая фигура. Отбил все волны — победа.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Rogue {
     /// Сторона игрока; волны — у соперника.
@@ -888,20 +1068,210 @@ pub struct Rogue {
     /// Золото игрока (с 0.60, просьба пользователя): за каждую побеждённую фигуру волн —
     /// `rogue_price` её вида.
     pub gold: u16,
-    /// Открыт магазин (после уровня, до расстановки): на прилавке `offers`, «Уйти» закрывает.
+    /// Открыт магазин (после уровня, до расстановки): на прилавке `wares`, «Уйти» закрывает.
     pub shop: bool,
-    /// Фигуры на прилавке (`None` — куплена); их `Rule::RogueShopSlots`.
-    offers: [Option<Stock>; SHOP_MAX],
+    /// Прилавок (с 0.108 — фигуры и гербы вместе; `None` — куплено); мест —
+    /// `Rule::RogueShopSlots`.
+    wares: [Option<Ware>; SHOP_MAX],
     /// Сколько раз прилавок заполнялся — случайность магазина.
     rolls: u16,
+    /// Сколько раз магазин обновляли за это посещение (с 0.108): каждое следующее обновление
+    /// дороже на `Rule::RogueRerollStep`.
+    rerolls: u8,
+    /// Сундуки магазина (с 0.110; с 0.113 — `Rule::RogueChestSlots` случайных из шести: три вида,
+    /// обычные и большие). Наполняются раз за посещение магазина, обновление их не трогает.
+    chests: [Option<ChestOffer>; CHEST_SLOTS],
+    /// Карты в руке (с 0.111): из сундука карт, разыгрываются в свой ход.
+    hand: [Option<Card>; ROGUE_HAND_MAX],
+    /// Последняя сыгранная карта (кроме маски) — в неё превращается маска.
+    last_card: Option<Card>,
+    /// Сколько раз тянули случайность карт (случайный герб, перо).
+    card_rolls: u16,
+    /// Счёт этого хода для гербов мульти (с 0.121; с 0.119 — только удары короля).
+    pub turn: TurnCounts,
     /// Гербы игрока (с 0.77) — в порядке покупки; действуют до конца забега.
-    crests: [Option<Crest>; CRESTS],
-    /// Гербы на прилавке (`None` — куплен или не осталось); их `Rule::RogueCrestSlots`.
-    crest_offers: [Option<Crest>; SHOP_MAX],
-    /// Сколько раз гербы на прилавке выкладывались заново — их случайность.
-    crest_rolls: u16,
+    crests: [Option<Crest>; CREST_SLOTS],
     /// Случайность волн этой партии.
     seed: u64,
+}
+
+/// Rogue-like (с 0.121): что копится за ход для гербов мульти — удары, взрывы, метеориты,
+/// прыжки теней фигур игрока. Действует до конца хода (`Position::end_turn_mult`): прибавки от
+/// ударов и временных эффектов — до конца хода, если пользователь не скажет иначе.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct TurnCounts {
+    pub king_hits: u16,
+    pub pawn_hits: u16,
+    pub knight_hits: u16,
+    pub queen_hits: u16,
+    /// Взрывы огненных фигур игрока.
+    pub blasts: u16,
+    /// Метеориты магов игрока.
+    pub meteors: u16,
+    /// Фигуры, через которые прошли теневые фигуры игрока.
+    pub jumped: u16,
+    /// Ходы воздушных фигур игрока (с 0.124, герб смерча и умножения).
+    pub wind_moves: u16,
+    /// Клетки фигур игрока, уже ударивших (`Blow::Strike`).
+    pub struck: u64,
+    /// Первая фигура игрока, нанёсшая урон (удар, взрыв, метеорит).
+    pub first: Option<Square>,
+}
+
+/// Чем фигура наносит урон (для гербов мульти, с 0.121).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Blow {
+    Strike,
+    Blast,
+    Meteor,
+    /// Молния электрической фигуры (с 0.124): сколько фигур перед задетой в цепочке.
+    Spark(u16),
+}
+
+/// Сундук магазина rogue-like (с 0.110, просьба пользователя): за `chest_price` открывается и
+/// даёт выбрать одно из `Rule::RogueChestChoices`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Chest {
+    /// Сундук фигур: любые фигуры, какие бывают в магазине.
+    Pieces,
+    /// Сундук гербов: гербы, которых ещё нет.
+    Crests,
+    /// Сундук карт (с 0.111): карты сил — в руку.
+    Cards,
+}
+
+impl Chest {
+    pub const ALL: [Chest; 3] = [Chest::Pieces, Chest::Crests, Chest::Cards];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Chest::Pieces => "Сундук фигур",
+            Chest::Crests => "Сундук гербов",
+            Chest::Cards => "Сундук карт",
+        }
+    }
+}
+
+/// Что с сундуком в этом посещении магазина.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ChestState {
+    /// Закрыт — можно купить.
+    #[default]
+    Closed,
+    /// Куплен и открыт — игрок выбирает, что взять.
+    Open,
+    /// Взято — до следующего магазина пуст.
+    Taken,
+}
+
+/// Наибольшее число вещей на выбор в сундуке (длина `ChestOffer::wares`).
+pub const CHEST_MAX: usize = 5;
+
+/// Наибольшее число сундуков в магазине (длина `Rogue::chests`); сколько их — `Rule::RogueChestSlots`.
+pub const CHEST_SLOTS: usize = 3;
+
+/// Сундук на месте в магазине (с 0.113): вид, большой ли, что в нём и сколько уже взято.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ChestOffer {
+    pub kind: Chest,
+    /// Большой сундук: выбирают `Rule::RogueBigChestPicks` из `Rule::RogueBigChestChoices`, цена —
+    /// `Rule::RogueBigChestPricePercent` от обычного.
+    pub big: bool,
+    pub state: ChestState,
+    /// Сколько вещей уже взято из открытого.
+    pub taken: u8,
+    wares: [Option<Ware>; CHEST_MAX],
+}
+
+impl ChestOffer {
+    /// «Сундук фигур», «Большой сундук фигур».
+    pub fn title(self) -> String {
+        if self.big {
+            format!("Большой {}", self.kind.title().to_lowercase())
+        } else {
+            self.kind.title().to_owned()
+        }
+    }
+
+    /// Из скольких вещей выбирают.
+    pub fn choices(self) -> usize {
+        if self.big {
+            balance()
+                .rule(Rule::RogueBigChestChoices)
+                .clamp(1, CHEST_MAX as i32) as usize
+        } else {
+            chest_choices()
+        }
+    }
+
+    /// Сколько вещей берут.
+    pub fn picks(self) -> usize {
+        if self.big {
+            balance()
+                .rule(Rule::RogueBigChestPicks)
+                .clamp(1, self.choices() as i32) as usize
+        } else {
+            1
+        }
+    }
+
+    /// Цена: обычного — `chest_price`, большого — × `Rule::RogueBigChestPricePercent`.
+    pub fn price(self) -> u16 {
+        let base = u32::from(chest_price(self.kind));
+        let price = if self.big {
+            base * balance()
+                .rule(Rule::RogueBigChestPricePercent)
+                .clamp(0, 1000) as u32
+                / 100
+        } else {
+            base
+        };
+        price.min(u32::from(u16::MAX)) as u16
+    }
+
+    /// Что ещё осталось на выбор (`None` — пусто или взято).
+    pub fn wares(self) -> Vec<Option<Ware>> {
+        self.wares[..self.choices()].to_vec()
+    }
+}
+
+/// Rogue-like: сколько сундуков в магазине.
+pub fn chest_slots() -> usize {
+    balance()
+        .rule(Rule::RogueChestSlots)
+        .clamp(0, CHEST_SLOTS as i32) as usize
+}
+
+/// Наибольшая рука карт сил (длина `Rogue::hand`); сколько карт держат — `Rule::RogueHandSize`.
+pub const ROGUE_HAND_MAX: usize = 5;
+
+/// Rogue-like: сколько карт сил помещается в руку.
+pub fn hand_size() -> usize {
+    balance()
+        .rule(Rule::RogueHandSize)
+        .clamp(1, ROGUE_HAND_MAX as i32) as usize
+}
+
+/// Rogue-like: цена сундука — `Rule::RogueChestPiecesPrice`, `Rule::RogueChestCrestsPrice`,
+/// `Rule::RogueChestCardsPrice`.
+pub fn chest_price(chest: Chest) -> u16 {
+    let rule = match chest {
+        Chest::Pieces => Rule::RogueChestPiecesPrice,
+        Chest::Crests => Rule::RogueChestCrestsPrice,
+        Chest::Cards => Rule::RogueChestCardsPrice,
+    };
+    balance().rule(rule).clamp(0, 999) as u16
+}
+
+/// Товар на прилавке rogue-like (с 0.108 фигуры и гербы — на одном прилавке).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Ware {
+    /// Фигура — в запас игрока, готовой.
+    Piece(Stock),
+    /// Герб — до конца забега.
+    Crest(Crest),
+    /// Карта (с 0.111, только в сундуке карт) — в руку.
+    Card(Card),
 }
 
 /// Герб rogue-like (с 0.77, просьба пользователя): покупается в магазине за
@@ -910,53 +1280,36 @@ pub struct Rogue {
 pub enum Crest {
     /// Снежинка и сердце: ледяные фигуры — с `Rule::RogueCrestHeartHp` здоровья сверху.
     Heart,
-    /// Снежинка и монета: ледяные фигуры выходят на прилавок чаще (`Rule::RogueCrestCoinPercent`).
-    Coin,
     /// Двойная снежинка: ледяные фигуры замораживают ударившего на
     /// `Rule::RogueCrestFreezeTurns` хода.
     Snow2,
-    /// Снежинка и пешка: ледяная пешка в магазине стоит как обычная.
-    Pawn,
-    /// Снежинка и шипы: ударивший ледяную фигуру получает её урон
-    /// (`Rule::RogueCrestSpikesPercent`).
-    Spikes,
     /// Замороженная снежинка: ледяная фигура, у которой остаётся `Rule::RogueCrestCrystalHp`
     /// здоровья, вмерзает в лёд и, пока во льду, не получает урона.
     Crystal,
-    /// Топор и меч (с 0.81): варвары бьют сильнее (`Rule::RogueCrestAxeAttack`), здоровья у них
-    /// меньше (`Rule::RogueCrestAxeHp`).
+    /// Топор и меч (с 0.81): здоровья у варваров меньше (`Rule::RogueCrestAxeHp`); с 0.121 их
+    /// мульти × `Rule::RogueCrestAxeMultPercent` / 100 (было — атака сверху).
     AxeSword,
     /// Топор и клыки: варвар, убив, раз за ход лечится (`Rule::RogueCrestFangsHeal`).
     AxeFangs,
-    /// Топор и ферзь: ферзь-варвар в магазине дешевле (`Rule::RogueCrestQueenDiscount`).
-    AxeQueen,
-    /// Два топора: варвары выходят на прилавок чаще (`Rule::RogueCrestAxesPercent`).
-    Axes,
     /// Топор и красный круг: повторный удар варвара — круговой, по всем чужим в радиусе
     /// `Rule::RogueCrestWhirlRadius`.
     Whirl,
     /// Огненный топор: варвар с `Rule::RogueCrestFireAxeHp` здоровья и меньше бьёт после убийства
     /// ещё `Rule::RogueCrestFireAxeRepeats` раз сверху.
     FireAxe,
-    /// Огонь и пешка (с 0.86): огненная пешка в магазине дешевле
-    /// (`Rule::RogueCrestFlamePawnDiscount`).
-    FlamePawn,
     /// Два огонька: взрыв огненной фигуры ещё и крестом на `Rule::RogueCrestFlamesReach` клетки.
     Flames,
     /// Огонь и череп: погибшая огненная фигура взрывается.
     FlameSkull,
-    /// Огонь и меч: взрыв огненной фигуры — `Rule::RogueCrestFlameSwordDamage` урона.
+    /// Огонь и меч: мульти взрыва огненной фигуры + `Rule::RogueCrestFlameSwordAddPercent` / 100
+    /// (с 0.121; было — свой урон взрыва).
     FlameSword,
-    /// Огонь и монета: огненные фигуры выходят на прилавок чаще
-    /// (`Rule::RogueCrestFlameCoinPercent`).
-    FlameCoin,
-    /// Падающая бомба: взрыв огненной фигуры сильнее на `Rule::RogueCrestBombDamage`, но задевает
-    /// и своих.
+    /// Падающая бомба: мульти взрыва огненной фигуры × `Rule::RogueCrestBombMultPercent` / 100
+    /// (с 0.121; было — урон сверху), но взрыв задевает и своих.
     Bomb,
-    /// Теневой огонь и ладья (с 0.88): теневая ладья в магазине дешевле
-    /// (`Rule::RogueCrestDarkRookDiscount`).
-    DarkRook,
-    /// Теневой огонь и череп: теневая фигура бьёт своей атакой чужих, через которых прошла.
+    /// Теневой огонь и череп (с 0.121): мульти + `Rule::RogueCrestJumpAddPercent` / 100 за каждую
+    /// фигуру, через которую прошли теневые фигуры игрока в этом ходу (`TurnCounts::jumped`);
+    /// раньше теневая била тех, через кого прошла.
     DarkSkull,
     /// Два теневых огня: теневая фигура не получает каждый `Rule::RogueCrestDarkDodgeEvery`-й
     /// удар по ней.
@@ -965,27 +1318,13 @@ pub enum Crest {
     /// меньше от смертельного удара уходит порталом — меняется местами с ближайшей своей
     /// обычной фигурой (не королём), удар и дальнейшие удары принимает та.
     DarkPortal,
-    /// Теневой огонь и монета: теневые фигуры выходят на прилавок чаще
-    /// (`Rule::RogueCrestDarkCoinPercent`).
-    DarkCoin,
     /// Теневой огонь и глаз: теневая фигура бьёт сквозь фигуры — всех в досягаемости по линии.
     DarkEye,
     /// Два ветра (с 0.90): воздушная фигура ходит трижды за один ход (второй и третий —
     /// бесплатно).
     Winds,
-    /// Ветер и монета: воздушные фигуры выходят на прилавок чаще
-    /// (`Rule::RogueCrestWindCoinPercent`).
-    WindCoin,
-    /// Ветер и конь: воздушный конь в магазине дешевле (`Rule::RogueCrestWindKnightDiscount`).
-    WindKnight,
     /// Ветер и меч: воздушная фигура бьёт первую из своих целей дважды.
     WindSword,
-    /// Молния и слон (с 0.91): электрический слон в магазине дешевле
-    /// (`Rule::RogueCrestBoltBishopDiscount`).
-    BoltBishop,
-    /// Молния и монета: электрические фигуры выходят на прилавок чаще
-    /// (`Rule::RogueCrestBoltCoinPercent`).
-    BoltCoin,
     /// Молния и плюс: молния расходится от цели не только по диагоналям, но и по прямым.
     BoltPlus,
     /// Две молнии (с 0.92): молния бьёт цепью — от каждой задетой дальше на связанные с ней
@@ -997,37 +1336,21 @@ pub enum Crest {
     RedBolt,
     /// Молния и единица: электрические фигуры бьют первыми.
     BoltOne,
-    /// Две пешки (с 0.93): пешки выходят на прилавок чаще (`Rule::RogueCrestPairPercent`).
-    Pawns,
-    /// Два слона: слоны на прилавке чаще.
-    Bishops,
-    /// Два коня: кони на прилавке чаще.
-    Knights,
-    /// Две ладьи: ладьи на прилавке чаще.
-    Rooks,
-    /// Два ферзя: ферзи на прилавке чаще.
-    Queens,
-    /// Монета и обновление: обновить фигуры в магазине — `Rule::RogueCrestRerollCoinCost`.
+    /// Монета и обновление: первое обновление магазина за посещение —
+    /// `Rule::RogueCrestRerollCoinCost`.
     RerollCoin,
-    /// Шляпа и монета (с 0.94): маги выходят на прилавок чаще (`Rule::RogueCrestHatCoinPercent`).
-    HatCoin,
     /// Две шляпы: маг шлёт два метеорита вместо одного.
     Hats,
-    /// Шляпа и слон: слон-маг в магазине дешевле (`Rule::RogueCrestHatBishopDiscount`).
-    HatBishop,
-    /// Метеорит: урон метеорита — `Rule::RogueCrestMeteorDamage`.
+    /// Метеорит (с 0.121): мульти первого метеорита в ходу + `Rule::RogueCrestMeteorAddPercent` /
+    /// 100 (было — урон метеорита сверху).
     Meteor,
     /// Шляпа и метеорит: на месте падения — горящий кратер до вашего следующего хода; вошедшая в
-    /// него фигура получает `Rule::RogueCrestCraterDamage`.
+    /// него фигура получает урон упавшего туда метеорита (с 0.121, `Position::crater_damage`).
     HatMeteor,
     /// Шляпа и плюс: метеорит бьёт крестом — клетку и четыре соседние по прямым.
     HatPlus,
     /// Король (с 0.95): победа золотой фигурой — ещё `Rule::RogueCrestGoldKingBonus` золота.
     GoldKing,
-    /// Король и монета: фигуры запаса продаются за полную цену в магазине.
-    KingCoin,
-    /// Два короля: золотые фигуры выходят на прилавок чаще (`Rule::RogueCrestKings2Percent`).
-    Kings2,
     /// Король и ферзь: победа золотым ферзём — ещё `Rule::RogueCrestKingQueenBonus` золота.
     KingQueen,
     /// Король и череп: погибшая золотая фигура возвращает свою цену в магазине золотом.
@@ -1035,272 +1358,180 @@ pub enum Crest {
     /// Свинья-копилка: в конце уровня за каждые `Rule::RogueCrestPiggyStep` золота каждая золотая
     /// фигура (на доске и в запасе) приносит монету.
     Piggy,
-    /// Топор и огонёк (с 0.96): в магазине появляются огненные варвары (`unlocks`).
-    AxeFlame,
-    /// Топор и молния: электрические варвары.
-    AxeBolt,
-    /// Топор и смерч: воздушные варвары.
-    AxeWind,
-    /// Топор и король: золотые варвары.
-    AxeKing,
-    /// Топор и тёмный огонёк: теневые варвары.
-    AxeDark,
-    /// Топор и снежинка: ледяные варвары.
-    AxeSnow,
-    /// Топор и шляпа: варвары-маги.
-    AxeHat,
-    /// Король и огонёк (с 0.97): в магазине появляются огненные золотые фигуры (`unlocks`).
-    KingFlame,
-    /// Король и молния: электрические золотые.
-    KingBolt,
-    /// Король и смерч: воздушные золотые.
-    KingWind,
-    /// Король и тёмный огонёк: теневые золотые.
-    KingDark,
-    /// Король и снежинка: ледяные золотые.
-    KingSnow,
-    /// Король и шляпа: золотые маги.
-    KingHat,
-    /// Шляпа и огонёк (с 0.98): в магазине появляются огненные маги (`unlocks`).
-    HatFlame,
-    /// Шляпа и молния: электрические маги.
-    HatBolt,
-    /// Шляпа и смерч: воздушные маги.
-    HatWind,
-    /// Шляпа и тёмный огонёк: теневые маги.
-    HatDark,
-    /// Шляпа и снежинка: ледяные маги.
-    HatSnow,
-    /// Огонёк и снежинка (с 0.99): в магазине появляются огненные ледяные фигуры (`unlocks`).
-    FlameSnow,
-    /// Снежинка и молния: электрические ледяные.
-    SnowBolt,
-    /// Снежинка и смерч: воздушные ледяные.
-    SnowWind,
-    /// Снежинка и тёмный огонёк: теневые ледяные.
-    SnowDark,
-    /// Огонёк и молния (с 0.101): в магазине появляются огненные электрические фигуры
-    /// (`unlocks`).
-    FlameBolt,
-    /// Огонёк и смерч: огненные воздушные.
-    FlameWind,
-    /// Огонёк и тёмный огонёк: огненные теневые.
-    FlameDark,
-    /// Молния и смерч (с 0.102): в магазине появляются электрические воздушные фигуры
-    /// (`unlocks`).
-    BoltWind,
-    /// Молния и тёмный огонёк: электрические теневые.
-    BoltDark,
-    /// Смерч и тёмный огонёк (с 0.103): в магазине появляются воздушные теневые фигуры
-    /// (`unlocks`).
-    WindDark,
+    /// Герб урона (с 0.119): мульти + `Rule::RogueCrestMultAddPercent` / 100 (см. `Position::mult`).
+    Mult,
+    /// Герб урона короля: каждый удар вашего короля в этом ходу умножает мульти на
+    /// `Rule::RogueCrestKingMultPercent` / 100.
+    KingMult,
+    /// Король и «16» (с 0.121): мульти × (`Rule::RogueCrestFewBase` − ваших фигур на доске), не
+    /// меньше ×1.
+    FewMult,
+    /// Король и «×»: мульти золотых фигур + ваше золото.
+    GoldMult,
+    /// Пешка и «×»: каждый удар вашей пешки в этом ходу умножает мульти на
+    /// `Rule::RogueCrestPawnMultPercent` / 100.
+    PawnMult,
+    /// Конь и «×»: мульти (с 0.125 — всех фигур, было — коней) + `Rule::RogueCrestKnightAddPercent`
+    /// / 100 за каждый удар ваших коней в этом ходу.
+    KnightMult,
+    /// Меч и «×»: мульти × `Rule::RogueCrestSwordMultPercent` / 100 за каждую вашу фигуру,
+    /// ударившую в этом ходу раньше этой.
+    SwordMult,
+    /// Пешка и «1»: мульти первой бьющей в этом ходу фигуры + `Rule::RogueCrestFirstAddPercent` /
+    /// 100.
+    FirstStrike,
+    /// Ферзь и «×»: мульти + `Rule::RogueCrestQueenAddPercent` / 100 за каждый удар вашего ферзя
+    /// в этом ходу.
+    QueenMult,
+    /// Огонь и «×»: каждый взрыв вашей огненной фигуры в этом ходу умножает мульти на
+    /// `Rule::RogueCrestFlameMultPercent` / 100.
+    FlameMult,
+    /// Снежинка и «×»: мульти × `Rule::RogueCrestSnowMultPercent` / 100 за каждую замороженную
+    /// фигуру на доске (свою и чужую).
+    SnowMult,
+    /// Молния и «×» (с 0.124): мульти молнии + `Rule::RogueCrestBoltAddPercent` / 100 за каждую
+    /// фигуру перед задетой в цепочке (`Blow::Spark`).
+    BoltMult,
+    /// Смерч и «×»: мульти воздушных фигур + `Rule::RogueCrestWindAddPercent` / 100 за каждый ход
+    /// воздушных фигур игрока в этом ходу (`TurnCounts::wind_moves`).
+    WindMult,
 }
 
-/// Сколько всего гербов (длина `Rogue::crests`).
-pub const CRESTS: usize = 80;
+/// Сколько всего видов гербов (`Crest::ALL`).
+pub const CRESTS: usize = 43;
+
+/// Сколько гербов может быть у игрока (длина `Rogue::crests`): с 0.124 гербы с числами
+/// складываются — один и тот же покупают снова.
+pub const CREST_SLOTS: usize = 64;
 
 impl Crest {
+    /// Герб с числом, который складывается (с 0.124): его можно купить снова, и каждая копия
+    /// добавляет своё (мульти — в свёртке `mult_for`, остальные — `Position::crest_count`).
+    /// Гербы-механики (кратер, портал, цепь молнии…) — только раз: купленный не продаётся, пока
+    /// его не продадут.
+    pub fn stacks(self) -> bool {
+        matches!(
+            self,
+            Crest::Heart
+                | Crest::Snow2
+                | Crest::AxeSword
+                | Crest::AxeFangs
+                | Crest::FireAxe
+                | Crest::FlameSword
+                | Crest::Bomb
+                | Crest::DarkSkull
+                | Crest::Hats
+                | Crest::Meteor
+                | Crest::GoldKing
+                | Crest::KingQueen
+                | Crest::Piggy
+                | Crest::Mult
+                | Crest::KingMult
+                | Crest::FewMult
+                | Crest::GoldMult
+                | Crest::PawnMult
+                | Crest::KnightMult
+                | Crest::SwordMult
+                | Crest::FirstStrike
+                | Crest::QueenMult
+                | Crest::FlameMult
+                | Crest::SnowMult
+                | Crest::BoltMult
+                | Crest::WindMult
+        )
+    }
+
     pub const ALL: [Crest; CRESTS] = [
         Crest::Heart,
-        Crest::Coin,
         Crest::Snow2,
-        Crest::Pawn,
-        Crest::Spikes,
         Crest::Crystal,
         Crest::AxeSword,
         Crest::AxeFangs,
-        Crest::AxeQueen,
-        Crest::Axes,
         Crest::Whirl,
         Crest::FireAxe,
-        Crest::FlamePawn,
         Crest::Flames,
         Crest::FlameSkull,
         Crest::FlameSword,
-        Crest::FlameCoin,
         Crest::Bomb,
-        Crest::DarkRook,
         Crest::DarkSkull,
         Crest::DarkFlames,
         Crest::DarkPortal,
-        Crest::DarkCoin,
         Crest::DarkEye,
         Crest::Winds,
-        Crest::WindCoin,
-        Crest::WindKnight,
         Crest::WindSword,
-        Crest::BoltBishop,
-        Crest::BoltCoin,
         Crest::BoltPlus,
         Crest::Bolts,
         Crest::RedBolt,
         Crest::BoltOne,
-        Crest::Pawns,
-        Crest::Bishops,
-        Crest::Knights,
-        Crest::Rooks,
-        Crest::Queens,
         Crest::RerollCoin,
-        Crest::HatCoin,
         Crest::Hats,
-        Crest::HatBishop,
         Crest::Meteor,
         Crest::HatMeteor,
         Crest::HatPlus,
         Crest::GoldKing,
-        Crest::KingCoin,
-        Crest::Kings2,
         Crest::KingQueen,
         Crest::KingSkull,
         Crest::Piggy,
-        Crest::AxeFlame,
-        Crest::AxeBolt,
-        Crest::AxeWind,
-        Crest::AxeKing,
-        Crest::AxeDark,
-        Crest::AxeSnow,
-        Crest::AxeHat,
-        Crest::KingFlame,
-        Crest::KingBolt,
-        Crest::KingWind,
-        Crest::KingDark,
-        Crest::KingSnow,
-        Crest::KingHat,
-        Crest::HatFlame,
-        Crest::HatBolt,
-        Crest::HatWind,
-        Crest::HatDark,
-        Crest::HatSnow,
-        Crest::FlameSnow,
-        Crest::SnowBolt,
-        Crest::SnowWind,
-        Crest::SnowDark,
-        Crest::FlameBolt,
-        Crest::FlameWind,
-        Crest::FlameDark,
-        Crest::BoltWind,
-        Crest::BoltDark,
-        Crest::WindDark,
+        Crest::Mult,
+        Crest::KingMult,
+        Crest::FewMult,
+        Crest::GoldMult,
+        Crest::PawnMult,
+        Crest::KnightMult,
+        Crest::SwordMult,
+        Crest::FirstStrike,
+        Crest::QueenMult,
+        Crest::FlameMult,
+        Crest::SnowMult,
+        Crest::BoltMult,
+        Crest::WindMult,
     ];
-
-    /// Какую объединённую фигуру открывает герб: (основа, вторая сила) из `COMBOS`.
-    pub fn unlocks(self) -> Option<(Power, Power)> {
-        let (base, with) = match self {
-            Crest::AxeFlame => (Power::Barbarian, Power::Fire),
-            Crest::AxeBolt => (Power::Barbarian, Power::Spark),
-            Crest::AxeWind => (Power::Barbarian, Power::Wind),
-            Crest::AxeKing => (Power::Barbarian, Power::Gold),
-            Crest::AxeDark => (Power::Barbarian, Power::Shade),
-            Crest::AxeSnow => (Power::Barbarian, Power::Ice),
-            Crest::AxeHat => (Power::Barbarian, Power::Wizard),
-            Crest::KingFlame => (Power::Gold, Power::Fire),
-            Crest::KingBolt => (Power::Gold, Power::Spark),
-            Crest::KingWind => (Power::Gold, Power::Wind),
-            Crest::KingDark => (Power::Gold, Power::Shade),
-            Crest::KingSnow => (Power::Gold, Power::Ice),
-            Crest::KingHat => (Power::Gold, Power::Wizard),
-            Crest::HatFlame => (Power::Wizard, Power::Fire),
-            Crest::HatBolt => (Power::Wizard, Power::Spark),
-            Crest::HatWind => (Power::Wizard, Power::Wind),
-            Crest::HatDark => (Power::Wizard, Power::Shade),
-            Crest::HatSnow => (Power::Wizard, Power::Ice),
-            Crest::FlameSnow => (Power::Ice, Power::Fire),
-            Crest::SnowBolt => (Power::Ice, Power::Spark),
-            Crest::SnowWind => (Power::Ice, Power::Wind),
-            Crest::SnowDark => (Power::Ice, Power::Shade),
-            Crest::FlameBolt => (Power::Fire, Power::Spark),
-            Crest::FlameWind => (Power::Fire, Power::Wind),
-            Crest::FlameDark => (Power::Fire, Power::Shade),
-            Crest::BoltWind => (Power::Spark, Power::Wind),
-            Crest::BoltDark => (Power::Spark, Power::Shade),
-            Crest::WindDark => (Power::Wind, Power::Shade),
-            _ => return None,
-        };
-        Some((base, with))
-    }
 
     pub fn title(self) -> &'static str {
         match self {
             Crest::Heart => "Герб снежинки и сердца",
-            Crest::Coin => "Герб снежинки и монеты",
             Crest::Snow2 => "Герб двойной снежинки",
-            Crest::Pawn => "Герб снежинки и пешки",
-            Crest::Spikes => "Герб снежинки и шипов",
             Crest::Crystal => "Герб замороженной снежинки",
             Crest::AxeSword => "Герб топора и меча",
             Crest::AxeFangs => "Герб топора и клыков",
-            Crest::AxeQueen => "Герб топора и ферзя",
-            Crest::Axes => "Герб двух топоров",
             Crest::Whirl => "Герб топора и красного круга",
             Crest::FireAxe => "Герб огненного топора",
-            Crest::FlamePawn => "Герб огня и пешки",
             Crest::Flames => "Герб двух огоньков",
             Crest::FlameSkull => "Герб огня и черепа",
             Crest::FlameSword => "Герб огня и меча",
-            Crest::FlameCoin => "Герб огня и монеты",
             Crest::Bomb => "Герб падающей бомбы",
-            Crest::DarkRook => "Герб теневого огня и ладьи",
             Crest::DarkSkull => "Герб теневого огня и черепа",
             Crest::DarkFlames => "Герб двух теневых огней",
             Crest::DarkPortal => "Герб теневого огня и портала",
-            Crest::DarkCoin => "Герб теневого огня и монеты",
             Crest::DarkEye => "Герб теневого огня и глаза",
             Crest::Winds => "Герб двух ветров",
-            Crest::WindCoin => "Герб ветра и монеты",
-            Crest::WindKnight => "Герб ветра и коня",
             Crest::WindSword => "Герб ветра и меча",
-            Crest::BoltBishop => "Герб молнии и слона",
-            Crest::BoltCoin => "Герб молнии и монеты",
             Crest::BoltPlus => "Герб молнии и плюса",
             Crest::Bolts => "Герб двух молний",
             Crest::RedBolt => "Герб красной молнии",
             Crest::BoltOne => "Герб молнии и единицы",
-            Crest::Pawns => "Герб двух пешек",
-            Crest::Bishops => "Герб двух слонов",
-            Crest::Knights => "Герб двух коней",
-            Crest::Rooks => "Герб двух ладей",
-            Crest::Queens => "Герб двух ферзей",
             Crest::RerollCoin => "Герб монеты и обновления",
-            Crest::HatCoin => "Герб шляпы и монеты",
             Crest::Hats => "Герб двух шляп",
-            Crest::HatBishop => "Герб шляпы и слона",
             Crest::Meteor => "Герб метеорита",
             Crest::HatMeteor => "Герб шляпы и метеорита",
             Crest::HatPlus => "Герб шляпы и плюса",
             Crest::GoldKing => "Герб короля",
-            Crest::KingCoin => "Герб короля и монеты",
-            Crest::Kings2 => "Герб двух королей",
             Crest::KingQueen => "Герб короля и ферзя",
             Crest::KingSkull => "Герб короля и черепа",
             Crest::Piggy => "Герб свиньи-копилки",
-            Crest::AxeFlame => "Герб топора и огонька",
-            Crest::AxeBolt => "Герб топора и молнии",
-            Crest::AxeWind => "Герб топора и смерча",
-            Crest::AxeKing => "Герб топора и короля",
-            Crest::AxeDark => "Герб топора и тёмного огонька",
-            Crest::AxeSnow => "Герб топора и снежинки",
-            Crest::AxeHat => "Герб топора и шляпы",
-            Crest::KingFlame => "Герб короля и огонька",
-            Crest::KingBolt => "Герб короля и молнии",
-            Crest::KingWind => "Герб короля и смерча",
-            Crest::KingDark => "Герб короля и тёмного огонька",
-            Crest::KingSnow => "Герб короля и снежинки",
-            Crest::KingHat => "Герб короля и шляпы",
-            Crest::HatFlame => "Герб шляпы и огонька",
-            Crest::HatBolt => "Герб шляпы и молнии",
-            Crest::HatWind => "Герб шляпы и смерча",
-            Crest::HatDark => "Герб шляпы и тёмного огонька",
-            Crest::HatSnow => "Герб шляпы и снежинки",
-            Crest::FlameSnow => "Герб огонька и снежинки",
-            Crest::SnowBolt => "Герб снежинки и молнии",
-            Crest::SnowWind => "Герб снежинки и смерча",
-            Crest::SnowDark => "Герб снежинки и тёмного огонька",
-            Crest::FlameBolt => "Герб огонька и молнии",
-            Crest::FlameWind => "Герб огонька и смерча",
-            Crest::FlameDark => "Герб огонька и тёмного огонька",
-            Crest::BoltWind => "Герб молнии и смерча",
-            Crest::BoltDark => "Герб молнии и тёмного огонька",
-            Crest::WindDark => "Герб смерча и тёмного огонька",
+            Crest::Mult => "Герб урона",
+            Crest::KingMult => "Герб урона короля",
+            Crest::FewMult => "Герб короля и шестнадцати",
+            Crest::GoldMult => "Герб короля и умножения",
+            Crest::PawnMult => "Герб пешки и умножения",
+            Crest::KnightMult => "Герб коня и умножения",
+            Crest::SwordMult => "Герб меча и умножения",
+            Crest::FirstStrike => "Герб пешки и единицы",
+            Crest::QueenMult => "Герб ферзя и умножения",
+            Crest::FlameMult => "Герб огня и умножения",
+            Crest::SnowMult => "Герб снежинки и умножения",
+            Crest::BoltMult => "Герб молнии и умножения",
+            Crest::WindMult => "Герб смерча и умножения",
         }
     }
 
@@ -1312,10 +1543,6 @@ impl Crest {
                 "Ледяные фигуры получают +{} к здоровью.",
                 rule(Rule::RogueCrestHeartHp)
             ),
-            Crest::Coin => match rule(Rule::RogueCrestCoinPercent) {
-                200 => "Ледяные фигуры появляются в магазине вдвое чаще.".to_owned(),
-                p => format!("Шанс ледяных фигур в магазине — {p}% от обычного."),
-            },
             Crest::Snow2 => {
                 let n = rule(Rule::RogueCrestFreezeTurns);
                 let word = match (n % 10, n % 100) {
@@ -1325,47 +1552,29 @@ impl Crest {
                 };
                 format!("Ледяные фигуры замораживают ударившего на {n} {word}.")
             }
-            Crest::Pawn => "Ледяные пешки стоят в магазине как обычные.".to_owned(),
-            Crest::Spikes => match rule(Rule::RogueCrestSpikesPercent) {
-                100 => "Ледяные фигуры возвращают ударившему полученный урон.".to_owned(),
-                p => format!("Ледяные фигуры возвращают ударившему {p}% полученного урона."),
-            },
             Crest::Crystal => format!(
                 "Ледяная фигура, у которой осталось {} здоровья, вмерзает в лёд до вашего \
                  хода: пока во льду, урона не получает.",
                 rule(Rule::RogueCrestCrystalHp)
             ),
             Crest::AxeSword => format!(
-                "Варвары наносят на {} урона больше, но у них на {} здоровья меньше.",
-                rule(Rule::RogueCrestAxeAttack),
+                "Мульти варваров ×{}, но у них на {} здоровья меньше.",
+                mult_text(hundredths(Rule::RogueCrestAxeMultPercent)),
                 rule(Rule::RogueCrestAxeHp)
             ),
             Crest::AxeFangs => format!(
                 "Варвар, убив фигуру, восстанавливает {} здоровья — раз за ход.",
                 rule(Rule::RogueCrestFangsHeal)
             ),
-            Crest::AxeQueen => format!(
-                "Ферзь-варвар стоит в магазине на {} дешевле.",
-                rule(Rule::RogueCrestQueenDiscount)
-            ),
-            Crest::Axes => match rule(Rule::RogueCrestAxesPercent) {
-                200 => "Варвары появляются в магазине вдвое чаще.".to_owned(),
-                p => format!("Шанс варваров в магазине — {p}% от обычного."),
-            },
             Crest::Whirl => format!(
                 "Вместо повторной атаки варвар бьёт круговым ударом: все враги в радиусе {} \
-                 клеток получают {} урона.",
-                rule(Rule::RogueCrestWhirlRadius),
-                rule(Rule::RogueCrestWhirlDamage)
+                 клеток получают его урон (атака × мульти).",
+                rule(Rule::RogueCrestWhirlRadius)
             ),
             Crest::FireAxe => format!(
                 "Варвар, у которого осталось {} здоровья, после убийства может ударить ещё раз \
                  сверху.",
                 rule(Rule::RogueCrestFireAxeHp)
-            ),
-            Crest::FlamePawn => format!(
-                "Огненная пешка стоит в магазине на {} дешевле.",
-                rule(Rule::RogueCrestFlamePawnDiscount)
             ),
             Crest::Flames => format!(
                 "Взрыв огненной фигуры достаёт ещё и крестом — на {} клетки по прямым.",
@@ -1373,24 +1582,17 @@ impl Crest {
             ),
             Crest::FlameSkull => "Огненная фигура, погибнув, взрывается.".to_owned(),
             Crest::FlameSword => format!(
-                "Взрыв огненной фигуры наносит {} урона.",
-                rule(Rule::RogueCrestFlameSwordDamage)
+                "Мульти взрыва огненной фигуры +{}.",
+                mult_text(hundredths(Rule::RogueCrestFlameSwordAddPercent))
             ),
-            Crest::FlameCoin => match rule(Rule::RogueCrestFlameCoinPercent) {
-                200 => "Огненные фигуры появляются в магазине вдвое чаще.".to_owned(),
-                p => format!("Шанс огненных фигур в магазине — {p}% от обычного."),
-            },
             Crest::Bomb => format!(
-                "Взрыв огненной фигуры наносит на {} урона больше, но задевает и ваши фигуры.",
-                rule(Rule::RogueCrestBombDamage)
+                "Мульти взрыва огненной фигуры ×{}, но взрыв задевает и ваши фигуры.",
+                mult_text(hundredths(Rule::RogueCrestBombMultPercent))
             ),
-            Crest::DarkRook => format!(
-                "Теневая ладья стоит в магазине на {} дешевле.",
-                rule(Rule::RogueCrestDarkRookDiscount)
+            Crest::DarkSkull => format!(
+                "Мульти +{} за каждую фигуру, через которую прошли ваши теневые фигуры в этом ходу.",
+                mult_text(hundredths(Rule::RogueCrestJumpAddPercent))
             ),
-            Crest::DarkSkull => {
-                "Теневая фигура бьёт своей атакой врагов, через которых прошла.".to_owned()
-            }
             Crest::DarkFlames => match rule(Rule::RogueCrestDarkDodgeEvery) {
                 3 => "Теневая фигура не получает каждый третий удар по ней.".to_owned(),
                 n => format!("Теневая фигура не получает каждый {n}-й удар по ней."),
@@ -1400,33 +1602,13 @@ impl Crest {
                  местами с ближайшей вашей обычной фигурой (не королём), удар принимает та.",
                 rule(Rule::RogueCrestDarkPortalHp)
             ),
-            Crest::DarkCoin => match rule(Rule::RogueCrestDarkCoinPercent) {
-                200 => "Теневые фигуры появляются в магазине вдвое чаще.".to_owned(),
-                p => format!("Шанс теневых фигур в магазине — {p}% от обычного."),
-            },
             Crest::DarkEye => {
                 "Теневая фигура бьёт сквозь фигуры — всех врагов в досягаемости.".to_owned()
             }
             Crest::Winds => {
                 "Воздушная фигура ходит трижды за ход: второй и третий ход — бесплатно.".to_owned()
             }
-            Crest::WindCoin => match rule(Rule::RogueCrestWindCoinPercent) {
-                200 => "Воздушные фигуры появляются в магазине вдвое чаще.".to_owned(),
-                p => format!("Шанс воздушных фигур в магазине — {p}% от обычного."),
-            },
-            Crest::WindKnight => format!(
-                "Воздушный конь стоит в магазине на {} дешевле.",
-                rule(Rule::RogueCrestWindKnightDiscount)
-            ),
             Crest::WindSword => "Воздушная фигура бьёт одну из своих целей дважды.".to_owned(),
-            Crest::BoltBishop => format!(
-                "Электрический слон стоит в магазине на {} дешевле.",
-                rule(Rule::RogueCrestBoltBishopDiscount)
-            ),
-            Crest::BoltCoin => match rule(Rule::RogueCrestBoltCoinPercent) {
-                200 => "Электрические фигуры появляются в магазине вдвое чаще.".to_owned(),
-                p => format!("Шанс электрических фигур в магазине — {p}% от обычного."),
-            },
             Crest::BoltPlus => {
                 "Молния электрической фигуры расходится от цели не только по диагоналям, но и \
                  по прямым."
@@ -1444,40 +1626,16 @@ impl Crest {
                 rule(Rule::RogueCrestRedBoltMax)
             ),
             Crest::BoltOne => "Электрические фигуры бьют первыми.".to_owned(),
-            Crest::Pawns | Crest::Bishops | Crest::Knights | Crest::Rooks | Crest::Queens => {
-                let kinds = match self {
-                    Crest::Pawns => "Пешки",
-                    Crest::Bishops => "Слоны",
-                    Crest::Knights => "Кони",
-                    Crest::Rooks => "Ладьи",
-                    _ => "Ферзи",
-                };
-                match rule(Rule::RogueCrestPairPercent) {
-                    200 => format!("{kinds} появляются в магазине вдвое чаще."),
-                    p => format!(
-                        "Шанс, что в магазине появятся {}, — {p}% от обычного.",
-                        kinds.to_lowercase()
-                    ),
-                }
-            }
-            Crest::HatCoin => match rule(Rule::RogueCrestHatCoinPercent) {
-                200 => "Маги появляются в магазине вдвое чаще.".to_owned(),
-                p => format!("Шанс магов в магазине — {p}% от обычного."),
-            },
             Crest::Hats => "Маг выпускает два метеорита вместо одного.".to_owned(),
-            Crest::HatBishop => format!(
-                "Слон-маг стоит в магазине на {} дешевле.",
-                rule(Rule::RogueCrestHatBishopDiscount)
-            ),
             Crest::Meteor => format!(
-                "Метеорит мага наносит {} урона.",
-                rule(Rule::RogueCrestMeteorDamage)
+                "Мульти первого метеорита в ходу +{}.",
+                mult_text(hundredths(Rule::RogueCrestMeteorAddPercent))
             ),
-            Crest::HatMeteor => format!(
+            Crest::HatMeteor => {
                 "Метеорит оставляет горящий кратер до вашего следующего хода: вошедшая в него \
-                 фигура получает {} урона.",
-                rule(Rule::RogueCrestCraterDamage)
-            ),
+                 фигура получает урон этого метеорита."
+                    .to_owned()
+            }
             Crest::HatPlus => {
                 "Метеорит бьёт крестом: клетку падения и четыре соседние по прямым.".to_owned()
             }
@@ -1488,11 +1646,6 @@ impl Crest {
                     true
                 )
             ),
-            Crest::KingCoin => "Фигуры из запаса продаются за полную цену в магазине.".to_owned(),
-            Crest::Kings2 => match rule(Rule::RogueCrestKings2Percent) {
-                200 => "Золотые фигуры появляются в магазине вдвое чаще.".to_owned(),
-                p => format!("Шанс золотых фигур в магазине — {p}% от обычного."),
-            },
             Crest::KingQueen => format!(
                 "Золотой ферзь приносит ещё {} за каждую победу.",
                 coins(
@@ -1503,79 +1656,64 @@ impl Crest {
             Crest::KingSkull => {
                 "Погибшая золотая фигура возвращает золотом свою цену в магазине.".to_owned()
             }
+            Crest::Mult => format!(
+                "Мульти +{}. Урон ваших фигур — их атака × мульти; гербы мульти действуют по \
+                 порядку покупки.",
+                mult_text(hundredths(Rule::RogueCrestMultAddPercent))
+            ),
+            Crest::KingMult => format!(
+                "Каждый удар вашего короля в этом ходу умножает мульти на {} (с этого места в \
+                 порядке гербов). Урон ваших фигур — их атака × мульти.",
+                mult_text(hundredths(Rule::RogueCrestKingMultPercent))
+            ),
+            Crest::FewMult => format!(
+                "Мульти × ({} − ваших фигур на доске), не меньше ×1.",
+                rule(Rule::RogueCrestFewBase)
+            ),
+            Crest::GoldMult => "Мульти золотых фигур + ваше золото.".to_owned(),
+            Crest::PawnMult => format!(
+                "Каждый удар вашей пешки в этом ходу умножает мульти на {}.",
+                mult_text(hundredths(Rule::RogueCrestPawnMultPercent))
+            ),
+            Crest::KnightMult => format!(
+                "Мульти +{} за каждый удар ваших коней в этом ходу.",
+                mult_text(hundredths(Rule::RogueCrestKnightAddPercent))
+            ),
+            Crest::SwordMult => format!(
+                "Мульти ×{} за каждую вашу фигуру, ударившую в этом ходу раньше.",
+                mult_text(hundredths(Rule::RogueCrestSwordMultPercent))
+            ),
+            Crest::FirstStrike => format!(
+                "Мульти первой бьющей в ходу фигуры +{}.",
+                mult_text(hundredths(Rule::RogueCrestFirstAddPercent))
+            ),
+            Crest::QueenMult => format!(
+                "Мульти +{} за каждый удар вашего ферзя в этом ходу.",
+                mult_text(hundredths(Rule::RogueCrestQueenAddPercent))
+            ),
+            Crest::FlameMult => format!(
+                "Каждый взрыв вашей огненной фигуры в этом ходу умножает мульти на {}.",
+                mult_text(hundredths(Rule::RogueCrestFlameMultPercent))
+            ),
+            Crest::SnowMult => format!(
+                "Мульти ×{} за каждую замороженную фигуру на доске.",
+                mult_text(hundredths(Rule::RogueCrestSnowMultPercent))
+            ),
+            Crest::BoltMult => format!(
+                "Мульти молнии +{} за каждую фигуру перед задетой в цепочке.",
+                mult_text(hundredths(Rule::RogueCrestBoltAddPercent))
+            ),
+            Crest::WindMult => format!(
+                "Мульти воздушных фигур +{} за каждый ход ваших воздушных фигур в этом ходу.",
+                mult_text(hundredths(Rule::RogueCrestWindAddPercent))
+            ),
             Crest::Piggy => format!(
                 "В конце уровня за каждые {} золота каждая ваша золотая фигура — на доске и в \
                  запасе — приносит ещё монету.",
                 rule(Rule::RogueCrestPiggyStep)
             ),
-            Crest::AxeFlame
-            | Crest::AxeBolt
-            | Crest::AxeWind
-            | Crest::AxeKing
-            | Crest::AxeDark
-            | Crest::AxeSnow
-            | Crest::AxeHat
-            | Crest::KingFlame
-            | Crest::KingBolt
-            | Crest::KingWind
-            | Crest::KingDark
-            | Crest::KingSnow
-            | Crest::KingHat
-            | Crest::HatFlame
-            | Crest::HatBolt
-            | Crest::HatWind
-            | Crest::HatDark
-            | Crest::HatSnow
-            | Crest::FlameSnow
-            | Crest::SnowBolt
-            | Crest::SnowWind
-            | Crest::SnowDark
-            | Crest::FlameBolt
-            | Crest::FlameWind
-            | Crest::FlameDark
-            | Crest::BoltWind
-            | Crest::BoltDark
-            | Crest::WindDark => {
-                let (base, with) = self.unlocks().expect("герб открывает объединённую");
-                let adjective = |power: Power| match power {
-                    Power::Fire => "огненные",
-                    Power::Spark => "электрические",
-                    Power::Wind => "воздушные",
-                    Power::Gold => "золотые",
-                    Power::Shade => "теневые",
-                    _ => "ледяные",
-                };
-                // «огненные ледяные фигуры», «золотые маги», «варвары-маги».
-                let whose = |power: Power| match power {
-                    Power::Fire => "огненных",
-                    Power::Spark => "электрических",
-                    Power::Wind => "воздушных",
-                    Power::Gold => "золотых",
-                    Power::Shade => "теневых",
-                    Power::Ice => "ледяных",
-                    Power::Barbarian => "варваров",
-                    _ => "магов",
-                };
-                let plural = match (base, with) {
-                    (Power::Barbarian, Power::Wizard) => "варвары-маги".to_owned(),
-                    (Power::Barbarian, with) => format!("{} варвары", adjective(with)),
-                    (Power::Gold, Power::Wizard) => "золотые маги".to_owned(),
-                    (Power::Gold, with) => format!("{} золотые фигуры", adjective(with)),
-                    (Power::Ice, with) => format!("{} ледяные фигуры", adjective(with)),
-                    (Power::Fire, with) => format!("огненные {} фигуры", adjective(with)),
-                    (Power::Spark, with) => format!("электрические {} фигуры", adjective(with)),
-                    (Power::Wind, with) => format!("воздушные {} фигуры", adjective(with)),
-                    (_, with) => format!("{} маги", adjective(with)),
-                };
-                format!(
-                    "В магазине появляются {plural} — фигуры с силами обеих: на них действуют \
-                     гербы и {}, и {}.",
-                    whose(base),
-                    whose(with)
-                )
-            }
             Crest::RerollCoin => format!(
-                "Обновить фигуры в магазине стоит {} вместо {}.",
+                "Первое обновление магазина стоит {} вместо {}.",
                 coins(
                     rule(Rule::RogueCrestRerollCoinCost).clamp(0, 999) as u16,
                     false
@@ -1592,8 +1730,8 @@ const NO_ORIGIN: u8 = 64;
 /// Варвар бьёт за конец хода не больше стольких раз подряд (каждый следующий — после убийства).
 const BARBARIAN_ROUNDS: u8 = 16;
 
-/// Наибольшее число мест на прилавке магазина (длина массива `Rogue::offers`).
-pub const SHOP_MAX: usize = 5;
+/// Наибольшее число мест на прилавке магазина (длина массива `Rogue::wares`).
+pub const SHOP_MAX: usize = 8;
 
 /// Что продаёт магазин (короля нет) и вес — тот же, что у фигур волн на первом уровне
 /// (`Rule::RogueWeight*`, с 0.63).
@@ -1637,32 +1775,99 @@ pub fn shop_price(stock: Stock) -> u16 {
     price.min(u32::from(u16::MAX)) as u16
 }
 
+/// `value` × `percent` / 100 без переполнения: больше `i32::MAX` не бывает (урон без предела, с
+/// 0.120, — предел только у самого числа).
+fn percent_of(value: i32, percent: i32) -> i32 {
+    (i64::from(value) * i64::from(percent) / 100).clamp(i64::from(i32::MIN), i64::from(i32::MAX))
+        as i32
+}
+
+/// Сумма урона без переполнения.
+fn damage_sum(hits: impl Iterator<Item = i32>) -> i32 {
+    hits.fold(0, i32::saturating_add)
+}
+
+/// Число правила в сотых (гербы мульти: 150 — 1.5).
+pub fn hundredths(rule: Rule) -> f64 {
+    f64::from(balance().rule(rule)) / 100.0
+}
+
+/// Мульти для глаз: до сотых без лишних нулей («2», «1.5», «2.25»), от сотни — целым.
+pub fn mult_text(m: f64) -> String {
+    let m = m.min(f64::MAX);
+    if m >= 100.0 {
+        return format!("{m:.0}");
+    }
+    let text = format!("{m:.2}");
+    text.trim_end_matches('0').trim_end_matches('.').to_owned()
+}
+
 /// Rogue-like: полное здоровье коня (`Rule::RogueKnightHp`, с 0.78) — у обеих сторон.
 pub fn rogue_knight_hp() -> i32 {
-    balance().rule(Rule::RogueKnightHp).clamp(1, 99) * crate::balance::UNIT
+    balance().rule(Rule::RogueKnightHp).clamp(1, 999) * crate::balance::POINT
+}
+
+/// Rogue-like: сколько вещей на выбор в сундуке — `Rule::RogueChestChoices`.
+pub fn chest_choices() -> usize {
+    balance()
+        .rule(Rule::RogueChestChoices)
+        .clamp(1, CHEST_MAX as i32) as usize
+}
+
+/// Случайность магазина — xorshift64* от зерна `seed`: младшие биты соседних чисел простого
+/// xorshift связаны (выбор «фигура или герб» сдвигал доли фигур). Даёт число в `0..n`.
+fn shop_random(seed: u64) -> impl FnMut(u64) -> u64 {
+    let mut state = seed | 1;
+    move |n: u64| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 32) % n.max(1)
+    }
+}
+
+/// Случайная карта (зеркало — реже, `Rule::RogueRareCardPercent`), кроме `except`.
+fn draw_card(next: &mut impl FnMut(u64) -> u64, except: &[Card]) -> Card {
+    let rare = balance().rule(Rule::RogueRareCardPercent).clamp(0, 100) as u64;
+    let weights: Vec<(Card, u64)> = Card::ALL
+        .into_iter()
+        .filter(|c| !except.contains(c))
+        .map(|c| (c, if c == Card::Mirror { rare } else { 100 }))
+        .collect();
+    let total: u64 = weights.iter().map(|w| w.1).sum();
+    let mut roll = next(total);
+    weights
+        .iter()
+        .find(|&&(_, w)| {
+            let hit = roll < w;
+            roll = roll.saturating_sub(w);
+            hit
+        })
+        .map_or(Card::Mask, |&(card, _)| card)
+}
+
+/// Rogue-like: за сколько продаётся герб (с 0.112) — `Rule::RogueCrestSellPrice`.
+pub fn crest_sell_price() -> u16 {
+    balance().rule(Rule::RogueCrestSellPrice).clamp(0, 999) as u16
+}
+
+/// Фигура по весам `weights` (нет весов — пешка).
+fn draw_stock(weights: &[(Stock, u64)], next: &mut impl FnMut(u64) -> u64) -> Stock {
+    let total: u64 = weights.iter().map(|w| w.1).sum();
+    let mut roll = next(total);
+    weights
+        .iter()
+        .find(|&&(_, w)| {
+            let hit = roll < w;
+            roll = roll.saturating_sub(w);
+            hit
+        })
+        .map_or(Stock::new(Kind::Pawn, Power::Plain), |&(stock, _)| stock)
 }
 
 /// Rogue-like: цена герба в магазине.
 pub fn crest_price() -> u16 {
     balance().rule(Rule::RogueCrestPrice).clamp(0, 999) as u16
-}
-
-/// Rogue-like: сколько стоит обновить гербы.
-pub fn crest_reroll_cost() -> u16 {
-    balance().rule(Rule::RogueCrestRerollCost).clamp(0, 999) as u16
-}
-
-/// Rogue-like: за сколько фигуру продают из запаса (с 0.69): за цену обычной такой же в
-/// магазине, золотую — за `Rule::RogueGoldSellPercent` (200%) от неё; огненная,
-/// электрическая и воздушная — как обычная.
-pub fn sell_price(stock: Stock) -> u16 {
-    let plain = u32::from(shop_price(Stock::new(stock.kind, Power::Plain)));
-    let price = if stock.has(Power::Gold) {
-        plain * balance().rule(Rule::RogueGoldSellPercent).clamp(0, 1000) as u32 / 100
-    } else {
-        plain
-    };
-    price.min(u32::from(u16::MAX)) as u16
 }
 
 /// Rogue-like: золото за побеждённую фигуру волн: король-толстосум — `Rule::RogueBossGold`.
@@ -1711,16 +1916,22 @@ pub enum RogueAction {
     WinRound { gold: u16 },
     /// Покупка фигуры в магазине — в запас.
     Buy { stock: Stock, price: u16 },
-    /// Новые фигуры на прилавке.
+    /// Новый прилавок (фигуры и гербы).
     Reroll { price: u16 },
-    /// Продажа фигуры из запаса (с 0.65) — за `sell_price`.
-    Sell { stock: Stock, price: u16 },
     /// «Уйти» из магазина — к расстановке.
     Leave,
     /// Покупка герба (с 0.77).
     BuyCrest { crest: Crest, price: u16 },
-    /// Новые гербы на прилавке.
-    RerollCrests { price: u16 },
+    /// Куплен и открыт сундук (с 0.110).
+    OpenChest { chest: Chest, big: bool, price: u16 },
+    /// Из открытого сундука взята вещь.
+    TakeFromChest { ware: Ware },
+    /// Сыграна карта (с 0.111).
+    PlayCard(CardUse),
+    /// Продажа фигуры из запаса (с 0.65; убрана в 0.108, с 0.112 снова).
+    Sell { stock: Stock, price: u16 },
+    /// Продажа герба (с 0.112).
+    SellCrest { crest: Crest, price: u16 },
 }
 
 impl Rogue {
@@ -1771,8 +1982,6 @@ pub struct Outcome {
     /// Перехват (с 0.44): чужие кони, до которых дошла походившая фигура, сразу бьют её;
     /// пешку, прошедшую двойным ходом мимо чужой пешки, та бьёт на проходе.
     pub reactions: Vec<Strike>,
-    /// Теневая фигура с гербом теневого огня и черепа ударила чужих, через которых прошла.
-    pub passed: Vec<WaveHit>,
 }
 
 const WHITE_SHORT: u8 = 1;
@@ -1896,15 +2105,18 @@ fn close_strike(kind: Kind, from: Square, to: Square) -> bool {
             == 1
 }
 
-/// Место клетки в очереди ударов: a8, a7, …, a1, b8, …, h1.
+/// Место клетки в очереди ударов (с 0.109, просьба пользователя): сверху вниз по горизонталям,
+/// в каждой слева направо — a8, b8, …, h8, a7, …, h1.
 #[allow(dead_code)] // карты убраны из интерфейса (0.40)
 pub fn strike_order(sq: Square) -> u8 {
-    (file_of(sq) * 8 + 7 - rank_of(sq)) as u8
+    ((7 - rank_of(sq)) * 8 + file_of(sq)) as u8
 }
 
 /// Клетки в очереди ударов.
 fn strike_queue() -> impl Iterator<Item = Square> {
-    (0..8).flat_map(|file| (0..8).rev().map(move |rank| (rank * 8 + file) as Square))
+    (0..8)
+        .rev()
+        .flat_map(|rank| (0..8).map(move |file| (rank * 8 + file) as Square))
 }
 
 /// Какие права на рокировку пропадают, если с клетки ушла или на ней погибла фигура.
@@ -1956,8 +2168,6 @@ pub struct Position {
     barrier: [u64; 2],
     /// Сколько фигур соперника убила сторона («Истории Побед»).
     kills: [u8; 2],
-    /// Сторона с усиленными фигурами (компьютер): лава в пешках, электричество в слонах.
-    boosted: Option<Color>,
 
     /// Запас убитых фигур соперника («шведка», с 0.43): [сторона][`Kind`][ходов ждать 0..=2]
     /// [сколько раз уже возвращалась: 0..`MAX_REBIRTHS`] — сколько таких фигур.
@@ -2002,6 +2212,11 @@ pub struct Position {
     twice: u64,
     /// Горящие кратеры метеоритов (герб шляпы и метеорита, с 0.94) — до хода игрока.
     craters: u64,
+    /// Урон горящего кратера на клетке — урон упавшего туда метеорита (с 0.121).
+    crater_damage: [i32; 64],
+    /// Сколько фигур сторона выставила из запаса в этом ходу (rogue-like, с 0.108 — не больше
+    /// `Rule::RogueDropsPerTurn`).
+    drops: u8,
 }
 
 /// Сколько начал своих ходов ждать, прежде чем выставить взятую фигуру.
@@ -2702,7 +2917,6 @@ impl Position {
             encircled_by: None,
             barrier: [0; 2],
             kills: [0; 2],
-            boosted: None,
 
             reserve: [[[[0; MAX_REBIRTHS as usize]; 3]; 6]; 2],
             fire_reserve: [[0; 6]; 2],
@@ -2724,6 +2938,8 @@ impl Position {
             airborne: 0,
             twice: 0,
             craters: 0,
+            crater_damage: [0; 64],
+            drops: 0,
         };
         position.deal();
         Ok(position)
@@ -2900,6 +3116,24 @@ impl Position {
         self.moves_per_turn().saturating_sub(self.moves_made)
     }
 
+    /// Сколько ещё фигур сторона, которая ходит, может выставить из запаса в этом ходу: в
+    /// rogue-like — `Rule::RogueDropsPerTurn` (с 0.108), иначе — сколько ходов.
+    pub fn drops_left(&self) -> u8 {
+        match self.rogue {
+            Some(_) => (balance().rule(Rule::RogueDropsPerTurn).clamp(0, 64) as u8)
+                .saturating_sub(self.drops),
+            None => u8::MAX,
+        }
+    }
+
+    /// Есть ли у стороны `us` место ещё для одной фигуры на доске: в rogue-like своих фигур
+    /// меньше `Rule::RogueMaxPieces` (с 0.108).
+    pub fn board_room(&self, us: Color) -> bool {
+        self.rogue.is_none()
+            || self.pieces().filter(|(_, p)| p.color == us).count()
+                < balance().rule(Rule::RogueMaxPieces).clamp(1, 64) as usize
+    }
+
     /// Фигура на `sq` уже ходила в этом ходу (rogue-like: каждый ход — другой фигурой).
     pub fn used(&self, sq: Square) -> bool {
         self.used & 1 << sq != 0
@@ -2959,11 +3193,15 @@ impl Position {
             origin: pos.origins(player),
             gold: 0,
             shop: false,
-            offers: [None; SHOP_MAX],
+            wares: [None; SHOP_MAX],
             rolls: 0,
-            crests: [None; CRESTS],
-            crest_offers: [None; SHOP_MAX],
-            crest_rolls: 0,
+            rerolls: 0,
+            chests: [None; CHEST_SLOTS],
+            hand: [None; ROGUE_HAND_MAX],
+            last_card: None,
+            card_rolls: 0,
+            turn: TurnCounts::default(),
+            crests: [None; CREST_SLOTS],
             seed: seed | 1,
         });
         for sq in 0..64 {
@@ -3103,8 +3341,8 @@ impl Position {
             // `Rule::RoguePoisonPercent` (с 0.79).
             let mut venom = i32::from(r.level) == balance().rule(Rule::RoguePoisonLevel)
                 && (next(100) as i32) < balance().rule(Rule::RoguePoisonPercent);
-            // У каждого уровня — свой вид усиленных (с 0.105.1, просьба пользователя: половина
-            // волны обычные, половина — те, что заданы для уровня, других нет): на уровне
+            // У каждого уровня — свой вид усиленных (с 0.105.1, просьба пользователя: других нет;
+            // с 0.114 шансы — 100%, вся волна уровня — такие, на уровнях без вида — обычные): на уровне
             // `Rule::RogueArmorLevel` (с волны `RogueArmorWave`) — бронированные, на
             // `RogueVampireLevel` — вампиры, на `RogueZombieLevel` — зомби; шанс — свой `…Percent`.
             let (mut armored, mut vampire, mut zombie) = (false, false, false);
@@ -3157,13 +3395,21 @@ impl Position {
                     (venom, zombie) = (true, true);
                 }
             }
-            self.board[sq as usize] = Some(self.crested(Piece {
-                venom,
-                armored,
-                vampire,
-                zombie,
-                ..Piece::new(kind, enemy)
-            }));
+            // Каждый уровень (с 0.122) — здоровье фигур волн больше (`Piece::tough`).
+            let piece = Piece {
+                tough: r.level.saturating_sub(1),
+                ..self.crested(Piece {
+                    venom,
+                    armored,
+                    vampire,
+                    zombie,
+                    ..Piece::new(kind, enemy)
+                })
+            };
+            self.board[sq as usize] = Some(Piece {
+                hp: piece.max_hp(),
+                ..piece
+            });
             spawned.push((sq, kind));
         }
         if spawned.is_empty() {
@@ -3402,7 +3648,7 @@ impl Position {
                 .is_some_and(|p| p.bastion && p.color == target.color)
         });
         if shielded {
-            raw * balance().param(Param::BastionPercent) / 100
+            percent_of(raw, balance().param(Param::BastionPercent))
         } else {
             raw
         }
@@ -3779,10 +4025,9 @@ impl Position {
         })
     }
 
-    /// Сторона заканчивает ход: её свободные фигуры бьют (`strike_all`), насыщенные лавой
-    /// пешки взрываются (`lava_blasts`), замороженные отсчитывают пропущенный ход, ходит
-    /// соперник — его ледяные зоны тают (продержались ход), и начинает он с карты из колоды;
-    /// у усиленной стороны к ходу соперника насыщаются лавой новые пешки.
+    /// Сторона заканчивает ход: её свободные фигуры бьют (`strike_all`), огненные взрываются
+    /// (`lava_blasts`), маги шлют метеориты, замороженные отсчитывают пропущенный ход, ходит
+    /// соперник — его ледяные зоны тают (продержались ход), и начинает он с карты из колоды.
     pub fn end_turn(&mut self) -> TurnEnd {
         // Rogue-like: кнопка «Начать раунд» кончает расстановку.
         if self.planning() {
@@ -3797,7 +4042,7 @@ impl Position {
         // Герб огня и черепа: погибшие огненные фигуры взрываются (после ударов, взрывов и яда).
         let dead: Vec<(Square, Piece)> = strikes
             .iter()
-            .flat_map(|s| s.wounded().copied())
+            .flat_map(|s| s.hits().copied())
             .chain(poison.iter().copied())
             .filter(|h| h.killed)
             .map(|h| (h.square, h.target))
@@ -3811,6 +4056,9 @@ impl Position {
             .collect();
         let deaths = self.death_blasts(dead);
         blasts.extend(deaths);
+        // Rogue-like (с 0.120): временные прибавки к мульти (удары короля и всё, что копится от
+        // ударов и временных эффектов) действуют до конца хода — урон этого хода нанесён.
+        self.end_turn_mult();
         // Rogue-like: фигуры волн сами не ходят — в конце хода сначала бьют, потом шагают
         // вперёд; новая волна выходит после шага и в этот ход не бьёт. Шагнувшие в горящий
         // кратер — горят.
@@ -3863,6 +4111,7 @@ impl Position {
         // Горящие кратеры гаснут к ходу игрока (продержались ход соперника).
         if self.rogue.is_some_and(|r| r.player == self.side) {
             self.craters = 0;
+            self.crater_damage = [0; 64];
         }
         self.thaw(self.side);
 
@@ -3876,18 +4125,13 @@ impl Position {
         self.airborne = 0;
         self.twice = 0;
         self.fed = 0;
+        self.drops = 0;
         self.cards_played = 0;
         self.draw_card(self.side);
         self.gain_mana();
-        let charged = if self.boosted == Some(us) {
-            self.charge_lava(us)
-        } else {
-            Vec::new()
-        };
         TurnEnd {
             strikes,
             blasts,
-            charged,
             spawned,
             marched,
             level_up: None,
@@ -3921,7 +4165,7 @@ impl Position {
         };
         let enemy = r.player.opponent();
         let wall = self.wall(enemy);
-        let hp = balance().rule(Rule::RogueZombieRiseHp).clamp(1, 99) * crate::balance::UNIT;
+        let hp = balance().rule(Rule::RogueZombieRiseHp).clamp(1, 999) * crate::balance::POINT;
         let mut risen = Vec::new();
         for sq in 0..64u8 {
             let grave = self.graves[sq as usize];
@@ -3946,15 +4190,18 @@ impl Position {
                 continue;
             };
             self.graves[sq as usize] = Grave::default();
-            let piece = self.crested(Piece {
-                zombie: true,
-                risen: true,
-                fresh: true,
-                venom: grave.venom,
-                ..Piece::new(kind, enemy)
-            });
+            let piece = Piece {
+                tough: self.rogue.map_or(0, |r| r.level.saturating_sub(1)),
+                ..self.crested(Piece {
+                    zombie: true,
+                    risen: true,
+                    fresh: true,
+                    venom: grave.venom,
+                    ..Piece::new(kind, enemy)
+                })
+            };
             self.board[to as usize] = Some(Piece {
-                hp: hp.min(piece.max_hp()),
+                hp: piece.scaled(hp).min(piece.max_hp()),
                 ..piece
             });
             risen.push((to, kind));
@@ -3962,37 +4209,45 @@ impl Position {
         risen
     }
 
-    /// Конец хода: каждый свободный (не замёрзший, не только что выставленный) маг стороны
-    /// шлёт метеорит (с гербом двух шляп — два) на случайную клетку с чужой фигурой —
-    /// `Rule::RogueWizardDamage` урона (с гербом метеорита — `Rule::RogueCrestMeteorDamage`); с
-    /// гербом шляпы и плюса — ещё по соседним по прямым чужим, с гербом шляпы и метеорита —
-    /// горящий кратер на клетке падения. Случайность — зерно партии, ключ позиции, клетка мага.
+    /// Конец хода: каждый свободный (не замёрзший, не только что выставленный) маг стороны,
+    /// накопивший метеорит (с 0.108 — раз в `Rule::RogueWizardEvery` своих ходов, `Piece::rest`),
+    /// шлёт метеорит (с гербом двух шляп — два) на случайную клетку с чужой фигурой — с 0.121
+    /// урон самого мага (атака × мульти метеорита, `Blow::Meteor`); с гербом шляпы и плюса — ещё
+    /// по соседним по прямым чужим, с гербом шляпы и метеорита — горящий кратер на клетке
+    /// падения (урон кратера — урон метеорита). Случайность — зерно партии, ключ позиции, клетка
+    /// мага.
     fn meteors(&mut self) -> Vec<Meteor> {
         let us = self.side;
         let Some(r) = self.rogue else {
             return Vec::new();
         };
-        let damage_rule = if self.crest_for(us, Crest::Meteor) {
-            Rule::RogueCrestMeteorDamage
-        } else {
-            Rule::RogueWizardDamage
-        };
-        let raw = balance().rule(damage_rule).clamp(0, 99) * crate::balance::UNIT;
-        let count = if self.crest_for(us, Crest::Hats) {
-            2
-        } else {
-            1
-        };
+        // Две шляпы — метеорит сверху за каждый такой герб (с 0.124 они складываются).
+        let count = 1 + self.crest_times(us, Crest::Hats).min(16) as u64;
         let wide = self.crest_for(us, Crest::HatPlus);
         let crater = self.crest_for(us, Crest::HatMeteor);
         let wall = self.wall(us);
+        let every = balance().rule(Rule::RogueWizardEvery).clamp(1, 99) as u8;
         let mut meteors = Vec::new();
         'wizards: for from in strike_queue() {
-            if self.board[from as usize]
-                .is_none_or(|p| p.color != us || !p.wizard || p.is_frozen() || p.fresh)
-            {
+            let Some(wizard) = self.board[from as usize]
+                .filter(|p| p.color == us && p.wizard && !p.is_frozen() && !p.fresh)
+            else {
+                continue;
+            };
+            if wizard.rest > 0 {
+                self.board[from as usize] = Some(Piece {
+                    rest: wizard.rest - 1,
+                    ..wizard
+                });
                 continue;
             }
+            if !self.board.iter().flatten().any(|p| p.color != us) {
+                break;
+            }
+            self.board[from as usize] = Some(Piece {
+                rest: every - 1,
+                ..wizard
+            });
             for n in 0..count {
                 let targets: Vec<Square> = (0..64u8)
                     .filter(|&sq| self.board[sq as usize].is_some_and(|p| p.color != us))
@@ -4008,6 +4263,8 @@ impl Position {
                 state ^= state >> 7;
                 state ^= state << 17;
                 let at = targets[(state % targets.len() as u64) as usize];
+                let raw = self.damage(Some(from), wizard, Blow::Meteor);
+                self.note_blow(from, wizard, Blow::Meteor);
                 let mut squares = vec![at];
                 if wide {
                     squares.extend(
@@ -4036,6 +4293,7 @@ impl Position {
                 }
                 if crater {
                     self.craters |= 1 << at;
+                    self.crater_damage[at as usize] = raw;
                 }
                 meteors.push(Meteor {
                     from,
@@ -4054,13 +4312,12 @@ impl Position {
         self.craters
     }
 
-    /// Фигуры, шагнувшие (`marched`) в горящий кратер, получают `Rule::RogueCrestCraterDamage`;
-    /// за погибших — золото игроку.
+    /// Фигуры, шагнувшие (`marched`) в горящий кратер, получают урон упавшего туда метеорита
+    /// (`crater_damage`, с 0.121); за погибших — золото игроку.
     fn crater_burns(&mut self, marched: &[(Square, Square)]) -> Vec<Hit> {
         let Some(r) = self.rogue else {
             return Vec::new();
         };
-        let raw = balance().rule(Rule::RogueCrestCraterDamage).clamp(0, 99) * crate::balance::UNIT;
         let mut burned = Vec::new();
         for &(_, to) in marched {
             if self.craters & 1 << to == 0 {
@@ -4069,7 +4326,7 @@ impl Position {
             let Some(target) = self.board[to as usize] else {
                 continue;
             };
-            let damage = self.damage_at(to, raw);
+            let damage = self.damage_at(to, self.crater_damage[to as usize]);
             let (_, killed) = self.wound(to, damage);
             if killed {
                 self.score_kill(target, r.player);
@@ -4088,7 +4345,7 @@ impl Position {
     /// `Rule::RoguePoisonDamage` (могут погибнуть), яд уходит.
     fn poison_tick(&mut self) -> Vec<Hit> {
         let us = self.side;
-        let raw = balance().rule(Rule::RoguePoisonDamage).clamp(0, 99) * crate::balance::UNIT;
+        let raw = balance().rule(Rule::RoguePoisonDamage).clamp(0, 999) * crate::balance::POINT;
         let mut hits = Vec::new();
         for sq in 0..64u8 {
             let Some(piece) = self.board[sq as usize].filter(|p| p.color == us && p.poison > 0)
@@ -4121,131 +4378,551 @@ impl Position {
     }
 
     /// Rogue-like: прилавок магазина — `Rule::RogueShopSlots` мест (`None` — куплено).
-    pub fn offers(&self) -> Vec<Option<Stock>> {
+    pub fn wares(&self) -> Vec<Option<Ware>> {
         let n = (balance()
             .rule(Rule::RogueShopSlots)
             .clamp(1, SHOP_MAX as i32)) as usize;
-        self.rogue.map_or_else(Vec::new, |r| r.offers[..n].to_vec())
+        self.rogue.map_or_else(Vec::new, |r| r.wares[..n].to_vec())
     }
 
-    /// Rogue-like: прилавок заполняется заново — по весам фигур волн первого уровня
-    /// (`shop_weights`), огненная фигура — в `FIRE_RARITY` раз реже обычной того же вида.
-    /// Случайность — зерно партии и счёт заполнений: при отмене прилавок тот же.
-    fn roll_offers(&mut self) {
+    /// Фигуры на прилавке (для тестов): `None` — куплено или герб.
+    #[cfg(test)]
+    pub(crate) fn offers(&self) -> Vec<Option<Stock>> {
+        self.wares()
+            .into_iter()
+            .map(|ware| match ware {
+                Some(Ware::Piece(stock)) => Some(stock),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Rogue-like: прилавок заполняется заново (с 0.108 — фигуры и гербы вместе): на каждом месте
+    /// фигура с шансом `Rule::RogueShopPiecePercent`, иначе герб (разные, из ещё не купленных;
+    /// кончились — фигура). Фигуры — по весам фигур волн первого уровня (`shop_weights`),
+    /// особая — в `FIRE_RARITY` раз реже обычной того же вида. Случайность — зерно партии и
+    /// счёт заполнений: при отмене прилавок тот же.
+    fn roll_shop(&mut self) {
         let Some(mut r) = self.rogue else {
             return;
         };
         r.rolls = r.rolls.wrapping_add(1);
-        let mut state = (r.seed
-            ^ (u64::from(r.rolls) << 8 | u64::from(r.level)).wrapping_mul(0xD1B5_4A32_D192_ED03))
-            | 1;
-        let mut next = move |n: u64| {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            state % n.max(1)
+        let mut next = shop_random(
+            r.seed
+                ^ (u64::from(r.rolls) << 8 | u64::from(r.level))
+                    .wrapping_mul(0xD1B5_4A32_D192_ED03),
+        );
+        let weights = self.stock_weights();
+        let piece_percent = balance().rule(Rule::RogueShopPiecePercent).clamp(0, 100) as u64;
+        // Гербы — из доступных (складывающиеся — всегда, остальные — некупленные) и не лежащих
+        // в сундуке.
+        let in_chest = |c: Crest| {
+            r.chests
+                .iter()
+                .flatten()
+                .any(|o| o.wares.contains(&Some(Ware::Crest(c))))
         };
-        // Гербы пар (две пешки, два слона…): этот вид — чаще, на все силы сразу.
-        let pair = balance().rule(Rule::RogueCrestPairPercent).clamp(0, 1000) as u64;
-        let paired = |kind: Kind| {
-            let crest = match kind {
-                Kind::Pawn => Crest::Pawns,
-                Kind::Bishop => Crest::Bishops,
-                Kind::Knight => Crest::Knights,
-                Kind::Rook => Crest::Rooks,
-                Kind::Queen => Crest::Queens,
-                Kind::King => return 100,
-            };
-            if self.has_crest(crest) { pair } else { 100 }
-        };
-        // Объединённые, открытые гербами, — с весом особой (`Rule::RogueComboWeightPercent`) и
-        // множителями обеих сил.
-        let combo = balance().rule(Rule::RogueComboWeightPercent).clamp(0, 1000) as u64;
-        let combos: Vec<(Power, Power)> =
-            COMBOS.into_iter().filter(|&c| self.combo_open(c)).collect();
-        let weights: Vec<(Stock, u64)> = shop_weights()
+        let mut left: Vec<Crest> = Crest::ALL
             .into_iter()
-            .map(|(kind, w)| (kind, w * paired(kind)))
+            .filter(|&c| self.crest_available(c) && !in_chest(c))
+            .collect();
+        for ware in &mut r.wares {
+            if next(100) < piece_percent || left.is_empty() {
+                *ware = Some(Ware::Piece(draw_stock(&weights, &mut next)));
+            } else {
+                let crest = left.remove(next(left.len() as u64) as usize);
+                *ware = Some(Ware::Crest(crest));
+            }
+        }
+        self.rogue = Some(r);
+    }
+
+    /// Rogue-like: сундуки наполняются заново (к каждому магазину): в сундуке фигур — разные
+    /// фигуры по весам прилавка (`stock_weights`), в сундуке гербов — разные гербы из
+    /// некупленных, в сундуке карт — разные карты сил; по `Rule::RogueChestChoices`. Случайность —
+    /// зерно партии и уровень.
+    fn roll_chests(&mut self) {
+        self.roll_chests_with(None);
+    }
+
+    /// Сундуки определённых видов (для тестов): (вид, большой) по местам.
+    #[cfg(test)]
+    pub(crate) fn set_chests(&mut self, kinds: &[(Chest, bool)]) {
+        self.roll_chests_with(Some(kinds));
+    }
+
+    /// Сундуки магазина; `forced` — виды по местам вместо случайных.
+    fn roll_chests_with(&mut self, forced: Option<&[(Chest, bool)]>) {
+        let Some(mut r) = self.rogue else {
+            return;
+        };
+        let mut next = shop_random(
+            r.seed ^ (u64::from(r.level) << 4 | 0xC).wrapping_mul(0x9E37_79B9_7F4A_7C15),
+        );
+        let weights = self.stock_weights();
+        let big_percent = balance().rule(Rule::RogueBigChestPercent).clamp(0, 100) as u64;
+        // Виды — разные, в случайном порядке; каждый — большой с шансом `RogueBigChestPercent`.
+        let mut kinds = Chest::ALL.to_vec();
+        r.chests = [None; CHEST_SLOTS];
+        let mut used_crests: Vec<Crest> = Vec::new();
+        let count = forced.map_or(chest_slots().min(kinds.len()), <[_]>::len);
+        for slot in 0..count {
+            let (kind, big) = match forced {
+                Some(list) => list[slot],
+                None => {
+                    let kind = kinds.remove(next(kinds.len() as u64) as usize);
+                    (kind, next(100) < big_percent)
+                }
+            };
+            let mut offer = ChestOffer {
+                kind,
+                big,
+                state: ChestState::Closed,
+                taken: 0,
+                wares: [None; CHEST_MAX],
+            };
+            let n = offer.choices();
+            let mut items: Vec<Ware> = Vec::new();
+            match kind {
+                Chest::Pieces => {
+                    for _ in 0..200 {
+                        if items.len() >= n {
+                            break;
+                        }
+                        let ware = Ware::Piece(draw_stock(&weights, &mut next));
+                        if !items.contains(&ware) {
+                            items.push(ware);
+                        }
+                    }
+                }
+                Chest::Crests => {
+                    let mut left: Vec<Crest> = Crest::ALL
+                        .into_iter()
+                        .filter(|&c| self.crest_available(c) && !used_crests.contains(&c))
+                        .collect();
+                    while items.len() < n && !left.is_empty() {
+                        let crest = left.remove(next(left.len() as u64) as usize);
+                        used_crests.push(crest);
+                        items.push(Ware::Crest(crest));
+                    }
+                }
+                // Карты — разные, поровну (зеркало — реже, `Rule::RogueRareCardPercent`).
+                Chest::Cards => {
+                    for _ in 0..200 {
+                        if items.len() >= n {
+                            break;
+                        }
+                        let ware = Ware::Card(draw_card(&mut next, &[]));
+                        if !items.contains(&ware) {
+                            items.push(ware);
+                        }
+                    }
+                }
+            }
+            for (i, ware) in items.into_iter().enumerate() {
+                offer.wares[i] = Some(ware);
+            }
+            r.chests[slot] = Some(offer);
+        }
+        self.rogue = Some(r);
+    }
+
+    /// Фигуры магазина и их веса: по весам фигур волн первого уровня (`shop_weights`), особая —
+    /// в `FIRE_RARITY` раз реже обычной того же вида, все объединённые вместе — в 4 раза реже
+    /// одиночных особых (`Rule::RogueComboWeightPercent`).
+    fn stock_weights(&self) -> Vec<(Stock, u64)> {
+        // Объединённые (с 0.111 — все, без гербов): вместе — `Rule::RogueComboWeightPercent` (25%)
+        // от всех одиночных особых того же вида, поровну на пару.
+        let share = balance().rule(Rule::RogueComboWeightPercent).clamp(0, 1000) as u64;
+        shop_weights()
+            .into_iter()
+            .map(|(kind, w)| (kind, w * 100))
             .flat_map(|(kind, w)| {
                 let mut row = vec![(Stock::new(kind, Power::Plain), w * FIRE_RARITY * 100)];
-                for power in [
-                    Power::Fire,
-                    Power::Spark,
-                    Power::Wind,
-                    Power::Gold,
-                    Power::Shade,
-                    Power::Ice,
-                    Power::Barbarian,
-                    Power::Wizard,
-                ] {
-                    // Магом пешка не бывает.
-                    let w = if power == Power::Wizard && kind == Kind::Pawn {
-                        0
-                    } else {
-                        w * self.power_percent(power)
-                    };
+                // Магом пешка не бывает.
+                let allowed = |power: Power| power != Power::Wizard || kind != Kind::Pawn;
+                for power in SPECIAL_POWERS {
+                    let w = if allowed(power) { w * 100 } else { 0 };
                     row.push((Stock::new(kind, power), w));
                 }
-                for &(base, with) in &combos {
-                    let w = if (base == Power::Wizard || with == Power::Wizard)
-                        && kind == Kind::Pawn
-                    {
-                        0
+                let singles = SPECIAL_POWERS.into_iter().filter(|&p| allowed(p)).count() as u64;
+                let pairs = COMBOS
+                    .into_iter()
+                    .filter(|&(base, with)| allowed(base) && allowed(with))
+                    .count()
+                    .max(1) as u64;
+                for (base, with) in COMBOS {
+                    let w = if allowed(base) && allowed(with) {
+                        w * share * singles / pairs
                     } else {
-                        w * combo * self.power_percent(base) / 100 * self.power_percent(with) / 100
+                        0
                     };
                     row.push((Stock::combo(kind, base, with), w));
                 }
                 row
             })
-            .collect();
-        let total: u64 = weights.iter().map(|w| w.1).sum();
-        for offer in &mut r.offers {
-            let mut roll = next(total);
-            *offer = weights
-                .iter()
-                .find(|&&(_, w)| {
-                    let hit = roll < w;
-                    roll = roll.saturating_sub(w);
-                    hit
-                })
-                .map(|&(stock, _)| stock)
-                .or(Some(Stock::new(Kind::Pawn, Power::Plain)));
-        }
-        self.rogue = Some(r);
+            .collect()
     }
 
-    /// Rogue-like: покупка фигуры с места `slot` прилавка — в запас игрока, готовой.
+    /// Rogue-like: покупка с места `slot` прилавка: фигура — в запас игрока, готовой; герб — к
+    /// гербам игрока до конца забега.
     fn buy(&mut self, slot: usize) -> Option<RogueAction> {
-        let mut r = self.rogue.filter(|r| r.shop)?;
-        let stock = (*self.offers().get(slot)?)?;
-        let price = self.shop_price(stock);
-        if r.gold < price {
+        let mut r = self
+            .rogue
+            .filter(|r| r.shop && self.chest_open().is_none())?;
+        let ware = (*self.wares().get(slot)?)?;
+        let price = self.ware_price(ware);
+        if r.gold < price || matches!(ware, Ware::Crest(c) if !self.crest_available(c)) {
             return None;
         }
+        let action = match ware {
+            Ware::Piece(stock) => RogueAction::Buy { stock, price },
+            Ware::Crest(crest) => RogueAction::BuyCrest { crest, price },
+            // Карт на прилавке не бывает — только в сундуке.
+            Ware::Card(_) => return None,
+        };
         r.gold -= price;
-        r.offers[slot] = None;
+        r.wares[slot] = None;
         self.rogue = Some(r);
-        self.give_stock(stock.piece(r.player));
-        Some(RogueAction::Buy { stock, price })
+        self.receive(ware);
+        Some(action)
     }
 
-    /// Rogue-like: новые фигуры на прилавке за `Rule::RogueRerollCost` золота.
-    fn reroll(&mut self) -> Option<RogueAction> {
-        let mut r = self.rogue.filter(|r| r.shop)?;
-        let price = self.reroll_price();
-        if r.gold < price {
+    /// Rogue-like: игрок получает вещь: фигуру — в запас, готовой; герб — до конца забега; карту —
+    /// в руку.
+    fn receive(&mut self, ware: Ware) {
+        let Some(mut r) = self.rogue else {
+            return;
+        };
+        match ware {
+            Ware::Piece(stock) => self.give_stock(stock.piece(r.player)),
+            Ware::Card(card) => {
+                if let Some(free) = r.hand[..hand_size()].iter_mut().find(|c| c.is_none()) {
+                    *free = Some(card);
+                    self.rogue = Some(r);
+                }
+            }
+            Ware::Crest(crest) => {
+                let Some(free) = r.crests.iter_mut().find(|c| c.is_none()) else {
+                    return;
+                };
+                *free = Some(crest);
+                // Этот герб больше не продаётся: с прилавка и из сундука он уходит (кроме
+                // складывающихся, с 0.124).
+                if !crest.stacks() {
+                    let chests = r
+                        .chests
+                        .iter_mut()
+                        .flatten()
+                        .flat_map(|o| o.wares.iter_mut());
+                    for ware in r.wares.iter_mut().chain(chests) {
+                        if *ware == Some(Ware::Crest(crest)) {
+                            *ware = None;
+                        }
+                    }
+                }
+                self.rogue = Some(r);
+                // Гербы здоровья и атаки — и фигурам, что уже стоят на доске.
+                for sq in 0..64 {
+                    if let Some(piece) = self.board[sq] {
+                        self.board[sq] = Some(self.crested(piece));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Rogue-like: сундуки магазина по местам (`None` — места нет).
+    pub fn chests(&self) -> Vec<Option<ChestOffer>> {
+        self.rogue
+            .map_or_else(Vec::new, |r| r.chests[..chest_slots()].to_vec())
+    }
+
+    /// Rogue-like: сундук на месте `slot`.
+    pub fn chest(&self, slot: usize) -> Option<ChestOffer> {
+        self.chests().get(slot).copied().flatten()
+    }
+
+    /// Rogue-like: что в сундуке на месте `slot` на выбор (`None` — пусто).
+    pub fn chest_wares(&self, slot: usize) -> Vec<Option<Ware>> {
+        self.chest(slot).map_or_else(Vec::new, ChestOffer::wares)
+    }
+
+    /// Rogue-like: место открытого сундука — игрок выбирает из него.
+    pub fn chest_open(&self) -> Option<usize> {
+        self.chests()
+            .iter()
+            .position(|o| o.is_some_and(|o| o.state == ChestState::Open))
+    }
+
+    /// Rogue-like: сундук на месте `slot` можно купить — магазин открыт, другой не открыт, этот
+    /// закрыт и не пуст; сундук карт — пока в руке хватает места на всё, что из него берут.
+    pub fn chest_for_sale(&self, slot: usize) -> bool {
+        let Some(offer) = self.chest(slot) else {
+            return false;
+        };
+        self.shop_open()
+            && self.chest_open().is_none()
+            && offer.state == ChestState::Closed
+            && offer.wares().iter().any(Option::is_some)
+            && (offer.kind != Chest::Cards || self.hand().len() + offer.picks() <= hand_size())
+    }
+
+    /// Rogue-like: карты в руке игрока (по порядку получения).
+    pub fn hand(&self) -> Vec<Card> {
+        self.rogue
+            .map_or_else(Vec::new, |r| r.hand.iter().flatten().copied().collect())
+    }
+
+    /// Rogue-like: последняя сыгранная карта (в неё превращается маска).
+    pub fn last_card(&self) -> Option<Card> {
+        self.rogue.and_then(|r| r.last_card)
+    }
+
+    /// Rogue-like: карты сил можно играть — ходит игрок, идёт раунд (не расстановка и не
+    /// магазин).
+    pub fn cards_playable(&self) -> bool {
+        self.rogue
+            .is_some_and(|r| r.player == self.side && !r.planning && !r.shop)
+    }
+
+    /// Rogue-like: карту `card` можно сыграть сейчас. Карты на фигуры (силы, ранг, зеркало) — в
+    /// раунде (`cards_playable`) и если есть на что; остальные — в любой свой ход, и в магазине
+    /// тоже, пока не открыт сундук.
+    pub fn card_ready(&self, card: Card) -> bool {
+        let Some(r) = self.rogue.filter(|r| r.player == self.side) else {
+            return false;
+        };
+        if self.chest_open().is_some() {
+            return false;
+        }
+        match card {
+            Card::Power(_) | Card::Rank | Card::Mirror => !self.card_squares(card, None).is_empty(),
+            Card::Mask => r.last_card.is_some(),
+            Card::Crest => Crest::ALL.iter().any(|&c| self.crest_available(c)),
+            Card::Double => r.gold > 0,
+            Card::Coin | Card::Feather => true,
+        }
+    }
+
+    /// Rogue-like: на какие свои фигуры можно сыграть карту `card` (`first` — уже выбранная
+    /// первая фигура зеркала: тогда — какой второй её сделать копией).
+    pub fn card_squares(&self, card: Card, first: Option<Square>) -> Vec<Square> {
+        let Some(r) = self.rogue.filter(|_| self.cards_playable()) else {
+            return Vec::new();
+        };
+        let own = |sq: Square| {
+            self.board[sq as usize]
+                .filter(|p| p.color == r.player && p.kind != Kind::King && !p.boss)
+        };
+        match card {
+            Card::Power(power) => self.power_card_targets(power),
+            Card::Rank => (0..64u8)
+                .filter(|&sq| own(sq).is_some_and(|p| next_rank(p.kind).is_some()))
+                .collect(),
+            Card::Mirror => match first {
+                Some(from) => self.mirror_templates(from),
+                None => (0..64u8)
+                    .filter(|&sq| own(sq).is_some() && !self.mirror_templates(sq).is_empty())
+                    .collect(),
+            },
+            _ => Vec::new(),
+        }
+    }
+
+    /// Зеркало: какой своей фигурой (не королём) может стать фигура на `from` — другой видом или
+    /// силами; пешкой — только не на первой и последней горизонтали.
+    fn mirror_templates(&self, from: Square) -> Vec<Square> {
+        let Some(r) = self.rogue else {
+            return Vec::new();
+        };
+        let Some(source) = self.board[from as usize].filter(|p| p.color == r.player) else {
+            return Vec::new();
+        };
+        let edge = rank_of(from) == r.player.home_rank() || rank_of(from) == r.player.last_rank();
+        (0..64u8)
+            .filter(|&sq| {
+                sq != from
+                    && self.board[sq as usize].is_some_and(|p| {
+                        p.color == r.player
+                            && p.kind != Kind::King
+                            && !p.boss
+                            && (p.kind != source.kind || Stock::of(p) != Stock::of(source))
+                            && !(p.kind == Kind::Pawn && edge)
+                    })
+            })
+            .collect()
+    }
+
+    /// Rogue-like: случайность карт — зерно партии и счёт розыгрышей (при отмене — та же).
+    fn card_random(&mut self) -> impl FnMut(u64) -> u64 + use<> {
+        let mut r = self
+            .rogue
+            .unwrap_or_else(|| panic!("карты — только в rogue-like"));
+        r.card_rolls = r.card_rolls.wrapping_add(1);
+        self.rogue = Some(r);
+        shop_random(
+            r.seed ^ (u64::from(r.card_rolls) << 12 | 0xCA).wrapping_mul(0xA076_1D64_78BD_642F),
+        )
+    }
+
+    /// Rogue-like: карта с места `slot` руки сыграна (на фигуры `targets`, сколько просит
+    /// `Card::picks`). Маска превращается в последнюю сыгранную карту и остаётся в руке, другие
+    /// уходят из руки и становятся последней сыгранной. Ходов карты не тратят.
+    fn use_card(&mut self, slot: usize, targets: &[Square]) -> Option<RogueAction> {
+        let r = self.rogue?;
+        let card = (*r.hand.get(slot)?)?;
+        if !self.card_ready(card) || targets.len() != card.picks() {
             return None;
         }
-        r.gold -= price;
+        let mut used = CardUse {
+            card,
+            targets: [targets.first().copied(), targets.get(1).copied()],
+            piece: None,
+            gold: 0,
+            crest: None,
+            cards: [None; 2],
+        };
+        if card == Card::Mask {
+            let into = r.last_card?;
+            let mut r = r;
+            r.hand[slot] = Some(into);
+            self.rogue = Some(r);
+            used.cards[0] = Some(into);
+            return Some(RogueAction::PlayCard(used));
+        }
+        // Цели — до того, как карта уйдёт из руки.
+        match card {
+            Card::Power(_) | Card::Rank => {
+                if !self.card_squares(card, None).contains(&targets[0]) {
+                    return None;
+                }
+            }
+            Card::Mirror => {
+                if !self.card_squares(card, None).contains(&targets[0])
+                    || !self.mirror_templates(targets[0]).contains(&targets[1])
+                {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+        // Карта уходит из руки: остальные сдвигаются.
+        let mut r = r;
+        let mut rest = r.hand.iter().flatten().copied().collect::<Vec<_>>();
+        rest.remove(r.hand[..slot].iter().flatten().count());
+        r.hand = [None; ROGUE_HAND_MAX];
+        for (i, held) in rest.into_iter().enumerate() {
+            r.hand[i] = Some(held);
+        }
+        r.last_card = Some(card);
         self.rogue = Some(r);
-        self.roll_offers();
-        Some(RogueAction::Reroll { price })
+        let player = r.player;
+        match card {
+            Card::Power(power) => {
+                let sq = targets[0];
+                let piece = self.crested(self.board[sq as usize]?.with_power(power));
+                self.board[sq as usize] = Some(piece);
+                used.piece = Some(piece);
+            }
+            Card::Rank => {
+                let sq = targets[0];
+                let old = self.board[sq as usize]?;
+                let piece = self.crested(Piece::new(next_rank(old.kind)?, player).with(old));
+                self.board[sq as usize] = Some(piece);
+                used.piece = Some(piece);
+            }
+            Card::Mirror => {
+                let model = self.board[targets[1] as usize]?;
+                let piece = self.crested(Piece::new(model.kind, player).with(model));
+                self.board[targets[0] as usize] = Some(piece);
+                used.piece = Some(piece);
+            }
+            Card::Crest => {
+                // Сначала — гербы, которых нет и на прилавке, и в сундуке.
+                let shown = |c: Crest| {
+                    self.wares().contains(&Some(Ware::Crest(c)))
+                        || (0..CHEST_SLOTS)
+                            .any(|slot| self.chest_wares(slot).contains(&Some(Ware::Crest(c))))
+                };
+                let mut left: Vec<Crest> = Crest::ALL
+                    .into_iter()
+                    .filter(|&c| self.crest_available(c) && !shown(c))
+                    .collect();
+                if left.is_empty() {
+                    left = Crest::ALL
+                        .into_iter()
+                        .filter(|&c| self.crest_available(c))
+                        .collect();
+                }
+                let mut next = self.card_random();
+                let crest = left[next(left.len() as u64) as usize];
+                self.receive(Ware::Crest(crest));
+                used.crest = Some(crest);
+            }
+            Card::Double => {
+                let mut r = self.rogue?;
+                used.gold = r.gold;
+                r.gold = r.gold.saturating_mul(2);
+                self.rogue = Some(r);
+            }
+            Card::Coin => {
+                let value = self.sell_total();
+                let mut r = self.rogue?;
+                used.gold = value;
+                r.gold = r.gold.saturating_add(value);
+                self.rogue = Some(r);
+            }
+            Card::Feather => {
+                let mut next = self.card_random();
+                for k in 0..2 {
+                    if self.hand().len() >= hand_size() {
+                        break;
+                    }
+                    let drawn = draw_card(&mut next, &[Card::Feather]);
+                    self.receive(Ware::Card(drawn));
+                    used.cards[k] = Some(drawn);
+                }
+            }
+            Card::Mask => {}
+        }
+        Some(RogueAction::PlayCard(used))
     }
 
-    /// Rogue-like: продажа готовой фигуры `stock` из запаса игрока — за цену в магазине.
+    /// Rogue-like: за сколько продаётся фигура `stock` из запаса: за цену обычной такой же в
+    /// магазине, золотая — × `Rule::RogueGoldSellPercent` (200%).
+    pub fn sell_price(&self, stock: Stock) -> u16 {
+        let plain = u32::from(shop_price(Stock::new(stock.kind, Power::Plain)));
+        let price = if stock.has(Power::Gold) {
+            plain * balance().rule(Rule::RogueGoldSellPercent).clamp(0, 1000) as u32 / 100
+        } else {
+            plain
+        };
+        price.min(u32::from(u16::MAX)) as u16
+    }
+
+    /// Rogue-like: сколько стоит всё, что можно продать: готовые фигуры запаса и гербы.
+    pub fn sell_total(&self) -> u16 {
+        let Some(r) = self.rogue else {
+            return 0;
+        };
+        let stock: u32 = self
+            .reserve(r.player)
+            .iter()
+            .map(|&(stock, ready, _)| u32::from(self.sell_price(stock)) * u32::from(ready))
+            .sum();
+        let crests = self.crests().len() as u32 * u32::from(crest_sell_price());
+        (stock + crests).min(u32::from(u16::MAX)) as u16
+    }
+
+    /// Rogue-like: можно продавать — открыт магазин, сундук не открыт.
+    pub fn can_sell(&self) -> bool {
+        self.shop_open() && self.chest_open().is_none()
+    }
+
+    /// Rogue-like: продажа готовой фигуры `stock` из запаса игрока (с 0.112 снова, как в 0.65).
     fn sell(&mut self, stock: Stock) -> Option<RogueAction> {
-        let r = self.rogue.filter(|r| r.shop)?;
+        let r = self.rogue.filter(|_| self.can_sell())?;
         if !self.stock_ready(r.player, stock) {
             return None;
         }
@@ -4257,86 +4934,139 @@ impl Position {
         Some(RogueAction::Sell { stock, price })
     }
 
-    /// Rogue-like: цена фигуры `stock` в магазине с гербами игрока (ледяная пешка с гербом
-    /// снежинки и пешки — как обычная).
+    /// Rogue-like: продажа своего герба (с 0.112) — за `crest_sell_price`; фигуры теряют его
+    /// действие (`crested` заново). С 0.124 — по месту `index` в списке гербов (копий бывает
+    /// несколько).
+    fn sell_crest(&mut self, index: usize) -> Option<RogueAction> {
+        let mut r = self.rogue.filter(|_| self.can_sell())?;
+        let mut rest = self.crests();
+        if index >= rest.len() {
+            return None;
+        }
+        let crest = rest.remove(index);
+        r.crests = [None; CREST_SLOTS];
+        for (i, c) in rest.into_iter().enumerate() {
+            r.crests[i] = Some(c);
+        }
+        let price = crest_sell_price();
+        r.gold = r.gold.saturating_add(price);
+        self.rogue = Some(r);
+        for sq in 0..64 {
+            if let Some(piece) = self.board[sq] {
+                self.board[sq] = Some(self.crested(piece));
+            }
+        }
+        Some(RogueAction::SellCrest { crest, price })
+    }
+
+    /// Rogue-like: клетки своих фигур, на которые можно сыграть карту силы `power`: не король, у
+    /// фигуры нет этой силы и не больше одной другой (обычная или особая с одной силой); магом
+    /// пешка не бывает.
+    fn power_card_targets(&self, power: Power) -> Vec<Square> {
+        let Some(r) = self.rogue.filter(|_| self.cards_playable()) else {
+            return Vec::new();
+        };
+        (0..64u8)
+            .filter(|&sq| {
+                self.board[sq as usize].is_some_and(|p| {
+                    let stock = Stock::of(p);
+                    p.color == r.player
+                        && p.kind != Kind::King
+                        && !p.boss
+                        && stock.with == Power::Plain
+                        && stock.power != power
+                        && !(p.kind == Kind::Pawn
+                            && (power == Power::Wizard || stock.power == Power::Wizard))
+                })
+            })
+            .collect()
+    }
+
+    /// Rogue-like: покупка сундука на месте `slot` за его цену — он открывается.
+    fn open_chest(&mut self, slot: usize) -> Option<RogueAction> {
+        let offer = self.chest(slot)?;
+        let price = offer.price();
+        let mut r = self
+            .rogue
+            .filter(|r| r.gold >= price && self.chest_for_sale(slot))?;
+        r.gold -= price;
+        r.chests[slot] = Some(ChestOffer {
+            state: ChestState::Open,
+            ..offer
+        });
+        self.rogue = Some(r);
+        Some(RogueAction::OpenChest {
+            chest: offer.kind,
+            big: offer.big,
+            price,
+        })
+    }
+
+    /// Rogue-like: из открытого сундука взята вещь с места `item`; взяли сколько положено (у
+    /// большого — `ChestOffer::picks`) — остальное пропадает.
+    fn take_from_chest(&mut self, item: usize) -> Option<RogueAction> {
+        let slot = self.chest_open()?;
+        let mut offer = self.chest(slot)?;
+        let ware = (*offer.wares().get(item)?)?;
+        if matches!(ware, Ware::Crest(c) if !self.crest_available(c)) {
+            return None;
+        }
+        offer.wares[item] = None;
+        offer.taken += 1;
+        if usize::from(offer.taken) >= offer.picks() || offer.wares().iter().all(Option::is_none) {
+            offer.state = ChestState::Taken;
+            offer.wares = [None; CHEST_MAX];
+        }
+        let mut r = self.rogue?;
+        r.chests[slot] = Some(offer);
+        self.rogue = Some(r);
+        self.receive(ware);
+        Some(RogueAction::TakeFromChest { ware })
+    }
+
+    /// Rogue-like: новый прилавок за `reroll_price` золота; следующее обновление — дороже.
+    fn reroll(&mut self) -> Option<RogueAction> {
+        let mut r = self
+            .rogue
+            .filter(|r| r.shop && self.chest_open().is_none())?;
+        let price = self.reroll_price();
+        if r.gold < price {
+            return None;
+        }
+        r.gold -= price;
+        r.rerolls = r.rerolls.saturating_add(1);
+        self.rogue = Some(r);
+        self.roll_shop();
+        Some(RogueAction::Reroll { price })
+    }
+
+    /// Rogue-like: цена товара на прилавке с гербами игрока (карт на прилавке не бывает).
+    pub fn ware_price(&self, ware: Ware) -> u16 {
+        match ware {
+            Ware::Piece(stock) => self.shop_price(stock),
+            Ware::Crest(_) => crest_price(),
+            Ware::Card(_) => 0,
+        }
+    }
+
+    /// Rogue-like: цена фигуры `stock` в магазине (с 0.118 гербов скидок нет — обычная цена).
     pub fn shop_price(&self, stock: Stock) -> u16 {
-        if stock.kind == Kind::Pawn && stock.has(Power::Ice) && self.has_crest(Crest::Pawn) {
-            // Как такая же без льда: обычная — у ледяной, другая сила — у объединённой (ледяной
-            // варвар — как варвар, огненная ледяная — как огненная).
-            let other = if stock.power == Power::Ice {
-                stock.with
-            } else {
-                stock.power
-            };
-            return shop_price(Stock::new(Kind::Pawn, other));
-        }
-        if stock.kind == Kind::Pawn && stock.has(Power::Fire) && self.has_crest(Crest::FlamePawn) {
-            let discount = balance()
-                .rule(Rule::RogueCrestFlamePawnDiscount)
-                .clamp(0, 999) as u16;
-            return shop_price(stock).saturating_sub(discount);
-        }
-        if stock.kind == Kind::Bishop
-            && stock.has(Power::Wizard)
-            && self.has_crest(Crest::HatBishop)
-        {
-            let discount = balance()
-                .rule(Rule::RogueCrestHatBishopDiscount)
-                .clamp(0, 999) as u16;
-            return shop_price(stock).saturating_sub(discount);
-        }
-        if stock.kind == Kind::Bishop
-            && stock.has(Power::Spark)
-            && self.has_crest(Crest::BoltBishop)
-        {
-            let discount = balance()
-                .rule(Rule::RogueCrestBoltBishopDiscount)
-                .clamp(0, 999) as u16;
-            return shop_price(stock).saturating_sub(discount);
-        }
-        if stock.kind == Kind::Knight && stock.has(Power::Wind) && self.has_crest(Crest::WindKnight)
-        {
-            let discount = balance()
-                .rule(Rule::RogueCrestWindKnightDiscount)
-                .clamp(0, 999) as u16;
-            return shop_price(stock).saturating_sub(discount);
-        }
-        if stock.kind == Kind::Rook && stock.has(Power::Shade) && self.has_crest(Crest::DarkRook) {
-            let discount = balance()
-                .rule(Rule::RogueCrestDarkRookDiscount)
-                .clamp(0, 999) as u16;
-            return shop_price(stock).saturating_sub(discount);
-        }
-        if stock.kind == Kind::Queen
-            && stock.has(Power::Barbarian)
-            && self.has_crest(Crest::AxeQueen)
-        {
-            let discount = balance().rule(Rule::RogueCrestQueenDiscount).clamp(0, 999) as u16;
-            return shop_price(stock).saturating_sub(discount);
-        }
         shop_price(stock)
     }
 
-    /// Rogue-like: сколько стоит обновить фигуры в магазине — `Rule::RogueRerollCost`, с гербом
-    /// монеты и обновления — `Rule::RogueCrestRerollCoinCost`.
+    /// Rogue-like: сколько стоит обновить магазин (с 0.108): первое обновление за посещение —
+    /// `Rule::RogueRerollCost` (с гербом монеты и обновления — `Rule::RogueCrestRerollCoinCost`),
+    /// каждое следующее — на `Rule::RogueRerollStep` дороже.
     pub fn reroll_price(&self) -> u16 {
         let rule = if self.has_crest(Crest::RerollCoin) {
             Rule::RogueCrestRerollCoinCost
         } else {
             Rule::RogueRerollCost
         };
-        balance().rule(rule).clamp(0, 999) as u16
-    }
-
-    /// Rogue-like: за сколько продаётся фигура `stock` из запаса: `sell_price`, с гербом короля и
-    /// монеты — не меньше полной цены в магазине.
-    pub fn sell_price(&self, stock: Stock) -> u16 {
-        let price = sell_price(stock);
-        if self.has_crest(Crest::KingCoin) {
-            price.max(self.shop_price(stock))
-        } else {
-            price
-        }
+        let first = balance().rule(rule).clamp(0, 999) as u16;
+        let step = balance().rule(Rule::RogueRerollStep).clamp(0, 999) as u16;
+        let rerolls = self.rogue.map_or(0, |r| u16::from(r.rerolls));
+        first.saturating_add(step.saturating_mul(rerolls))
     }
 
     /// Rogue-like: золото свиньи-копилки к концу уровня — за каждые `Rule::RogueCrestPiggyStep`
@@ -4359,36 +5089,9 @@ impl Position {
             .filter(|(stock, ..)| stock.has(Power::Gold))
             .map(|&(_, ready, _)| ready as usize)
             .sum();
-        (r.gold / step).saturating_mul((on_board + stored) as u16)
-    }
-
-    /// Rogue-like: шанс фигур силы `power` в магазине, % — с гербами «… и монеты» (и двух
-    /// топоров, двух королей).
-    fn power_percent(&self, power: Power) -> u64 {
-        let (crest, rule) = match power {
-            Power::Ice => (Crest::Coin, Rule::RogueCrestCoinPercent),
-            Power::Fire => (Crest::FlameCoin, Rule::RogueCrestFlameCoinPercent),
-            Power::Gold => (Crest::Kings2, Rule::RogueCrestKings2Percent),
-            Power::Wizard => (Crest::HatCoin, Rule::RogueCrestHatCoinPercent),
-            Power::Spark => (Crest::BoltCoin, Rule::RogueCrestBoltCoinPercent),
-            Power::Wind => (Crest::WindCoin, Rule::RogueCrestWindCoinPercent),
-            Power::Shade => (Crest::DarkCoin, Rule::RogueCrestDarkCoinPercent),
-            Power::Barbarian => (Crest::Axes, Rule::RogueCrestAxesPercent),
-            Power::Plain => return 100,
-        };
-        if self.has_crest(crest) {
-            balance().rule(rule).clamp(0, 1000) as u64
-        } else {
-            100
-        }
-    }
-
-    /// Rogue-like: открыта ли объединённая фигура `(основа, сила)` — куплен её герб (топор, король,
-    /// шляпа, снежинка, огонёк, молния или смерч с этой силой).
-    pub fn combo_open(&self, combo: (Power, Power)) -> bool {
-        Crest::ALL
-            .iter()
-            .any(|&c| c.unlocks() == Some(combo) && self.has_crest(c))
+        (r.gold / step)
+            .saturating_mul((on_board + stored) as u16)
+            .saturating_mul(self.crest_count(Crest::Piggy) as u16)
     }
 
     /// Rogue-like: гербы игрока в порядке покупки.
@@ -4402,80 +5105,32 @@ impl Position {
         self.rogue.is_some_and(|r| r.crests.contains(&Some(crest)))
     }
 
+    /// Rogue-like: сколько у игрока гербов `crest` (с 0.124 гербы с числами складываются).
+    pub fn crest_count(&self, crest: Crest) -> i32 {
+        self.rogue.map_or(0, |r| {
+            r.crests.iter().filter(|&&c| c == Some(crest)).count() as i32
+        })
+    }
+
+    /// Сколько гербов `crest` действует на фигуры стороны `color` (не игрок — ни одного).
+    fn crest_times(&self, color: Color, crest: Crest) -> i32 {
+        if self.rogue.is_some_and(|r| r.player == color) {
+            self.crest_count(crest)
+        } else {
+            0
+        }
+    }
+
+    /// Rogue-like: герб `crest` можно получить — есть свободное место, и он складывается или его
+    /// ещё нет (с 0.124).
+    pub fn crest_available(&self, crest: Crest) -> bool {
+        self.rogue.is_some_and(|r| r.crests.contains(&None))
+            && (crest.stacks() || !self.has_crest(crest))
+    }
+
     /// Герб `crest` действует на фигуры стороны `color` — она игрок rogue-like и герб куплен.
     fn crest_for(&self, color: Color, crest: Crest) -> bool {
         self.rogue.is_some_and(|r| r.player == color) && self.has_crest(crest)
-    }
-
-    /// Rogue-like: гербы на прилавке — `Rule::RogueCrestSlots` мест (`None` — куплен или
-    /// гербов не осталось).
-    pub fn crest_offers(&self) -> Vec<Option<Crest>> {
-        let n = (balance()
-            .rule(Rule::RogueCrestSlots)
-            .clamp(1, SHOP_MAX as i32)) as usize;
-        self.rogue
-            .map_or_else(Vec::new, |r| r.crest_offers[..n].to_vec())
-    }
-
-    /// Rogue-like: гербы на прилавке выкладываются заново — разные, из ещё не купленных.
-    /// Случайность — зерно партии и счёт выкладываний: при отмене прилавок тот же.
-    fn roll_crests(&mut self) {
-        let Some(mut r) = self.rogue else {
-            return;
-        };
-        r.crest_rolls = r.crest_rolls.wrapping_add(1);
-        let mut state = (r.seed
-            ^ (u64::from(r.crest_rolls) << 8 | u64::from(r.level))
-                .wrapping_mul(0x9E37_79B9_7F4A_7C15))
-            | 1;
-        let mut next = move |n: usize| {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            (state % n.max(1) as u64) as usize
-        };
-        let mut left: Vec<Crest> = Crest::ALL
-            .into_iter()
-            .filter(|c| !r.crests.contains(&Some(*c)))
-            .collect();
-        for offer in &mut r.crest_offers {
-            *offer = (!left.is_empty()).then(|| left.remove(next(left.len())));
-        }
-        self.rogue = Some(r);
-    }
-
-    /// Rogue-like: покупка герба с места `slot` прилавка за `Rule::RogueCrestPrice`.
-    fn buy_crest(&mut self, slot: usize) -> Option<RogueAction> {
-        let mut r = self.rogue.filter(|r| r.shop)?;
-        let crest = (*self.crest_offers().get(slot)?)?;
-        let price = crest_price();
-        if r.gold < price {
-            return None;
-        }
-        r.gold -= price;
-        r.crest_offers[slot] = None;
-        *r.crests.iter_mut().find(|c| c.is_none())? = Some(crest);
-        self.rogue = Some(r);
-        // Герб снежинки и сердца — и ледяным фигурам, что уже стоят на доске.
-        for sq in 0..64 {
-            if let Some(piece) = self.board[sq] {
-                self.board[sq] = Some(self.crested(piece));
-            }
-        }
-        Some(RogueAction::BuyCrest { crest, price })
-    }
-
-    /// Rogue-like: новые гербы на прилавке за `Rule::RogueCrestRerollCost`.
-    fn reroll_crests(&mut self) -> Option<RogueAction> {
-        let mut r = self.rogue.filter(|r| r.shop)?;
-        let price = crest_reroll_cost();
-        if r.gold < price {
-            return None;
-        }
-        r.gold -= price;
-        self.rogue = Some(r);
-        self.roll_crests();
-        Some(RogueAction::RerollCrests { price })
     }
 
     /// Фигура `piece` по правилам rogue-like (прибавка к здоровью — `bonus_hp`, здоровье
@@ -4489,31 +5144,38 @@ impl Position {
         if piece.kind == Kind::Knight {
             bonus += rogue_knight_hp() - piece.kind.stats().max_hp;
         }
-        let unit = crate::balance::UNIT;
+        let unit = crate::balance::POINT;
         if piece.armored && piece.vampire {
-            bonus += balance().rule(Rule::RogueArmoredVampireHp).clamp(0, 99) * unit;
+            bonus += balance().rule(Rule::RogueArmoredVampireHp).clamp(0, 999) * unit;
         } else if piece.armored {
-            bonus += balance().rule(Rule::RogueArmorHp).clamp(0, 99) * unit;
+            bonus += balance().rule(Rule::RogueArmorHp).clamp(0, 999) * unit;
         } else if piece.vampire {
-            bonus += balance().rule(Rule::RogueVampireHp).clamp(0, 99) * unit;
+            bonus += balance().rule(Rule::RogueVampireHp).clamp(0, 999) * unit;
         }
         if piece.zombie {
-            bonus += balance().rule(Rule::RogueZombieHp).clamp(0, 99) * unit;
+            bonus += balance().rule(Rule::RogueZombieHp).clamp(0, 999) * unit;
         }
-        if piece.icy && self.crest_for(piece.color, Crest::Heart) {
-            bonus += balance().rule(Rule::RogueCrestHeartHp).clamp(0, 99) * crate::balance::UNIT;
+        // Первый уровень (с 0.108): у фигур волн здоровья меньше на `Rule::RogueFirstLevelHpCut`
+        // (не меньше одной единицы).
+        if let Some(r) = self.rogue
+            && r.level == 1
+            && piece.color != r.player
+        {
+            bonus -= balance().rule(Rule::RogueFirstLevelHpCut).clamp(0, 999) * unit;
+            bonus = bonus.max(crate::balance::UNIT - piece.kind.stats().max_hp);
         }
-        // Герб топора и меча: варвар бьёт сильнее, здоровья меньше (не меньше одной единицы).
-        let mut attack = 0;
-        if piece.barbarian && self.crest_for(piece.color, Crest::AxeSword) {
-            let unit = crate::balance::UNIT;
-            attack = balance().rule(Rule::RogueCrestAxeAttack).clamp(0, 99) * unit;
-            bonus -= balance().rule(Rule::RogueCrestAxeHp).clamp(0, 99) * unit;
-            bonus = bonus.max(unit - piece.kind.stats().max_hp);
+        if piece.icy {
+            bonus += balance().rule(Rule::RogueCrestHeartHp).clamp(0, 999)
+                * crate::balance::POINT
+                * self.crest_times(piece.color, Crest::Heart);
         }
-        let attack = attack.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
-        if piece.bonus_attack != attack {
-            piece.bonus_attack = attack;
+        // Герб топора и меча: здоровья у варвара меньше (не меньше одной единицы); с 0.121 вместо
+        // атаки сверху — мульти (`mult_for`).
+        let axes = self.crest_times(piece.color, Crest::AxeSword);
+        if piece.barbarian && axes > 0 {
+            bonus -=
+                balance().rule(Rule::RogueCrestAxeHp).clamp(0, 999) * crate::balance::POINT * axes;
+            bonus = bonus.max(crate::balance::UNIT - piece.kind.stats().max_hp);
         }
         let bonus = bonus.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
         if piece.bonus_hp != bonus {
@@ -4523,7 +5185,9 @@ impl Position {
         piece
     }
 
-    /// Полное здоровье фигуры вида `kind` в этой партии (rogue-like — конь со своим).
+    /// Полное здоровье фигуры вида `kind` в этой партии (rogue-like — конь со своим). Таблицы
+    /// экрана «Правила» с 0.114 считают по rogue-like всегда (`rogue_max_hp` в `app.rs`).
+    #[cfg(test)]
     pub fn kind_max_hp(&self, kind: Kind) -> i32 {
         if self.rogue.is_some() && kind == Kind::Knight {
             rogue_knight_hp()
@@ -4534,7 +5198,9 @@ impl Position {
 
     /// Rogue-like: «Уйти» из магазина — начинается расстановка.
     fn leave_shop(&mut self) -> Option<RogueAction> {
-        let mut r = self.rogue.filter(|r| r.shop)?;
+        let mut r = self
+            .rogue
+            .filter(|r| r.shop && self.chest_open().is_none())?;
         r.shop = false;
         self.rogue = Some(r);
         Some(RogueAction::Leave)
@@ -4609,10 +5275,12 @@ impl Position {
         }
         r.planning = true;
         r.shop = true;
+        r.rerolls = 0;
+        r.turn = TurnCounts::default();
         r.origin = self.origins(player);
         self.rogue = Some(r);
-        self.roll_offers();
-        self.roll_crests();
+        self.roll_chests();
+        self.roll_shop();
         returned
     }
 
@@ -4638,6 +5306,7 @@ impl Position {
         self.used = 0;
         self.airborne = 0;
         self.twice = 0;
+        self.drops = 0;
         TurnEnd {
             spawned,
             level_up: Some(r.level),
@@ -4674,7 +5343,8 @@ impl Position {
                 }
             }
         }
-        for stock in self.reserve(us).into_iter().map(|s| s.0) {
+        let room = self.board_room(us);
+        for stock in self.reserve(us).into_iter().map(|s| s.0).filter(|_| room) {
             if self.stock_ready(us, stock) {
                 out.extend(
                     (0..64u8)
@@ -4699,7 +5369,6 @@ impl Position {
             promoted: None,
             frozen: false,
             reactions: Vec::new(),
-            passed: Vec::new(),
         };
         if let Some(stock) = mv.kind.stock() {
             let piece = self.take_stock(us, stock);
@@ -4770,89 +5439,38 @@ impl Position {
         marched
     }
 
-    /// Усиливает фигуры стороны `color` (компьютер): пешки насыщаются лавой в начале каждого
-    /// хода соперника (если ходит соперник — сразу). Электричества слонов с 0.41 нет (просьба
-    /// пользователя: слишком сильно) — `spark` остался для тестов.
-    pub fn boost(&mut self, color: Color) {
-        self.boosted = Some(color);
-        if self.side != color {
-            self.charge_lava(color);
-        }
-    }
-
-    /// Сторона с усиленными фигурами.
-    pub fn boosted(&self) -> Option<Color> {
-        self.boosted
-    }
-
-    /// Случайные пешки стороны `color` (их `Rule::LavaPawns`) насыщаются лавой. Выбор —
-    /// перемешивание по ключу позиции: так он один и тот же при отмене и в переборе.
-    fn charge_lava(&mut self, color: Color) -> Vec<Square> {
-        let mut pawns: Vec<Square> = self
-            .pieces()
-            .filter(|&(_, p)| p.color == color && p.kind == Kind::Pawn)
-            .map(|(sq, _)| sq)
-            .collect();
-        let mut state = self.key() | 1;
-        for i in (1..pawns.len()).rev() {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            pawns.swap(i, (state % (i as u64 + 1)) as usize);
-        }
-        pawns.truncate(balance().rule(Rule::LavaPawns).max(0) as usize);
-        pawns.sort_unstable();
-        for &sq in &pawns {
-            if let Some(piece) = &mut self.board[sq as usize] {
-                piece.lava = true;
-            }
-        }
-        pawns
-    }
-
-    /// Насыщенные лавой пешки стороны, которая ходит, взрываются по очереди ударов: огненная
-    /// волна (`Rule::LavaDamage`) по чужим фигурам на 8 клетках вокруг, кроме барьера
-    /// соперника; сама пешка цела. Замёрзшая не взрывается; лава уходит у всех.
+    /// Огненные фигуры стороны, которая ходит, взрываются по очереди ударов (`explode`), если
+    /// волна заденет чужую фигуру (с 0.76); огонь не уходит. Замёрзшая и только что
+    /// выставленная не взрываются.
     fn lava_blasts(&mut self) -> Vec<Blast> {
         let us = self.side;
         let wall = self.wall(us);
-        let raw = balance().rule(Rule::LavaDamage);
         let mut blasts = Vec::new();
         for center in strike_queue() {
-            let Some(pawn) =
-                self.board[center as usize].filter(|p| p.color == us && (p.lava || p.fire))
+            let Some(piece) = self.board[center as usize].filter(|p| p.color == us && p.fire)
             else {
                 continue;
             };
-            if let Some(piece) = &mut self.board[center as usize] {
-                piece.lava = false;
-            }
             // Огненная фигура, только что выставленная, взорвётся в конце следующего хода.
-            if pawn.is_frozen() || pawn.fire && !pawn.lava && pawn.fresh {
+            if piece.is_frozen() || piece.fresh || !self.blast_reaches(center, us, wall) {
                 continue;
             }
-            // Огненная фигура (с гербами своей стороны) взрывается, только если волна заденет
-            // чужую фигуру.
-            let crested = pawn.fire && !pawn.lava;
-            if crested && !self.blast_reaches(center, us, wall) {
-                continue;
-            }
-            let blast = self.explode(center, us, if crested { None } else { Some(raw) });
-            blasts.push(blast);
+            blasts.push(self.explode(center, piece));
         }
         blasts
     }
 
-    /// Огненная волна стороны `us` из клетки `center`: урон `raw` (`None` — урон огненной фигуры
-    /// с гербами `fire_damage`) чужим фигурам на клетках `blast_area`, с гербом падающей бомбы —
-    /// и своим (кроме самой `center`). Барьер соперника — недосягаем.
-    fn explode(&mut self, center: Square, us: Color, raw: Option<i32>) -> Blast {
-        let crested = raw.is_none();
-        let raw = raw.unwrap_or_else(|| self.fire_damage(us));
+    /// Огненная волна огненной фигуры `piece` из клетки `center`: её урон (с 0.121 — атака ×
+    /// мульти взрыва, `Blow::Blast`) чужим фигурам на клетках `blast_area`, с гербом падающей
+    /// бомбы — и своим (кроме самой `center`). Барьер соперника — недосягаем.
+    fn explode(&mut self, center: Square, piece: Piece) -> Blast {
+        let us = piece.color;
+        let raw = self.damage(Some(center), piece, Blow::Blast);
+        self.note_blow(center, piece, Blow::Blast);
         let wall = self.wall(us);
-        let friendly = crested && self.crest_for(us, Crest::Bomb);
+        let friendly = self.crest_for(us, Crest::Bomb);
         let mut hits = Vec::new();
-        for sq in self.blast_area(center, us, crested) {
+        for sq in self.blast_area(center, us) {
             let Some(target) =
                 self.board[sq as usize].filter(|p| p.color != us || friendly && sq != center)
             else {
@@ -4879,16 +5497,16 @@ impl Position {
         Blast {
             center,
             hits,
-            wide: self.wide_blast(us, crested),
+            wide: self.wide_blast(us),
         }
     }
 
     /// Клетки взрыва из `center`: восемь вокруг; у огненной фигуры с гербом двух огоньков —
     /// толстый крест (с 0.87, просьба пользователя): 3×3 вокруг и ещё по три клетки с каждой
     /// стороны — до `Rule::RogueCrestFlamesReach` клеток от фигуры, полосой в три клетки.
-    fn blast_area(&self, center: Square, us: Color, crested: bool) -> Vec<Square> {
+    fn blast_area(&self, center: Square, us: Color) -> Vec<Square> {
         let mut steps: Vec<(i8, i8)> = KING_STEPS.to_vec();
-        if self.wide_blast(us, crested) {
+        if self.wide_blast(us) {
             let reach = balance().rule(Rule::RogueCrestFlamesReach).clamp(1, 7) as i8;
             steps = (-reach..=reach)
                 .flat_map(|df| (-reach..=reach).map(move |dr| (df, dr)))
@@ -4902,33 +5520,14 @@ impl Position {
     }
 
     /// Взрыв огненной фигуры стороны `us` — большой крест (герб двух огоньков).
-    fn wide_blast(&self, us: Color, crested: bool) -> bool {
-        crested && self.crest_for(us, Crest::Flames)
-    }
-
-    /// Урон взрыва огненной фигуры стороны `us`: `Rule::LavaDamage`, с гербом огня и меча —
-    /// `Rule::RogueCrestFlameSwordDamage`, с гербом падающей бомбы — ещё
-    /// `Rule::RogueCrestBombDamage` сверху.
-    fn fire_damage(&self, us: Color) -> i32 {
-        let unit = crate::balance::UNIT;
-        let mut raw = if self.crest_for(us, Crest::FlameSword) {
-            balance()
-                .rule(Rule::RogueCrestFlameSwordDamage)
-                .clamp(0, 99)
-                * unit
-        } else {
-            balance().rule(Rule::LavaDamage)
-        };
-        if self.crest_for(us, Crest::Bomb) {
-            raw += balance().rule(Rule::RogueCrestBombDamage).clamp(0, 99) * unit;
-        }
-        raw
+    fn wide_blast(&self, us: Color) -> bool {
+        self.crest_for(us, Crest::Flames)
     }
 
     /// Есть ли чужая фигура (вне барьера `wall`) на клетках взрыва огненной фигуры `us` из
     /// `center`.
     fn blast_reaches(&self, center: Square, us: Color, wall: u64) -> bool {
-        self.blast_area(center, us, true)
+        self.blast_area(center, us)
             .into_iter()
             .any(|sq| wall & 1 << sq == 0 && self.board[sq as usize].is_some_and(|p| p.color != us))
     }
@@ -4948,7 +5547,7 @@ impl Position {
                 continue;
             }
             done |= 1 << sq;
-            let blast = self.explode(sq, piece.color, None);
+            let blast = self.explode(sq, piece);
             queue.extend(
                 blast
                     .hits
@@ -4972,7 +5571,7 @@ impl Position {
     }
 
     /// Удары в конце хода (с 0.40): каждая свободная (не замёрзшая) фигура стороны, которая
-    /// ходит, по очереди a8, a7, …, a1, b8, …, h1 бьёт всех чужих в досягаемости
+    /// ходит, по очереди a8, b8, …, h8, a7, …, h1 бьёт всех чужих в досягаемости
     /// (`strike_steps`) — сначала самую дорогую (`Kind::points`), из равных — с меньшим
     /// здоровьем, потом первую по очереди — и остаётся на месте. Фигуры в барьере соперника
     /// недосягаемы. Убитая цель даёт очки, «воин» после убийства лечится целиком и бьёт
@@ -5058,14 +5657,13 @@ impl Position {
                     if let Some(me) = self.board[from as usize] {
                         attacker = me;
                     }
-                    // Круговой удар — свой урон `Rule::RogueCrestWhirlDamage` каждой фигуре.
-                    let raw = if whirl {
-                        balance().rule(Rule::RogueCrestWhirlDamage).clamp(0, 99)
-                            * crate::balance::UNIT
-                    } else {
-                        attacker.attack()
-                    };
+                    // Круговой удар (с 0.123) — урон самой фигуры каждой цели, как обычный; в счёт
+                    // ударов хода он не идёт.
+                    let raw = self.damage(Some(from), attacker, Blow::Strike);
                     let mut strike = self.strike_raw(from, attacker, sq, target, wall, raw);
+                    if !whirl {
+                        self.note_blow(from, attacker, Blow::Strike);
+                    }
                     if let Some((other, _)) = strike.swap {
                         skip |= 1 << other;
                     }
@@ -5073,15 +5671,17 @@ impl Position {
                     strike.whirl = whirl;
                     let kill = strike.hits().any(|h| h.killed);
                     killed |= kill;
+                    let fangs = self.crest_times(us, Crest::AxeFangs);
                     if kill
                         && !fed
                         && attacker.barbarian
-                        && self.crest_for(us, Crest::AxeFangs)
+                        && fangs > 0
                         && let Some(me) = &mut self.board[from as usize]
                     {
                         fed = true;
-                        let heal = (balance().rule(Rule::RogueCrestFangsHeal).clamp(0, 99)
-                            * crate::balance::UNIT)
+                        let heal = (balance().rule(Rule::RogueCrestFangsHeal).clamp(0, 999)
+                            * crate::balance::POINT
+                            * fangs)
                             .min(me.max_hp() - me.hp)
                             .max(0);
                         me.hp += heal;
@@ -5142,9 +5742,11 @@ impl Position {
         };
         let rule = |rule: Rule| balance().rule(rule).clamp(0, 15) as u8;
         let mut repeats = rule(Rule::RogueBarbarianRepeats);
-        let low = balance().rule(Rule::RogueCrestFireAxeHp).clamp(1, 99) * crate::balance::UNIT;
-        if self.crest_for(piece.color, Crest::FireAxe) && piece.hp <= low {
-            repeats += rule(Rule::RogueCrestFireAxeRepeats);
+        let low = balance().rule(Rule::RogueCrestFireAxeHp).clamp(1, 999) * crate::balance::POINT;
+        let axes = self.crest_times(piece.color, Crest::FireAxe).min(16) as u8;
+        if axes > 0 && piece.hp <= low {
+            repeats =
+                repeats.saturating_add(rule(Rule::RogueCrestFireAxeRepeats).saturating_mul(axes));
         }
         repeats.min(BARBARIAN_ROUNDS)
     }
@@ -5158,12 +5760,23 @@ impl Position {
         let landing = strike.hit.square;
         let us = piece.color;
         self.relocate(from, landing);
+        if let Some(r) = &mut self.rogue {
+            let t = &mut r.turn;
+            if t.struck & 1 << from != 0 {
+                t.struck = t.struck & !(1 << from) | 1 << landing;
+            }
+            if t.first == Some(from) {
+                t.first = Some(landing);
+            }
+        }
         self.castling &= !rights_lost_at(from);
         if piece.kind == Kind::King {
             self.kings[us as usize] = Some(landing);
         }
         if piece.kind == Kind::Pawn && rank_of(landing) == us.last_rank() {
-            self.board[landing as usize] = Some(Piece::new(Kind::Queen, us));
+            // Особая пешка становится особым ферзём (с 0.109).
+            self.board[landing as usize] =
+                Some(self.crested(Piece::new(Kind::Queen, us).with(piece)));
             strike.promoted = Some(Kind::Queen);
         }
         if self.on_ice(landing) {
@@ -5181,7 +5794,186 @@ impl Position {
         target: Piece,
         wall: u64,
     ) -> Strike {
-        self.strike_raw(from, attacker, sq, target, wall, attacker.attack())
+        let raw = self.damage(Some(from), attacker, Blow::Strike);
+        let strike = self.strike_raw(from, attacker, sq, target, wall, raw);
+        self.note_blow(from, attacker, Blow::Strike);
+        strike
+    }
+
+    /// Урон удара фигуры `attacker` для глаз (карточка, табличка): атака × её мульти, без гербов,
+    /// которым нужна клетка (первая бьющая фигура).
+    pub fn strike_damage(&self, attacker: Piece) -> i32 {
+        self.damage(None, attacker, Blow::Strike)
+    }
+
+    /// Rogue-like (с 0.119): урон фигуры `attacker` с клетки `from` — атака, у фигур игрока ×
+    /// мульти (`mult_for`), до целого очка. С 0.120 предела нет — кроме самого числа
+    /// (`i32::MAX`, ~71 млн очков). С 0.121 так бьют и взрывы, и метеориты (`blow`).
+    fn damage(&self, from: Option<Square>, attacker: Piece, blow: Blow) -> i32 {
+        if self.rogue.is_none_or(|r| r.player != attacker.color) {
+            return attacker.attack();
+        }
+        let point = f64::from(crate::balance::POINT);
+        let mult = self.mult_for(Some(attacker), from, blow);
+        let points = (f64::from(attacker.attack()) / point * mult).round();
+        // `as` у дробного числа насыщается: больше `i32::MAX` — `i32::MAX`, NaN — 0.
+        (points * point).min(f64::from(i32::MAX)) as i32
+    }
+
+    /// Общее мульти игрока — над золотом: без гербов отдельных фигур и видов урона.
+    pub fn mult(&self) -> f64 {
+        self.mult_for(None, None, Blow::Strike)
+    }
+
+    /// Мульти удара фигуры `piece` игрока (карточка фигуры).
+    pub fn piece_mult(&self, piece: Piece) -> f64 {
+        self.mult_for(Some(piece), None, Blow::Strike)
+    }
+
+    /// Мульти игрока (с 0.119): 1, к которому по порядку покупки применяются гербы — каждый
+    /// прибавляет к мульти или умножает его (`Crest::description`). Например, урон и король,
+    /// король ударил дважды — (1 + 4) × 1.5 × 1.5; король и урон — 1 × 1.5 × 1.5 + 4. Предела нет.
+    /// `attacker` — кто бьёт (`None` — гербы отдельных фигур пропускаются), `from` — его клетка
+    /// (`None` — первой бьющей он не считается), `blow` — удар, взрыв или метеорит. Счёт хода —
+    /// `Rogue::turn`.
+    fn mult_for(&self, attacker: Option<Piece>, from: Option<Square>, blow: Blow) -> f64 {
+        let Some(r) = self.rogue else {
+            return 1.0;
+        };
+        let t = r.turn;
+        let per = |rule: Rule, n: u64| hundredths(rule) * n as f64;
+        let pow = |rule: Rule, n: u64| hundredths(rule).powf(n as f64);
+        let is = |test: fn(&Piece) -> bool| attacker.as_ref().is_some_and(test);
+        let own = self
+            .board
+            .iter()
+            .flatten()
+            .filter(|p| p.color == r.player)
+            .count() as i32;
+        let frozen = self
+            .board
+            .iter()
+            .flatten()
+            .filter(|p| p.is_frozen())
+            .count() as u64;
+        let mine = from.map_or(0, |sq| 1u64 << sq);
+        let before = u64::from((t.struck & !mine).count_ones());
+        let first = from.is_some_and(|sq| t.first.is_none_or(|f| f == sq));
+        self.crests()
+            .into_iter()
+            .fold(1.0, |m: f64, crest| match crest {
+                Crest::Mult => m + hundredths(Rule::RogueCrestMultAddPercent),
+                Crest::KingMult => m * pow(Rule::RogueCrestKingMultPercent, t.king_hits.into()),
+                Crest::FewMult => {
+                    m * f64::from((balance().rule(Rule::RogueCrestFewBase) - own).max(1))
+                }
+                Crest::GoldMult if is(|p| p.gold) => m + f64::from(r.gold),
+                Crest::PawnMult => m * pow(Rule::RogueCrestPawnMultPercent, t.pawn_hits.into()),
+                Crest::KnightMult => {
+                    m + per(Rule::RogueCrestKnightAddPercent, t.knight_hits.into())
+                }
+                Crest::SwordMult => m * pow(Rule::RogueCrestSwordMultPercent, before),
+                Crest::FirstStrike if first => m + hundredths(Rule::RogueCrestFirstAddPercent),
+                Crest::QueenMult => m + per(Rule::RogueCrestQueenAddPercent, t.queen_hits.into()),
+                Crest::FlameMult => m * pow(Rule::RogueCrestFlameMultPercent, t.blasts.into()),
+                Crest::SnowMult => m * pow(Rule::RogueCrestSnowMultPercent, frozen),
+                Crest::Meteor if blow == Blow::Meteor && t.meteors == 0 => {
+                    m + hundredths(Rule::RogueCrestMeteorAddPercent)
+                }
+                Crest::DarkSkull => m + per(Rule::RogueCrestJumpAddPercent, t.jumped.into()),
+                Crest::Bomb if blow == Blow::Blast => {
+                    m * hundredths(Rule::RogueCrestBombMultPercent)
+                }
+                Crest::FlameSword if blow == Blow::Blast => {
+                    m + hundredths(Rule::RogueCrestFlameSwordAddPercent)
+                }
+                Crest::AxeSword if is(|p| p.barbarian) => {
+                    m * hundredths(Rule::RogueCrestAxeMultPercent)
+                }
+                Crest::BoltMult => match blow {
+                    Blow::Spark(before) => m + per(Rule::RogueCrestBoltAddPercent, before.into()),
+                    _ => m,
+                },
+                Crest::WindMult if is(|p| p.wind) => {
+                    m + per(Rule::RogueCrestWindAddPercent, t.wind_moves.into())
+                }
+                _ => m,
+            })
+    }
+
+    /// Число на гербе мульти (с 0.119): что он даёт — «+4», «×1.5»; гербы короля и шестнадцати и
+    /// короля и умножения — что дают сейчас («×12», «+37»). У остальных — нет.
+    pub fn crest_badge(&self, crest: Crest) -> Option<String> {
+        let add = |rule: Rule| format!("+{}", mult_text(hundredths(rule)));
+        let times = |rule: Rule| format!("×{}", mult_text(hundredths(rule)));
+        Some(match crest {
+            Crest::Mult => add(Rule::RogueCrestMultAddPercent),
+            Crest::KingMult => times(Rule::RogueCrestKingMultPercent),
+            Crest::FewMult => {
+                let own = match self.rogue {
+                    Some(r) => self
+                        .board
+                        .iter()
+                        .flatten()
+                        .filter(|p| p.color == r.player)
+                        .count(),
+                    None => 0,
+                } as i32;
+                format!(
+                    "×{}",
+                    (balance().rule(Rule::RogueCrestFewBase) - own).max(1)
+                )
+            }
+            Crest::GoldMult => format!("+{}", self.rogue.map_or(0, |r| r.gold)),
+            Crest::PawnMult => times(Rule::RogueCrestPawnMultPercent),
+            Crest::KnightMult => add(Rule::RogueCrestKnightAddPercent),
+            Crest::SwordMult => times(Rule::RogueCrestSwordMultPercent),
+            Crest::FirstStrike => add(Rule::RogueCrestFirstAddPercent),
+            Crest::QueenMult => add(Rule::RogueCrestQueenAddPercent),
+            Crest::FlameMult => times(Rule::RogueCrestFlameMultPercent),
+            Crest::SnowMult => times(Rule::RogueCrestSnowMultPercent),
+            Crest::BoltMult => add(Rule::RogueCrestBoltAddPercent),
+            Crest::WindMult => add(Rule::RogueCrestWindAddPercent),
+            _ => return None,
+        })
+    }
+
+    /// Конец хода (с 0.120): временные прибавки к мульти — от ударов и временных эффектов —
+    /// пропадают (`Rogue::turn`). Новые такие прибавки копить там же, если пользователь не скажет
+    /// иначе.
+    fn end_turn_mult(&mut self) {
+        if let Some(r) = &mut self.rogue {
+            r.turn = TurnCounts::default();
+        }
+    }
+
+    /// Фигура игрока `attacker` с клетки `from` нанесла урон (`blow`) — в счёт этого хода (не
+    /// король-толстосум волн).
+    fn note_blow(&mut self, from: Square, attacker: Piece, blow: Blow) {
+        let Some(r) = self.rogue.as_mut() else {
+            return;
+        };
+        if attacker.color != r.player || attacker.boss {
+            return;
+        }
+        let t = &mut r.turn;
+        t.first.get_or_insert(from);
+        let count = match blow {
+            Blow::Blast => &mut t.blasts,
+            Blow::Meteor => &mut t.meteors,
+            Blow::Spark(_) => return,
+            Blow::Strike => {
+                t.struck |= 1 << from;
+                match attacker.kind {
+                    Kind::King => &mut t.king_hits,
+                    Kind::Pawn => &mut t.pawn_hits,
+                    Kind::Knight => &mut t.knight_hits,
+                    Kind::Queen => &mut t.queen_hits,
+                    Kind::Bishop | Kind::Rook => return,
+                }
+            }
+        };
+        *count = count.saturating_add(1);
     }
 
     /// Удар уроном `raw` вместо атаки (круговой удар варвара — свой урон).
@@ -5215,7 +6007,8 @@ impl Position {
                 target.dodge = piece.dodge;
             }
         }
-        let low = balance().rule(Rule::RogueCrestDarkPortalHp).clamp(1, 99) * crate::balance::UNIT;
+        let low =
+            balance().rule(Rule::RogueCrestDarkPortalHp).clamp(1, 999) * crate::balance::POINT;
         if !dodged
             && target.shade
             && target.hp <= low
@@ -5238,7 +6031,7 @@ impl Position {
         let mut encased = false;
         if target.icy && self.crest_for(target.color, Crest::Crystal) {
             let floor =
-                balance().rule(Rule::RogueCrestCrystalHp).clamp(1, 99) * crate::balance::UNIT;
+                balance().rule(Rule::RogueCrestCrystalHp).clamp(1, 999) * crate::balance::POINT;
             if target.is_frozen() {
                 damage = 0;
             } else if target.hp > floor && target.hp - damage <= floor {
@@ -5274,39 +6067,20 @@ impl Position {
             && !fed
             && let Some(me) = &mut self.board[from as usize]
         {
-            let heal = (balance().rule(Rule::RogueVampireHeal).clamp(0, 99) * crate::balance::UNIT)
+            let heal = (balance().rule(Rule::RogueVampireHeal).clamp(0, 999)
+                * crate::balance::POINT)
                 .min(me.max_hp() - me.hp)
                 .max(0);
             me.hp += heal;
             feast += heal;
         }
-        // Герб снежинки и шипов: ударивший ледяную фигуру получает её урон.
-        let mut thorns = None;
-        if target.icy && damage > 0 && self.crest_for(target.color, Crest::Spikes) {
-            let back = damage * balance().rule(Rule::RogueCrestSpikesPercent).clamp(0, 1000) / 100;
-            if let Some(me) = self.board[from as usize]
-                && back > 0
-            {
-                let (_, dead) = self.wound(from, back);
-                if dead {
-                    self.score_kill(me, target.color);
-                }
-                thorns = Some(Hit {
-                    square: from,
-                    target: me,
-                    damage: back,
-                    killed: dead,
-                });
-            }
-        }
         // Ледяная цель замораживает ударившего (даже если она погибла) — на весь его следующий
         // ход: границы ходов его стороны — конец этого, начало и конец следующего; с гербом
         // двойной снежинки — на `Rule::RogueCrestFreezeTurns` его ходов.
-        let turns = if self.crest_for(target.color, Crest::Snow2) {
-            balance().rule(Rule::RogueCrestFreezeTurns).clamp(1, 9) as u8
-        } else {
-            1
-        };
+        // С 0.124 гербы складываются: каждый следующий — на столько же ходов дольше.
+        let snow = self.crest_times(target.color, Crest::Snow2).min(20) as u8;
+        let extra = balance().rule(Rule::RogueCrestFreezeTurns).clamp(1, 9) as u8 - 1;
+        let turns = 1 + snow * extra;
         let rebound = target.icy
             && match &mut self.board[from as usize] {
                 Some(piece) if piece.kind != Kind::King => {
@@ -5322,11 +6096,13 @@ impl Position {
             if attacker.gold && self.rogue.is_some_and(|r| r.player == us) {
                 let rule = |rule: Rule| balance().rule(rule).clamp(0, 999) as u16;
                 let mut bonus = rule(Rule::RogueGoldBonus);
-                if self.has_crest(Crest::GoldKing) {
-                    bonus = bonus.saturating_add(rule(Rule::RogueCrestGoldKingBonus));
-                }
-                if attacker.kind == Kind::Queen && self.has_crest(Crest::KingQueen) {
-                    bonus = bonus.saturating_add(rule(Rule::RogueCrestKingQueenBonus));
+                let times = |crest: Crest| self.crest_count(crest) as u16;
+                bonus = bonus
+                    .saturating_add(rule(Rule::RogueCrestGoldKingBonus) * times(Crest::GoldKing));
+                if attacker.kind == Kind::Queen {
+                    bonus = bonus.saturating_add(
+                        rule(Rule::RogueCrestKingQueenBonus) * times(Crest::KingQueen),
+                    );
                 }
                 if let Some(r) = &mut self.rogue {
                     r.gold = r.gold.saturating_add(bonus);
@@ -5348,7 +6124,13 @@ impl Position {
         // задетой дальше так же, пока задетые связаны; каждую — один раз.
         let mut splash = Vec::new();
         if attacker.spark {
-            let spread = attacker.attack() * balance().rule(Rule::SparkPercent) / 100;
+            // Урон молнии по фигуре, перед которой в цепочке `before` фигур (цель — первая).
+            let spread = |pos: &Self, before: u16| {
+                percent_of(
+                    pos.damage(Some(from), attacker, Blow::Spark(before)),
+                    balance().rule(Rule::SparkPercent),
+                )
+            };
             let rays: &[(i8, i8)] = if self.crest_for(us, Crest::BoltPlus) {
                 &KING_STEPS
             } else {
@@ -5358,10 +6140,11 @@ impl Position {
             let chain = self.crest_for(us, Crest::Bolts);
             // Задетые клетки (и цель): молния через них не возвращается и бьёт каждую раз.
             let mut seen = 1u64 << sq | 1u64 << from;
-            let mut sources = vec![sq];
+            // Откуда прыгает молния и сколько фигур в цепочке до этой клетки вместе с ней.
+            let mut sources = vec![(sq, 1u16)];
             let mut next = 0;
             while next < sources.len() {
-                let at = sources[next];
+                let (at, depth) = sources[next];
                 next += 1;
                 for &(df, dr) in rays {
                     let mut found = None;
@@ -5386,7 +6169,7 @@ impl Position {
                         continue;
                     };
                     seen |= 1 << s;
-                    let damage = self.damage_at(s, spread);
+                    let damage = self.damage_at(s, spread(self, depth));
                     let (_, dead) = self.wound(s, damage);
                     if dead {
                         self.score_kill(victim, us);
@@ -5401,7 +6184,7 @@ impl Position {
                         },
                     });
                     if chain {
-                        sources.push(s);
+                        sources.push((s, depth.saturating_add(1)));
                     }
                 }
             }
@@ -5428,7 +6211,6 @@ impl Position {
             chilled,
             advanced: false,
             rebound,
-            thorns,
             poisoned,
             again: false,
             whirl: false,
@@ -5561,14 +6343,6 @@ impl Position {
             };
             wall & 1 << sq == 0 && self.board[sq as usize].is_none()
         })
-    }
-
-    /// Насыщает пешку на `sq` лавой (для тестов).
-    #[cfg(test)]
-    pub(crate) fn set_lava(&mut self, sq: Square) {
-        if let Some(piece) = &mut self.board[sq as usize] {
-            piece.lava = true;
-        }
     }
 
     /// Замораживает фигуру на `sq` на `turns` ходов её стороны (для тестов).
@@ -5727,8 +6501,15 @@ impl Position {
                 }
             }
         }
-        // Выставление готовой фигуры из запаса — вместо хода.
-        for stock in self.reserve(us).into_iter().map(|s| s.0).filter(|_| !spent) {
+        // Выставление готовой фигуры из запаса — вместо хода (в rogue-like — не больше
+        // `Rule::RogueDropsPerTurn` за ход и пока на доске есть место).
+        let can_drop = !spent && self.drops_left() > 0 && self.board_room(us);
+        for stock in self
+            .reserve(us)
+            .into_iter()
+            .map(|s| s.0)
+            .filter(|_| can_drop)
+        {
             if self.stock_ready(us, stock) {
                 out.extend(
                     self.drop_squares(us, stock.kind)
@@ -5929,16 +6710,23 @@ impl Position {
     }
 
     /// Клетки, куда сторона `us` может выставить фигуру вида `kind`: пустые на своей половине
-    /// вне барьера соперника; пешку — не на первую горизонталь.
+    /// вне барьера соперника; пешку — не на первую горизонталь. В rogue-like (с 0.108) — только
+    /// на две первые горизонтали, как при расстановке (пешку — на вторую).
     fn drop_squares(&self, us: Color, kind: Kind) -> impl Iterator<Item = Square> + '_ {
         let wall = self.wall(us);
+        let rogue = self.rogue.is_some();
         (0..64u8).filter(move |&sq| {
             let rank = rank_of(sq);
-            let own_half = match us {
-                Color::White => rank < 4,
-                Color::Black => rank >= 4,
+            let fits = if rogue {
+                Self::arrange_fits(us, kind, sq)
+            } else {
+                let own_half = match us {
+                    Color::White => rank < 4,
+                    Color::Black => rank >= 4,
+                };
+                own_half && !(kind == Kind::Pawn && rank == us.home_rank())
             };
-            own_half && self.open(sq, wall) && !(kind == Kind::Pawn && rank == us.home_rank())
+            fits && self.open(sq, wall)
         })
     }
 
@@ -6194,7 +6982,6 @@ impl Position {
             frozen: false,
 
             reactions: Vec::new(),
-            passed: Vec::new(),
         };
         if let Some(stock) = mv.kind.stock() {
             let fresh = Piece {
@@ -6210,6 +6997,7 @@ impl Position {
             self.halfmove_clock = 0;
             self.moved = true;
             self.moves_made += 1;
+            self.drops = self.drops.saturating_add(1);
             self.used |= 1 << mv.to;
             self.airborne &= !(1 << mv.to);
             outcome.reactions = self.intercept(mv.to, None);
@@ -6217,24 +7005,24 @@ impl Position {
         }
 
         self.relocate(mv.from, mv.to);
-        // Герб теневого огня и черепа: теневая бьёт своей атакой чужих, через которых прошла.
-        if piece.shade && self.crest_for(us, Crest::DarkSkull) {
-            for sq in Self::shade_passed(mv.from, mv.to) {
-                let Some(target) = self.board[sq as usize].filter(|p| p.color != us) else {
-                    continue;
-                };
-                let damage = self.damage_at(sq, piece.attack());
-                let (_, killed) = self.wound(sq, damage);
-                if killed {
-                    self.score_kill(target, us);
-                }
-                outcome.passed.push(WaveHit {
-                    square: sq,
-                    target,
-                    damage,
-                    killed,
-                });
-            }
+        // Герб теневого огня и черепа (с 0.121): фигуры, через которые прошла теневая фигура
+        // игрока, — в счёт хода (`TurnCounts::jumped`); раньше она их била.
+        if piece.shade
+            && let Some(r) = &mut self.rogue
+            && r.player == us
+        {
+            let jumped = Self::shade_passed(mv.from, mv.to)
+                .into_iter()
+                .filter(|&sq| self.board[sq as usize].is_some())
+                .count() as u16;
+            r.turn.jumped = r.turn.jumped.saturating_add(jumped);
+        }
+        // Ход воздушной фигуры игрока — в счёт хода (герб смерча и умножения, с 0.124).
+        if piece.wind
+            && let Some(r) = &mut self.rogue
+            && r.player == us
+        {
+            r.turn.wind_moves = r.turn.wind_moves.saturating_add(1);
         }
         if matches!(mv.kind, MoveKind::CastleShort | MoveKind::CastleLong) {
             let (rook_from, rook_to) = if mv.kind == MoveKind::CastleShort {
@@ -6251,8 +7039,9 @@ impl Position {
             && piece.kind == Kind::Pawn
             && rank_of(mv.to) == us.last_rank()
         {
-            // Новая фигура приходит с полным здоровьем.
-            self.board[mv.to as usize] = Some(self.crested(Piece::new(kind, us)));
+            // Новая фигура приходит с полным здоровьем и силами пешки (с 0.109: огненная пешка —
+            // огненный ферзь).
+            self.board[mv.to as usize] = Some(self.crested(Piece::new(kind, us).with(piece)));
             outcome.promoted = Some(kind);
         }
         if piece.kind == Kind::King {
@@ -6356,8 +7145,9 @@ impl Position {
         strikes
     }
 
-    /// Ход фигурой и конец хода — так ходит компьютер в переборе.
-    pub fn make_turn(&mut self, mv: Move) -> Outcome {
+    /// Ход фигурой и конец хода (для тестов).
+    #[cfg(test)]
+    pub(crate) fn make_turn(&mut self, mv: Move) -> Outcome {
         let outcome = self.make_move(mv);
         self.end_turn();
         outcome
@@ -6517,7 +7307,7 @@ impl Record {
                         square_name(s.hit.square)
                     );
                 }
-                (text, o.reactions.iter().map(|s| s.hit.damage).sum())
+                (text, damage_sum(o.reactions.iter().map(|s| s.hit.damage)))
             }
             Event::Rogue(action) => {
                 let text = match *action {
@@ -6538,14 +7328,42 @@ impl Record {
                         format!("Магазин: {fire}{} −{price}", stock.kind.letter())
                     }
                     RogueAction::Reroll { price } => format!("Обновить −{price}"),
-                    RogueAction::Sell { stock, price } => {
-                        format!("Продажа: {} +{price}", stock.kind.letter())
-                    }
                     RogueAction::Leave => "Из магазина".to_owned(),
                     RogueAction::BuyCrest { crest, price } => {
                         format!("{} −{price}", crest.title())
                     }
-                    RogueAction::RerollCrests { price } => format!("Обновить гербы −{price}"),
+                    RogueAction::OpenChest { chest, big, price } => {
+                        let title = if big {
+                            format!("Большой {}", chest.title().to_lowercase())
+                        } else {
+                            chest.title().to_owned()
+                        };
+                        format!("{title} −{price}")
+                    }
+                    RogueAction::TakeFromChest { ware } => match ware {
+                        Ware::Piece(stock) => format!("Из сундука: {}", stock.name()),
+                        Ware::Crest(crest) => format!("Из сундука: {}", crest.title()),
+                        Ware::Card(card) => format!("Из сундука: {}", card.title()),
+                    },
+                    RogueAction::PlayCard(used) => {
+                        let squares: Vec<String> = used
+                            .targets
+                            .iter()
+                            .flatten()
+                            .map(|&sq| square_name(sq))
+                            .collect();
+                        if squares.is_empty() {
+                            used.card.title().to_owned()
+                        } else {
+                            format!("{} → {}", used.card.title(), squares.join("→"))
+                        }
+                    }
+                    RogueAction::Sell { stock, price } => {
+                        format!("Продажа: {} +{price}", stock.kind.letter())
+                    }
+                    RogueAction::SellCrest { crest, price } => {
+                        format!("Продажа: {} +{price}", crest.title())
+                    }
                 };
                 (text, 0)
             }
@@ -6557,7 +7375,7 @@ impl Record {
                 } else {
                     format!("{} {}", play.kind.title(), squares.join("↔"))
                 };
-                (text, play.hits.iter().map(|h| h.damage).sum())
+                (text, damage_sum(play.hits.iter().map(|h| h.damage)))
             }
             Event::EndTurn(_, turn) => {
                 // «Кc3⚔d5» — ранил, «Сc4×e6» — убил, «⚡» — молния слона задела ещё фигуры,
@@ -6601,7 +7419,7 @@ impl Record {
                 }
                 let dealt = turn.strikes.iter().flat_map(Strike::hits).map(|h| h.damage);
                 let burnt = turn.blasts.iter().flat_map(|b| &b.hits).map(|h| h.damage);
-                (text.join(", "), dealt.chain(burnt).sum())
+                (text.join(", "), damage_sum(dealt.chain(burnt)))
             }
         };
         Notation {
@@ -6675,12 +7493,6 @@ impl Record {
                     RogueAction::Reroll { price } => {
                         format!("Магазин обновлён за {}.", coins(price, true))
                     }
-                    RogueAction::Sell { stock, price } => format!(
-                        "Продан{} {} из запаса за {}.",
-                        if stock.kind.is_feminine() { "а" } else { "" },
-                        stock.name(),
-                        coins(price, true)
-                    ),
                     RogueAction::Leave => "Ушли из магазина — расстановка.".to_owned(),
                     RogueAction::BuyCrest { crest, price } => format!(
                         "Куплен {} за {}: {}",
@@ -6688,9 +7500,45 @@ impl Record {
                         coins(price, true),
                         crest.description()
                     ),
-                    RogueAction::RerollCrests { price } => {
-                        format!("Гербы обновлены за {}.", coins(price, true))
+                    RogueAction::OpenChest { chest, big, price } => {
+                        let offer = ChestOffer {
+                            kind: chest,
+                            big,
+                            state: ChestState::Open,
+                            taken: 0,
+                            wares: [None; CHEST_MAX],
+                        };
+                        format!(
+                            "{} открыт за {} — выберите {} из {}.",
+                            offer.title(),
+                            coins(price, true),
+                            offer.picks(),
+                            offer.choices()
+                        )
                     }
+                    RogueAction::TakeFromChest { ware } => match ware {
+                        Ware::Piece(stock) => format!("Из сундука: {} — в запасе.", stock.name()),
+                        Ware::Crest(crest) => format!(
+                            "Из сундука: {}: {}",
+                            crest.title().to_lowercase(),
+                            crest.description()
+                        ),
+                        Ware::Card(card) => {
+                            format!("Из сундука: {} — в руке.", card.title().to_lowercase())
+                        }
+                    },
+                    RogueAction::PlayCard(used) => card_text(used),
+                    RogueAction::Sell { stock, price } => format!(
+                        "Продан{} {} из запаса за {}.",
+                        if stock.kind.is_feminine() { "а" } else { "" },
+                        stock.name(),
+                        coins(price, true)
+                    ),
+                    RogueAction::SellCrest { crest, price } => format!(
+                        "Продан {} за {}.",
+                        crest.title().to_lowercase(),
+                        coins(price, true)
+                    ),
                 };
                 return text + &ending;
             }
@@ -6769,11 +7617,6 @@ impl Record {
                         })
                         .collect();
                     text += &format!(" Яд: {}.", hits_text(&hits));
-                }
-                if !turn.charged.is_empty() {
-                    let squares: Vec<String> =
-                        turn.charged.iter().map(|&sq| square_name(sq)).collect();
-                    text += &format!(" Лавой насытились пешки {}.", squares.join(", "));
                 }
                 if turn.gold > 0 {
                     let total = self.before.rogue().map_or(0, |r| r.gold) + turn.gold;
@@ -6859,9 +7702,6 @@ impl Record {
                 "вмёрз"
             };
             text += &format!(" {} {verb} в ледяной барьер.", kind.title());
-        }
-        if !o.passed.is_empty() {
-            text += &format!(" Тень бьёт насквозь: {}.", hits_text(&o.passed));
         }
         for strike in &o.reactions {
             text += " Перехват:";
@@ -6974,18 +7814,6 @@ fn strike_description(strike: &Strike) -> String {
         };
         text += &format!(" {} {verb}.", hit.target.kind.title());
     }
-    if let Some(thorns) = strike.thorns {
-        text += &format!(" Шипы льда: {} −{}", attacker.title(), shown(thorns.damage));
-        text += &if thorns.killed {
-            format!(", погиб{}.", if attacker.is_feminine() { "ла" } else { "" })
-        } else {
-            format!(
-                ", осталось {} из {}.",
-                shown(thorns.hp_after()),
-                shown(thorns.target.max_hp())
-            )
-        };
-    }
     if strike.dodged {
         text += &format!(
             " {} не получил{} удар.",
@@ -7034,6 +7862,46 @@ fn strike_description(strike: &Strike) -> String {
 
 /// «Белые сыграли карту «Огненная Волна» на d4: …», «… «Обмен»: конь b1 и слон c1
 /// поменялись местами.»; `before` — позиция до карты.
+/// Что сделала сыгранная карта rogue-like — для описания хода.
+fn card_text(used: CardUse) -> String {
+    let title = used.card.title().to_lowercase();
+    let piece = used
+        .piece
+        .map_or_else(String::new, |p| p.title().to_lowercase());
+    let at = |k: usize| used.targets[k].map_or_else(String::new, square_name);
+    match used.card {
+        Card::Mask => format!(
+            "Маска превратилась: теперь это {}.",
+            used.cards[0].map_or("", |c| c.title()).to_lowercase()
+        ),
+        Card::Power(_) | Card::Rank => {
+            format!("Сыграна {title} на {}: теперь это {piece}.", at(0))
+        }
+        Card::Mirror => format!(
+            "Сыграна {title}: фигура на {} стала копией фигуры на {} — теперь это {piece}.",
+            at(0),
+            at(1)
+        ),
+        Card::Crest => format!(
+            "Сыграна {title}: {} — {}",
+            used.crest.map_or("", |c| c.title()).to_lowercase(),
+            used.crest.map_or_else(String::new, |c| c.description())
+        ),
+        Card::Double | Card::Coin => {
+            format!("Сыграна {title}: +{}.", coins(used.gold, false))
+        }
+        Card::Feather => {
+            let drawn: Vec<String> = used
+                .cards
+                .iter()
+                .flatten()
+                .map(|c| c.title().to_lowercase())
+                .collect();
+            format!("Сыграна {title}: в руке {}.", drawn.join(" и "))
+        }
+    }
+}
+
 fn card_description(play: &CardPlay, before: &Position) -> String {
     let mut text = format!(
         "{} сыграли карту «{}»",
@@ -7289,9 +8157,8 @@ impl Game {
     /// Можно ли закончить ход: фигурой уже сходили или ходить нечем (фигуры заморожены
     /// или заперты) — тогда ход фигурой пропускается.
     pub fn can_end_turn(&self) -> bool {
-        !self.is_over()
-            && !self.position.shop_open()
-            && (self.legal.is_empty() || self.position.moved() || self.position.planning())
+        // С 0.111 (просьба пользователя) ходить фигурой перед концом хода не обязательно.
+        !self.is_over() && !self.position.shop_open()
     }
 
     /// Rogue-like: действие магазина или «Выиграть раунд» — в историю, как ход.
@@ -7313,7 +8180,7 @@ impl Game {
         true
     }
 
-    /// Rogue-like: купить фигуру с места `slot` прилавка.
+    /// Rogue-like: купить товар (фигуру или герб) с места `slot` прилавка.
     pub fn buy(&mut self, slot: usize) -> bool {
         self.rogue_action(|pos| pos.buy(slot))
     }
@@ -7323,19 +8190,29 @@ impl Game {
         self.rogue_action(Position::reroll)
     }
 
+    /// Rogue-like: купить и открыть сундук.
+    pub fn open_chest(&mut self, slot: usize) -> bool {
+        self.rogue_action(|pos| pos.open_chest(slot))
+    }
+
+    /// Rogue-like: взять вещь с места `slot` открытого сундука.
+    pub fn take_from_chest(&mut self, slot: usize) -> bool {
+        self.rogue_action(|pos| pos.take_from_chest(slot))
+    }
+
+    /// Rogue-like: сыграть карту с места `slot` руки (на свои фигуры `targets`).
+    pub fn use_card(&mut self, slot: usize, targets: &[Square]) -> bool {
+        self.rogue_action(|pos| pos.use_card(slot, targets))
+    }
+
     /// Rogue-like: продать фигуру `stock` из запаса (пока открыт магазин).
     pub fn sell(&mut self, stock: Stock) -> bool {
         self.rogue_action(|pos| pos.sell(stock))
     }
 
-    /// Rogue-like: купить герб с места `slot` прилавка гербов.
-    pub fn buy_crest(&mut self, slot: usize) -> bool {
-        self.rogue_action(|pos| pos.buy_crest(slot))
-    }
-
-    /// Rogue-like: обновить гербы на прилавке.
-    pub fn reroll_crests(&mut self) -> bool {
-        self.rogue_action(Position::reroll_crests)
+    /// Rogue-like: продать герб (пока открыт магазин).
+    pub fn sell_crest(&mut self, index: usize) -> bool {
+        self.rogue_action(|pos| pos.sell_crest(index))
     }
 
     /// Rogue-like: уйти из магазина к расстановке.
@@ -7416,13 +8293,6 @@ impl Game {
             self.finish_turn();
         }
         Some(play)
-    }
-
-    /// Усиливает фигуры стороны `color` (компьютер) — в начале партии.
-    pub fn boost(&mut self, color: Color) {
-        self.position.boost(color);
-        self.keys = vec![self.position.key()];
-        self.refresh();
     }
 
     /// Кнопка «Конец хода»: работает, если фигурой уже сходили или ходить нечем.

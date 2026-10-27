@@ -64,8 +64,6 @@ pub struct Settings {
     pub show_fps: bool,
     /// Выбранная в меню колода (номер в `DECKS` в app/menu.rs).
     pub deck: u8,
-    /// Компьютер с усиленными фигурами: лава в пешках, электричество в слонах.
-    pub boosted: bool,
     /// Партия «с перемещением при взятии»: пешка, конь и король встают на клетку убитой.
     pub advance: bool,
     /// Масштаб доски в процентах от размера «по окну» (`ZOOM_MIN`…`ZOOM_MAX`).
@@ -83,7 +81,6 @@ impl Default for Settings {
             frame_rate: FrameRate::Vsync,
             show_fps: false,
             deck: 0,
-            boosted: false,
             advance: false,
             zoom: 100,
         }
@@ -131,7 +128,6 @@ impl Settings {
                 }
                 "show_fps" => settings.show_fps = value == "on",
                 "deck" => settings.deck = value.parse().unwrap_or(0),
-                "boosted" => settings.boosted = value == "on",
                 "advance" => settings.advance = value == "on",
                 "zoom" => {
                     if let Ok(zoom) = value.parse::<u16>() {
@@ -147,13 +143,12 @@ impl Settings {
     fn to_text(&self) -> String {
         let on_off = |on: bool| if on { "on" } else { "off" };
         format!(
-            "volume={}\nsound={}\nframe_rate={}\nshow_fps={}\ndeck={}\nboosted={}\nadvance={}\nzoom={}\n",
+            "volume={}\nsound={}\nframe_rate={}\nshow_fps={}\ndeck={}\nadvance={}\nzoom={}\n",
             self.volume,
             on_off(self.sound),
             self.frame_rate.key(),
             on_off(self.show_fps),
             self.deck,
-            on_off(self.boosted),
             on_off(self.advance),
             self.zoom,
         )
@@ -191,7 +186,6 @@ mod tests {
                 frame_rate,
                 show_fps: true,
                 deck: 3,
-                boosted: true,
                 advance: true,
                 zoom: 140,
             };

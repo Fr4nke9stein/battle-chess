@@ -606,16 +606,17 @@ pub use cards::{
     EMBLEM_ZOOM, POINTS_TINT, SHADOW_SHIFT, Sprite, cost_corner,
 };
 pub use ui::{
-    ARROW_HEAD, ARROW_SPACING, Aim, ArrowPart, BIG_WAVE_CENTER, BIG_WAVE_FRAMES, BLESS_ANCHOR,
-    BLESS_FIGURE, BLESS_FRAME_TIME, BLESS_FRAMES, BUTTON, Button, COIN, COIN_SMALL, CRATER_CENTER,
-    CRATER_FRAME_TIME, CRATER_FRAMES, CREST, DARK_LOOP, ELECTRIC_ANCHOR, ELECTRIC_FLASH,
-    ELECTRIC_FRAME_TIME, ELECTRIC_LOOP, FREEZE_CENTER, FREEZE_CLINK, FREEZE_DELAY,
-    FREEZE_FRAME_TIME, FREEZE_FRAMES, FREEZE_FROST, FrameSprite, LAVA_FRAME_TIME, LAVA_FRAMES,
-    LAVA_HOLD, LAVA_IGNITE, LAVA_SPREAD, LAVA_WAVE_AT, METEOR_CENTER, METEOR_FRAME_TIME,
-    METEOR_FRAMES, METEOR_IMPACT, METEOR_WAVE_FRAMES, POISON_LOOP, POISON_TRAIL_CENTER,
-    POISON_TRAIL_FRAMES, PORTAL_CENTER, PORTAL_CUT, PORTAL_FRAME, PORTAL_FRAME_TIME, PORTAL_FRAMES,
-    PORTAL_RADII, PORTAL_SCALE, PORTAL_SINK, STEP_FRAME_TIME, STEP_IN, STEP_IN_AT, STEP_OUT,
-    TARGET_PAD, WAVE_CENTER, WAVE_FRAME, WAVE_FRAME_TIME, WAVE_FRAMES, WIND_LOOP,
+    ARROW_HEAD, ARROW_SPACING, Aim, ArrowPart, BIG_CHEST, BIG_WAVE_CENTER, BIG_WAVE_FRAMES,
+    BLESS_ANCHOR, BLESS_FIGURE, BLESS_FRAME_TIME, BLESS_FRAMES, BUTTON, Button, CHEST, COIN,
+    COIN_SMALL, CRATER_CENTER, CRATER_FRAME_TIME, CRATER_FRAMES, CREST, DARK_LOOP, ELECTRIC_ANCHOR,
+    ELECTRIC_FLASH, ELECTRIC_FRAME_TIME, ELECTRIC_LOOP, ELECTRIC_SLOW, FREEZE_CENTER, FREEZE_CLINK,
+    FREEZE_DELAY, FREEZE_FRAME_TIME, FREEZE_FRAMES, FREEZE_FROST, FrameSprite, LAVA_FRAME_TIME,
+    LAVA_FRAMES, LAVA_HOLD, LAVA_IGNITE, LAVA_SPREAD, LAVA_WAVE_AT, METEOR_CENTER,
+    METEOR_FRAME_TIME, METEOR_FRAMES, METEOR_IMPACT, METEOR_WAVE_FRAMES, POISON_LOOP,
+    POISON_TRAIL_CENTER, POISON_TRAIL_FRAMES, PORTAL_CENTER, PORTAL_CUT, PORTAL_FRAME,
+    PORTAL_FRAME_TIME, PORTAL_FRAMES, PORTAL_RADII, PORTAL_SCALE, PORTAL_SINK, POWER_CARD,
+    STEP_FRAME_TIME, STEP_IN, STEP_IN_AT, STEP_OUT, TARGET_PAD, WAVE_CENTER, WAVE_FRAME,
+    WAVE_FRAME_TIME, WAVE_FRAMES, WIND_LOOP,
 };
 
 /// Значки в панелях увеличены вдвое: так они остаются резкими и в крупной карточке фигуры.
@@ -874,8 +875,15 @@ fn overlay(fill: [u8; 3], line: [u8; 3], alpha: u8, inset: f32, width: f32) -> P
 /// Пиксельный шрифт: буквы и цифры 6×8 с толстыми линиями, как подписи доски, и
 /// значки для чисел над фигурами. `x` — череп, `<` — стрелка ответного удара, `!` — меч,
 /// `h` — сердце, `c` — карта с ромбом, как на рубашке колоды, `z` — молния (заряд), `p` — пешка
-/// (ходы фигурами).
-const GLYPHS: [(u8, [&str; 8]); 27] = [
+/// (ходы фигурами), `*` — знак умножения и `.` — точка (мульти, с 0.119).
+const GLYPHS: [(u8, [&str; 8]); 29] = [
+    (
+        b'*',
+        [
+            "......", "##..##", ".####.", "..##..", ".####.", "##..##", "......", "......",
+        ],
+    ),
+    (b'.', ["..", "..", "..", "..", "..", "..", "##", "##"]),
     (
         b'p',
         [
@@ -1098,10 +1106,13 @@ pub enum Glyph {
     Bolt,
     /// Ходы фигурами (rogue-like, над «Конец хода»).
     Pawn,
+    /// Знак умножения и точка — мульти (с 0.119).
+    Times,
+    Dot,
 }
 
 /// Знаки шрифта в порядке текстур.
-const FONT: &[u8] = b"0123456789-+x<!hczp";
+const FONT: &[u8] = b"0123456789-+x<!hczp*.";
 
 impl Glyph {
     fn char(self) -> u8 {
@@ -1116,6 +1127,8 @@ impl Glyph {
             Glyph::Card => b'c',
             Glyph::Bolt => b'z',
             Glyph::Pawn => b'p',
+            Glyph::Times => b'*',
+            Glyph::Dot => b'.',
         }
     }
 
@@ -1123,6 +1136,20 @@ impl Glyph {
         FONT.iter()
             .position(|&c| c == self.char())
             .expect("знак есть в шрифте")
+    }
+
+    /// Знаки строки из цифр, «+», «-», «×» и «.» (прочие пропускаются).
+    pub fn text(text: &str) -> Vec<Glyph> {
+        text.chars()
+            .filter_map(|c| match c {
+                '0'..='9' => Some(Glyph::Digit(c as u8 - b'0')),
+                '+' => Some(Glyph::Plus),
+                '-' => Some(Glyph::Minus),
+                '×' => Some(Glyph::Times),
+                '.' => Some(Glyph::Dot),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Цифры неотрицательного числа.

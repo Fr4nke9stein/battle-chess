@@ -33,8 +33,6 @@ pub enum Rule {
     CardsPerTurn,
     StartHand,
     MaxHand,
-    LavaPawns,
-    LavaDamage,
     SparkPercent,
     RogueWaves,
     RogueWaveMin,
@@ -60,19 +58,14 @@ pub enum Rule {
     RogueWindPercent,
     RogueGoldPiecePercent,
     RogueGoldBonus,
-    RogueGoldSellPercent,
     RogueShadePercent,
     RogueIcePercent,
     RogueBossHp,
     RogueBossAttack,
     RogueBossGold,
-    RogueCrestSlots,
     RogueCrestPrice,
-    RogueCrestRerollCost,
     RogueCrestHeartHp,
-    RogueCrestCoinPercent,
     RogueCrestFreezeTurns,
-    RogueCrestSpikesPercent,
     RogueCrestCrystalHp,
     RogueKnightHp,
     RoguePoisonLevel,
@@ -80,22 +73,11 @@ pub enum Rule {
     RoguePoisonDamage,
     RogueBarbarianPercent,
     RogueBarbarianRepeats,
-    RogueCrestAxeAttack,
     RogueCrestAxeHp,
     RogueCrestFangsHeal,
-    RogueCrestQueenDiscount,
-    RogueCrestAxesPercent,
     RogueCrestWhirlRadius,
-    RogueCrestWhirlDamage,
     RogueWizardPercent,
-    RogueWizardDamage,
-    RogueCrestFlamePawnDiscount,
     RogueCrestFlamesReach,
-    RogueCrestFlameSwordDamage,
-    RogueCrestFlameCoinPercent,
-    RogueCrestBombDamage,
-    RogueCrestDarkRookDiscount,
-    RogueCrestDarkCoinPercent,
     RogueCrestDarkPortalHp,
     RogueCrestDarkDodgeEvery,
     RogueArmorLevel,
@@ -107,20 +89,10 @@ pub enum Rule {
     RogueVampirePercent,
     RogueVampireHp,
     RogueVampireHeal,
-    RogueCrestWindKnightDiscount,
-    RogueCrestWindCoinPercent,
-    RogueCrestBoltBishopDiscount,
-    RogueCrestBoltCoinPercent,
     RogueCrestRedBoltStep,
     RogueCrestRedBoltMax,
-    RogueCrestPairPercent,
     RogueCrestRerollCoinCost,
-    RogueCrestHatCoinPercent,
-    RogueCrestHatBishopDiscount,
-    RogueCrestMeteorDamage,
-    RogueCrestCraterDamage,
     RogueCrestGoldKingBonus,
-    RogueCrestKings2Percent,
     RogueCrestKingQueenBonus,
     RogueCrestPiggyStep,
     RogueComboPercent,
@@ -139,6 +111,43 @@ pub enum Rule {
     RogueVenomZombieLevel,
     RogueVenomZombieWave,
     RogueVenomZombiePercent,
+    RogueShopPiecePercent,
+    RogueRerollStep,
+    RogueDropsPerTurn,
+    RogueMaxPieces,
+    RogueFirstLevelHpCut,
+    RogueWizardEvery,
+    RogueChestPiecesPrice,
+    RogueChestCrestsPrice,
+    RogueChestChoices,
+    RogueChestCardsPrice,
+    RogueHandSize,
+    RogueGoldSellPercent,
+    RogueCrestSellPrice,
+    RogueRareCardPercent,
+    RogueChestSlots,
+    RogueBigChestPercent,
+    RogueBigChestChoices,
+    RogueBigChestPicks,
+    RogueBigChestPricePercent,
+    RogueCrestMultAddPercent,
+    RogueCrestKingMultPercent,
+    RogueCrestFewBase,
+    RogueCrestPawnMultPercent,
+    RogueCrestKnightAddPercent,
+    RogueCrestSwordMultPercent,
+    RogueCrestFirstAddPercent,
+    RogueCrestQueenAddPercent,
+    RogueCrestFlameMultPercent,
+    RogueCrestSnowMultPercent,
+    RogueCrestMeteorAddPercent,
+    RogueCrestJumpAddPercent,
+    RogueCrestBombMultPercent,
+    RogueCrestFlameSwordAddPercent,
+    RogueCrestAxeMultPercent,
+    RogueLevelHpPercent,
+    RogueCrestBoltAddPercent,
+    RogueCrestWindAddPercent,
 }
 
 pub struct RuleDef {
@@ -150,11 +159,45 @@ pub struct RuleDef {
 }
 
 /// Строки `[rules]` прежних версий, которых больше нет: в старом файле они не предупреждение.
-/// `rogue_wave_turns` — с 0.52 волна rogue-like выходит каждый ход.
-const RETIRED_RULES: [&str; 2] = ["rogue_wave_turns", "rogue_armor_skip_level"];
+/// `rogue_wave_turns` — с 0.52 волна rogue-like выходит каждый ход; `lava_pawns` — с 0.108 нет
+/// усиленного компьютера;
+/// `rogue_crest_slots`, `rogue_crest_reroll_cost` — с 0.108 гербы на общем прилавке.
+const RETIRED_RULES: [&str; 29] = [
+    "rogue_wave_turns",
+    "rogue_armor_skip_level",
+    "lava_pawns",
+    "rogue_crest_slots",
+    "rogue_crest_reroll_cost",
+    // гербы скидок и частоты фигур (убраны в 0.118)
+    "rogue_crest_coin_percent",
+    "rogue_crest_queen_discount",
+    "rogue_crest_axes_percent",
+    "rogue_crest_flame_pawn_discount",
+    "rogue_crest_flame_coin_percent",
+    "rogue_crest_dark_rook_discount",
+    "rogue_crest_dark_coin_percent",
+    "rogue_crest_wind_coin_percent",
+    "rogue_crest_wind_knight_discount",
+    "rogue_crest_bolt_bishop_discount",
+    "rogue_crest_bolt_coin_percent",
+    "rogue_crest_pair_percent",
+    "rogue_crest_hat_coin_percent",
+    "rogue_crest_hat_bishop_discount",
+    "rogue_crest_kings2_percent",
+    // урон взрывов, метеоритов, кратеров, шипов и топора (с 0.121 — мульти)
+    "lava_damage",
+    "rogue_crest_spikes_percent",
+    "rogue_crest_axe_attack",
+    "rogue_wizard_damage",
+    "rogue_crest_flame_sword_damage",
+    "rogue_crest_bomb_damage",
+    "rogue_crest_meteor_damage",
+    "rogue_crest_crater_damage",
+    "rogue_crest_whirl_damage",
+];
 
 /// В порядке `Rule`.
-pub const RULES: [RuleDef; 110] = [
+pub const RULES: [RuleDef; 119] = [
     RuleDef {
         key: "mana_per_turn",
         default: 2,
@@ -184,28 +227,12 @@ pub const RULES: [RuleDef; 110] = [
         note: "больше карт в руке не бывает: с полной рукой карта остаётся в колоде",
     },
     RuleDef {
-        key: "lava_pawns",
-        default: 3,
-        min: 0,
-        max: 16,
-        note: "усиленный компьютер: сколько его случайных пешек в начале вашего хода насыщается \
-               лавой (в конце хода компьютера они взрываются огненной волной)",
-    },
-    RuleDef {
-        key: "lava_damage",
-        default: 300,
-        min: 0,
-        max: 9999,
-        note: "усиленный компьютер: урон взрыва лавы каждой вашей фигуре вокруг пешки \
-               (свои фигуры взрыв не задевает), в тех же единицах, что атака",
-    },
-    RuleDef {
         key: "spark_percent",
         default: 100,
         min: 0,
         max: 1000,
-        note: "усиленный компьютер: сколько процентов атаки слона с электричеством достаётся \
-               каждой вашей фигуре по диагонали вокруг его цели",
+        note: "rogue-like: сколько процентов атаки электрической фигуры достаётся каждой \
+               чужой фигуре, задетой её молнией",
     },
     RuleDef {
         key: "rogue_waves",
@@ -323,15 +350,15 @@ pub const RULES: [RuleDef; 110] = [
         key: "rogue_shop_slots",
         default: 3,
         min: 1,
-        max: 5,
-        note: "rogue-like: сколько фигур на выбор в магазине после уровня",
+        max: 8,
+        note: "rogue-like: сколько мест в магазине после уровня (на каждом — фигура или герб)",
     },
     RuleDef {
         key: "rogue_reroll_cost",
-        default: 2,
+        default: 5,
         min: 0,
         max: 99,
-        note: "rogue-like: сколько золота стоит обновить магазин",
+        note: "rogue-like: сколько золота стоит первое обновление магазина за посещение",
     },
     RuleDef {
         key: "rogue_shop_percent",
@@ -376,13 +403,6 @@ pub const RULES: [RuleDef; 110] = [
         note: "rogue-like: сколько золота сверху даёт победа, одержанная золотой фигурой",
     },
     RuleDef {
-        key: "rogue_gold_sell_percent",
-        default: 200,
-        min: 0,
-        max: 1000,
-        note: "rogue-like: золотая фигура продаётся за столько % от продажи обычной такой же",
-    },
-    RuleDef {
         key: "rogue_shade_percent",
         default: 200,
         min: 0,
@@ -398,16 +418,16 @@ pub const RULES: [RuleDef; 110] = [
     },
     RuleDef {
         key: "rogue_boss_hp",
-        default: 10,
-        min: 1,
-        max: 99,
+        default: 100,
+        min: 10,
+        max: 990,
         note: "rogue-like: здоровье короля-толстосума (босс последней волны первого уровня), в единицах",
     },
     RuleDef {
         key: "rogue_boss_attack",
-        default: 1,
+        default: 10,
         min: 0,
-        max: 99,
+        max: 990,
         note: "rogue-like: атака короля-толстосума, в единицах",
     },
     RuleDef {
@@ -418,39 +438,18 @@ pub const RULES: [RuleDef; 110] = [
         note: "rogue-like: золото за победу над королём-толстосумом",
     },
     RuleDef {
-        key: "rogue_crest_slots",
-        default: 3,
-        min: 1,
-        max: 5,
-        note: "rogue-like: сколько гербов на выбор в магазине",
-    },
-    RuleDef {
         key: "rogue_crest_price",
-        default: 15,
+        default: 10,
         min: 0,
         max: 999,
         note: "rogue-like: цена герба в магазине",
     },
     RuleDef {
-        key: "rogue_crest_reroll_cost",
-        default: 5,
-        min: 0,
-        max: 999,
-        note: "rogue-like: сколько стоит обновить гербы в магазине",
-    },
-    RuleDef {
         key: "rogue_crest_heart_hp",
-        default: 2,
+        default: 20,
         min: 0,
-        max: 99,
+        max: 990,
         note: "rogue-like, герб снежинки и сердца: прибавка к здоровью ледяных фигур, в единицах",
-    },
-    RuleDef {
-        key: "rogue_crest_coin_percent",
-        default: 200,
-        min: 0,
-        max: 1000,
-        note: "rogue-like, герб снежинки и монеты: шанс ледяных фигур в магазине, % от обычного",
     },
     RuleDef {
         key: "rogue_crest_freeze_turns",
@@ -460,24 +459,17 @@ pub const RULES: [RuleDef; 110] = [
         note: "rogue-like, герб двойной снежинки: на сколько ходов ледяные фигуры замораживают ударившего",
     },
     RuleDef {
-        key: "rogue_crest_spikes_percent",
-        default: 100,
-        min: 0,
-        max: 1000,
-        note: "rogue-like, герб снежинки и шипов: ударивший ледяную фигуру получает столько % её урона",
-    },
-    RuleDef {
         key: "rogue_crest_crystal_hp",
-        default: 1,
-        min: 1,
-        max: 99,
+        default: 10,
+        min: 10,
+        max: 990,
         note: "rogue-like, герб замороженной снежинки: с таким здоровьем (в единицах) ледяная фигура вмерзает в лёд",
     },
     RuleDef {
         key: "rogue_knight_hp",
-        default: 3,
-        min: 1,
-        max: 99,
+        default: 30,
+        min: 10,
+        max: 990,
         note: "rogue-like: здоровье коня (обеих сторон), в единицах; в обычной партии — из [piece.Knight]",
     },
     RuleDef {
@@ -489,16 +481,16 @@ pub const RULES: [RuleDef; 110] = [
     },
     RuleDef {
         key: "rogue_poison_percent",
-        default: 50,
+        default: 100,
         min: 0,
         max: 100,
         note: "rogue-like: шанс фигуры волны на этом уровне выйти ядовитой, %",
     },
     RuleDef {
         key: "rogue_poison_damage",
-        default: 1,
+        default: 10,
         min: 0,
-        max: 99,
+        max: 990,
         note: "rogue-like: урон яда в конце следующего хода отравленной фигуры, в единицах",
     },
     RuleDef {
@@ -516,39 +508,18 @@ pub const RULES: [RuleDef; 110] = [
         note: "rogue-like: сколько раз подряд варвар бьёт ещё раз после убийства",
     },
     RuleDef {
-        key: "rogue_crest_axe_attack",
-        default: 2,
-        min: 0,
-        max: 99,
-        note: "rogue-like, герб топора и меча: прибавка к атаке варваров, в единицах",
-    },
-    RuleDef {
         key: "rogue_crest_axe_hp",
-        default: 1,
+        default: 10,
         min: 0,
-        max: 99,
+        max: 990,
         note: "rogue-like, герб топора и меча: на столько меньше здоровья у варваров, в единицах",
     },
     RuleDef {
         key: "rogue_crest_fangs_heal",
-        default: 1,
+        default: 10,
         min: 0,
-        max: 99,
+        max: 990,
         note: "rogue-like, герб топора и клыков: лечение варвара за убийство (раз за ход), в единицах",
-    },
-    RuleDef {
-        key: "rogue_crest_queen_discount",
-        default: 6,
-        min: 0,
-        max: 999,
-        note: "rogue-like, герб топора и ферзя: на столько дешевле ферзь-варвар в магазине",
-    },
-    RuleDef {
-        key: "rogue_crest_axes_percent",
-        default: 200,
-        min: 0,
-        max: 1000,
-        note: "rogue-like, герб двух топоров: шанс варваров в магазине, % от обычного",
     },
     RuleDef {
         key: "rogue_crest_whirl_radius",
@@ -558,32 +529,11 @@ pub const RULES: [RuleDef; 110] = [
         note: "rogue-like, герб топора и красного круга: радиус кругового удара варвара, клеток",
     },
     RuleDef {
-        key: "rogue_crest_whirl_damage",
-        default: 1,
-        min: 0,
-        max: 99,
-        note: "rogue-like, герб топора и красного круга: урон кругового удара каждой фигуре, в единицах",
-    },
-    RuleDef {
         key: "rogue_wizard_percent",
         default: 200,
         min: 0,
         max: 1000,
         note: "rogue-like: фигура-маг в магазине — % от цены обычной такой же",
-    },
-    RuleDef {
-        key: "rogue_wizard_damage",
-        default: 1,
-        min: 0,
-        max: 99,
-        note: "rogue-like: урон метеорита мага, в единицах",
-    },
-    RuleDef {
-        key: "rogue_crest_flame_pawn_discount",
-        default: 2,
-        min: 0,
-        max: 999,
-        note: "rogue-like, герб огня и пешки: на столько дешевле огненная пешка в магазине",
     },
     RuleDef {
         key: "rogue_crest_flames_reach",
@@ -593,45 +543,10 @@ pub const RULES: [RuleDef; 110] = [
         note: "rogue-like, герб двух огоньков: взрыв огненной фигуры достаёт крестом на столько клеток",
     },
     RuleDef {
-        key: "rogue_crest_flame_sword_damage",
-        default: 2,
-        min: 0,
-        max: 99,
-        note: "rogue-like, герб огня и меча: урон взрыва огненной фигуры, в единицах",
-    },
-    RuleDef {
-        key: "rogue_crest_flame_coin_percent",
-        default: 200,
-        min: 0,
-        max: 1000,
-        note: "rogue-like, герб огня и монеты: шанс огненных фигур в магазине, % от обычного",
-    },
-    RuleDef {
-        key: "rogue_crest_bomb_damage",
-        default: 2,
-        min: 0,
-        max: 99,
-        note: "rogue-like, герб падающей бомбы: прибавка к урону взрыва огненной фигуры (и задевает своих), в единицах",
-    },
-    RuleDef {
-        key: "rogue_crest_dark_rook_discount",
-        default: 4,
-        min: 0,
-        max: 999,
-        note: "rogue-like, герб теневого огня и ладьи: на столько дешевле теневая ладья в магазине",
-    },
-    RuleDef {
-        key: "rogue_crest_dark_coin_percent",
-        default: 200,
-        min: 0,
-        max: 1000,
-        note: "rogue-like, герб теневого огня и монеты: шанс теневых фигур в магазине, % от обычного",
-    },
-    RuleDef {
         key: "rogue_crest_dark_portal_hp",
-        default: 1,
-        min: 1,
-        max: 99,
+        default: 10,
+        min: 10,
+        max: 990,
         note: "rogue-like, герб теневого огня и портала: с таким здоровьем (в единицах) и меньше теневая фигура уходит порталом от смертельного удара",
     },
     RuleDef {
@@ -657,16 +572,16 @@ pub const RULES: [RuleDef; 110] = [
     },
     RuleDef {
         key: "rogue_armor_percent",
-        default: 50,
+        default: 100,
         min: 0,
         max: 100,
         note: "rogue-like: шанс фигуры волны выйти бронированной, %",
     },
     RuleDef {
         key: "rogue_armor_hp",
-        default: 3,
+        default: 30,
         min: 0,
-        max: 99,
+        max: 990,
         note: "rogue-like: прибавка к здоровью бронированной фигуры, в единицах",
     },
     RuleDef {
@@ -685,52 +600,24 @@ pub const RULES: [RuleDef; 110] = [
     },
     RuleDef {
         key: "rogue_vampire_percent",
-        default: 50,
+        default: 100,
         min: 0,
         max: 100,
         note: "rogue-like: шанс фигуры волны выйти вампиром, %",
     },
     RuleDef {
         key: "rogue_vampire_hp",
-        default: 1,
+        default: 10,
         min: 0,
-        max: 99,
+        max: 990,
         note: "rogue-like: прибавка к здоровью фигуры-вампира, в единицах",
     },
     RuleDef {
         key: "rogue_vampire_heal",
-        default: 1,
+        default: 10,
         min: 0,
-        max: 99,
+        max: 990,
         note: "rogue-like: сколько здоровья вампир восстанавливает за каждый удар по чужой фигуре, в единицах",
-    },
-    RuleDef {
-        key: "rogue_crest_wind_knight_discount",
-        default: 4,
-        min: 0,
-        max: 999,
-        note: "rogue-like, герб ветра и коня: на столько дешевле воздушный конь в магазине",
-    },
-    RuleDef {
-        key: "rogue_crest_wind_coin_percent",
-        default: 200,
-        min: 0,
-        max: 1000,
-        note: "rogue-like, герб ветра и монеты: шанс воздушных фигур в магазине, % от обычного",
-    },
-    RuleDef {
-        key: "rogue_crest_bolt_bishop_discount",
-        default: 4,
-        min: 0,
-        max: 999,
-        note: "rogue-like, герб молнии и слона: на столько дешевле электрический слон в магазине",
-    },
-    RuleDef {
-        key: "rogue_crest_bolt_coin_percent",
-        default: 200,
-        min: 0,
-        max: 1000,
-        note: "rogue-like, герб молнии и монеты: шанс электрических фигур в магазине, % от обычного",
     },
     RuleDef {
         key: "rogue_crest_red_bolt_step",
@@ -747,46 +634,12 @@ pub const RULES: [RuleDef; 110] = [
         note: "rogue-like, герб красной молнии: на сколько клеток самое большее удлиняется молния",
     },
     RuleDef {
-        key: "rogue_crest_pair_percent",
-        default: 200,
-        min: 0,
-        max: 1000,
-        note: "rogue-like, гербы двух пешек, слонов, коней, ладей, ферзей: шанс этих фигур в магазине, % от обычного",
-    },
-    RuleDef {
         key: "rogue_crest_reroll_coin_cost",
         default: 1,
         min: 0,
         max: 999,
-        note: "rogue-like, герб монеты и обновления: столько стоит обновить фигуры в магазине",
-    },
-    RuleDef {
-        key: "rogue_crest_hat_coin_percent",
-        default: 200,
-        min: 0,
-        max: 1000,
-        note: "rogue-like, герб шляпы и монеты: шанс магов в магазине, % от обычного",
-    },
-    RuleDef {
-        key: "rogue_crest_hat_bishop_discount",
-        default: 4,
-        min: 0,
-        max: 999,
-        note: "rogue-like, герб шляпы и слона: на столько дешевле слон-маг в магазине",
-    },
-    RuleDef {
-        key: "rogue_crest_meteor_damage",
-        default: 2,
-        min: 0,
-        max: 99,
-        note: "rogue-like, герб метеорита: урон метеорита мага, в единицах",
-    },
-    RuleDef {
-        key: "rogue_crest_crater_damage",
-        default: 1,
-        min: 0,
-        max: 99,
-        note: "rogue-like, герб шляпы и метеорита: урон фигуре, вошедшей в горящий кратер, в единицах",
+        note: "rogue-like, герб монеты и обновления: столько стоит первое обновление магазина \
+               за посещение",
     },
     RuleDef {
         key: "rogue_crest_gold_king_bonus",
@@ -794,13 +647,6 @@ pub const RULES: [RuleDef; 110] = [
         min: 0,
         max: 999,
         note: "rogue-like, герб короля: ещё столько золота за победу золотой фигурой",
-    },
-    RuleDef {
-        key: "rogue_crest_kings2_percent",
-        default: 200,
-        min: 0,
-        max: 1000,
-        note: "rogue-like, герб двух королей: шанс золотых фигур в магазине, % от обычного",
     },
     RuleDef {
         key: "rogue_crest_king_queen_bonus",
@@ -818,23 +664,24 @@ pub const RULES: [RuleDef; 110] = [
     },
     RuleDef {
         key: "rogue_combo_percent",
-        default: 300,
+        default: 200,
         min: 0,
         max: 2000,
         note: "rogue-like: объединённая фигура (варвар с другой силой) в магазине — % от цены обычной такой же",
     },
     RuleDef {
         key: "rogue_combo_weight_percent",
-        default: 100,
+        default: 25,
         min: 0,
         max: 1000,
-        note: "rogue-like: шанс открытой гербом объединённой фигуры в магазине — % от шанса особой фигуры",
+        note: "rogue-like: все объединённые фигуры вместе выпадают в магазине и сундуке фигур с таким % \
+               от шанса всех одиночных особых (25 — в 4 раза реже)",
     },
     RuleDef {
         key: "rogue_crest_fire_axe_hp",
-        default: 1,
-        min: 1,
-        max: 99,
+        default: 10,
+        min: 10,
+        max: 990,
         note: "rogue-like, герб огненного топора: с таким здоровьем (в единицах) и меньше варвар бьёт после убийства лишний раз",
     },
     RuleDef {
@@ -860,23 +707,23 @@ pub const RULES: [RuleDef; 110] = [
     },
     RuleDef {
         key: "rogue_zombie_percent",
-        default: 50,
+        default: 100,
         min: 0,
         max: 100,
         note: "rogue-like: шанс фигуры волны выйти зомби, %",
     },
     RuleDef {
         key: "rogue_zombie_hp",
-        default: 1,
+        default: 10,
         min: 0,
-        max: 99,
+        max: 990,
         note: "rogue-like: прибавка к здоровью фигуры-зомби, в единицах",
     },
     RuleDef {
         key: "rogue_zombie_rise_hp",
-        default: 1,
-        min: 1,
-        max: 99,
+        default: 10,
+        min: 10,
+        max: 990,
         note: "rogue-like: с каким здоровьем зомби восстаёт через ход после гибели (один раз), в единицах",
     },
     RuleDef {
@@ -895,16 +742,16 @@ pub const RULES: [RuleDef; 110] = [
     },
     RuleDef {
         key: "rogue_armored_vampire_percent",
-        default: 50,
+        default: 100,
         min: 0,
         max: 100,
         note: "rogue-like: шанс фигуры волны выйти вампиром в броне, %",
     },
     RuleDef {
         key: "rogue_armored_vampire_hp",
-        default: 3,
+        default: 30,
         min: 0,
-        max: 99,
+        max: 990,
         note: "rogue-like: прибавка к здоровью вампира в броне, в единицах (лечится ударом раз за ход)",
     },
     RuleDef {
@@ -923,10 +770,271 @@ pub const RULES: [RuleDef; 110] = [
     },
     RuleDef {
         key: "rogue_venom_zombie_percent",
-        default: 50,
+        default: 100,
         min: 0,
         max: 100,
         note: "rogue-like: шанс фигуры волны выйти ядовитым зомби, %",
+    },
+    RuleDef {
+        key: "rogue_shop_piece_percent",
+        default: 25,
+        min: 0,
+        max: 100,
+        note: "rogue-like: шанс, что на месте в магазине фигура, а не герб, %",
+    },
+    RuleDef {
+        key: "rogue_reroll_step",
+        default: 1,
+        min: 0,
+        max: 99,
+        note: "rogue-like: на сколько золота дорожает каждое следующее обновление магазина \
+               (до ухода из магазина)",
+    },
+    RuleDef {
+        key: "rogue_drops_per_turn",
+        default: 1,
+        min: 0,
+        max: 64,
+        note: "rogue-like: сколько фигур можно выставить из запаса за ход",
+    },
+    RuleDef {
+        key: "rogue_max_pieces",
+        default: 16,
+        min: 1,
+        max: 64,
+        note: "rogue-like: больше стольких ваших фигур на доске не бывает (из запаса не выставить)",
+    },
+    RuleDef {
+        key: "rogue_first_level_hp_cut",
+        default: 10,
+        min: 0,
+        max: 990,
+        note: "rogue-like: на первом уровне у фигур волн здоровья меньше на столько единиц (не \
+               меньше одной)",
+    },
+    RuleDef {
+        key: "rogue_wizard_every",
+        default: 2,
+        min: 1,
+        max: 99,
+        note: "rogue-like: маг запускает метеорит раз в столько своих ходов",
+    },
+    RuleDef {
+        key: "rogue_chest_pieces_price",
+        default: 10,
+        min: 0,
+        max: 999,
+        note: "rogue-like: цена сундука фигур в магазине",
+    },
+    RuleDef {
+        key: "rogue_chest_crests_price",
+        default: 10,
+        min: 0,
+        max: 999,
+        note: "rogue-like: цена сундука гербов в магазине",
+    },
+    RuleDef {
+        key: "rogue_chest_choices",
+        default: 3,
+        min: 1,
+        max: 5,
+        note: "rogue-like: из скольких вещей в сундуке выбирают одну",
+    },
+    RuleDef {
+        key: "rogue_chest_cards_price",
+        default: 10,
+        min: 0,
+        max: 999,
+        note: "rogue-like: цена сундука карт в магазине",
+    },
+    RuleDef {
+        key: "rogue_hand_size",
+        default: 3,
+        min: 1,
+        max: 5,
+        note: "rogue-like: сколько карт помещается в руку",
+    },
+    RuleDef {
+        key: "rogue_gold_sell_percent",
+        default: 200,
+        min: 0,
+        max: 1000,
+        note: "rogue-like: золотая фигура продаётся за столько % от продажи обычной такой же",
+    },
+    RuleDef {
+        key: "rogue_crest_sell_price",
+        default: 5,
+        min: 0,
+        max: 999,
+        note: "rogue-like: за сколько продаётся герб в магазине",
+    },
+    RuleDef {
+        key: "rogue_rare_card_percent",
+        default: 30,
+        min: 0,
+        max: 100,
+        note: "rogue-like: шанс редкой карты (зеркала) в сундуке карт, % от шанса обычной",
+    },
+    RuleDef {
+        key: "rogue_chest_slots",
+        default: 2,
+        min: 0,
+        max: 3,
+        note: "rogue-like: сколько сундуков в магазине (разных видов)",
+    },
+    RuleDef {
+        key: "rogue_big_chest_percent",
+        default: 30,
+        min: 0,
+        max: 100,
+        note: "rogue-like: шанс, что сундук в магазине большой, %",
+    },
+    RuleDef {
+        key: "rogue_big_chest_choices",
+        default: 5,
+        min: 1,
+        max: 5,
+        note: "rogue-like: из скольких вещей выбирают в большом сундуке",
+    },
+    RuleDef {
+        key: "rogue_big_chest_picks",
+        default: 2,
+        min: 1,
+        max: 5,
+        note: "rogue-like: сколько вещей берут из большого сундука",
+    },
+    RuleDef {
+        key: "rogue_big_chest_price_percent",
+        default: 200,
+        min: 0,
+        max: 1000,
+        note: "rogue-like: цена большого сундука, % от обычного такого же",
+    },
+    RuleDef {
+        key: "rogue_crest_mult_add_percent",
+        default: 400,
+        min: 0,
+        max: 10000,
+        note: "rogue-like, герб урона: прибавка к мульти, в сотых (400 — мульти +4)",
+    },
+    RuleDef {
+        key: "rogue_crest_king_mult_percent",
+        default: 150,
+        min: 0,
+        max: 1000,
+        note: "rogue-like, герб урона короля: каждый удар вашего короля умножает мульти, в сотых (150 — ×1.5)",
+    },
+    RuleDef {
+        key: "rogue_crest_few_base",
+        default: 16,
+        min: 0,
+        max: 64,
+        note: "rogue-like, герб короля и шестнадцати: мульти × (это число − ваших фигур на доске), не меньше ×1",
+    },
+    RuleDef {
+        key: "rogue_crest_pawn_mult_percent",
+        default: 150,
+        min: 0,
+        max: 1000,
+        note: "rogue-like, герб пешки и умножения: каждый удар вашей пешки в этом ходу умножает мульти, в сотых (150 — ×1.5)",
+    },
+    RuleDef {
+        key: "rogue_crest_knight_add_percent",
+        default: 100,
+        min: 0,
+        max: 10000,
+        note: "rogue-like, герб коня и умножения: мульти всех ваших фигур + это за каждый удар ваших коней в этом ходу, в сотых (100 — +1)",
+    },
+    RuleDef {
+        key: "rogue_crest_sword_mult_percent",
+        default: 120,
+        min: 0,
+        max: 1000,
+        note: "rogue-like, герб меча и умножения: мульти × это за каждую вашу фигуру, ударившую в этом ходу раньше, в сотых (120 — ×1.2)",
+    },
+    RuleDef {
+        key: "rogue_crest_first_add_percent",
+        default: 1000,
+        min: 0,
+        max: 100000,
+        note: "rogue-like, герб пешки и единицы: мульти первой бьющей в этом ходу фигуры + это, в сотых (1000 — +10)",
+    },
+    RuleDef {
+        key: "rogue_crest_queen_add_percent",
+        default: 300,
+        min: 0,
+        max: 10000,
+        note: "rogue-like, герб ферзя и умножения: мульти + это за каждый удар вашего ферзя в этом ходу, в сотых (300 — +3)",
+    },
+    RuleDef {
+        key: "rogue_crest_flame_mult_percent",
+        default: 150,
+        min: 0,
+        max: 1000,
+        note: "rogue-like, герб огня и умножения: каждый взрыв вашей огненной фигуры в этом ходу умножает мульти, в сотых (150 — ×1.5)",
+    },
+    RuleDef {
+        key: "rogue_crest_snow_mult_percent",
+        default: 200,
+        min: 0,
+        max: 1000,
+        note: "rogue-like, герб снежинки и умножения: мульти × это за каждую замороженную фигуру на доске, в сотых (200 — ×2)",
+    },
+    RuleDef {
+        key: "rogue_crest_meteor_add_percent",
+        default: 1000,
+        min: 0,
+        max: 100000,
+        note: "rogue-like, герб метеорита: мульти первого метеорита в этом ходу + это, в сотых (1000 — +10)",
+    },
+    RuleDef {
+        key: "rogue_crest_jump_add_percent",
+        default: 300,
+        min: 0,
+        max: 10000,
+        note: "rogue-like, герб теневого огня и черепа: мульти + это за каждую фигуру, через которую прошли ваши теневые в этом ходу, в сотых (300 — +3)",
+    },
+    RuleDef {
+        key: "rogue_crest_bomb_mult_percent",
+        default: 200,
+        min: 0,
+        max: 1000,
+        note: "rogue-like, герб падающей бомбы: мульти взрыва огненной фигуры × это, в сотых (200 — ×2)",
+    },
+    RuleDef {
+        key: "rogue_crest_flame_sword_add_percent",
+        default: 200,
+        min: 0,
+        max: 10000,
+        note: "rogue-like, герб огня и меча: мульти взрыва огненной фигуры + это, в сотых (200 — +2)",
+    },
+    RuleDef {
+        key: "rogue_crest_axe_mult_percent",
+        default: 200,
+        min: 0,
+        max: 1000,
+        note: "rogue-like, герб топора и меча: мульти варваров × это, в сотых (200 — ×2)",
+    },
+    RuleDef {
+        key: "rogue_level_hp_percent",
+        default: 400,
+        min: 100,
+        max: 10000,
+        note: "rogue-like: здоровье фигур волн на каждом следующем уровне, % от прошлого (400 — в 4 раза больше)",
+    },
+    RuleDef {
+        key: "rogue_crest_bolt_add_percent",
+        default: 500,
+        min: 0,
+        max: 10000,
+        note: "rogue-like, герб молнии и умножения: мульти молнии + это за каждую фигуру перед задетой в цепочке, в сотых (500 — +5)",
+    },
+    RuleDef {
+        key: "rogue_crest_wind_add_percent",
+        default: 500,
+        min: 0,
+        max: 10000,
+        note: "rogue-like, герб смерча и умножения: мульти воздушных фигур + это за каждый ход воздушных фигур в этом ходу, в сотых (500 — +5)",
     },
 ];
 
@@ -1117,30 +1225,24 @@ pub const PARAMS: [ParamDef; 16] = [
 /// `UNIT` — на экране и в `balance.ini`.
 pub const UNIT: i32 = 300;
 
-/// Здоровье или урон так, как их видит игрок: делённые на `UNIT`, доля — вверх (раненая фигура
-/// с 100 из 900 — «1 из 3»).
+/// Одно очко на экране и в `balance.ini` (с 0.112.1, просьба пользователя: десятичная база —
+/// атака 10, здоровье 30): `UNIT` / 10.
+pub const POINT: i32 = UNIT / 10;
+
+/// Здоровье или урон так, как их видит игрок: делённые на `POINT`, доля — вверх (раненая фигура
+/// с 100 из 900 — «4 из 30»).
 pub fn shown(value: i32) -> i32 {
-    (value.max(0) + UNIT - 1) / UNIT
+    (value.max(0) + POINT - 1) / POINT
 }
 
-/// Атака, здоровье и урон лавы в `balance.ini` — в единицах `UNIT`.
+/// Атака, здоровье и урон лавы в `balance.ini` — в очках `POINT` (с 0.112.1; раньше — в `UNIT`).
 pub fn to_file(value: i32) -> i32 {
-    if value % UNIT == 0 {
-        value / UNIT
-    } else {
-        value
-    }
+    (value + POINT / 2).div_euclid(POINT)
 }
 
-/// Число из `balance.ini` во внутреннее: до 0.44 там стояли прежние числа (300, 900…) — такие
-/// (от 100) читаются как есть, чтобы старый файл не стал в 300 раз сильнее.
+/// Число из `balance.ini` во внутреннее (очки `POINT`).
 pub fn from_file(n: i32) -> i32 {
-    if n < 100 { n * UNIT } else { n }
-}
-
-/// Правило в единицах `UNIT` (урон).
-pub fn rule_in_units(key: &str) -> bool {
-    key == "lava_damage"
+    n * POINT
 }
 
 /// Стандартные характеристики фигур по `Kind as usize`: пешка, конь, слон, ладья, ферзь, король.
@@ -1344,7 +1446,7 @@ impl Balance {
         match group {
             "rules" => match RULES.iter().position(|r| r.key == key) {
                 Some(i) if fits(RULES[i].min, RULES[i].max, warnings) => {
-                    self.rules[i] = if rule_in_units(key) { from_file(n) } else { n };
+                    self.rules[i] = n;
                     seen.insert(format!("rules.{key}"));
                 }
                 Some(_) => {}
@@ -1457,11 +1559,6 @@ impl Balance {
         );
         out.push_str("[rules]\n");
         for (rule, value) in RULES.iter().zip(self.rules) {
-            let value = if rule_in_units(rule.key) {
-                to_file(value)
-            } else {
-                value
-            };
             let _ = writeln!(out, "{} = {value}   ; {}", rule.key, rule.note);
         }
         for kind in Kind::ALL {
@@ -1826,16 +1923,15 @@ mod tests {
     }
 
     #[test]
-    fn attack_and_health_are_written_in_units_and_old_files_still_read() {
+    fn attack_and_health_are_written_in_points() {
+        // С 0.112.1 — десятичная база: атака 10, здоровье 30 (очки `POINT`).
         let text = Balance::default().to_ini();
-        assert!(text.contains("[piece.Knight]   ; Конь\nattack = 1   ;"));
-        assert!(text.contains("hp = 3   ; здоровье"));
-        assert!(text.contains("lava_damage = 1   ;"));
-        // Новый файл — в единицах, старый (до 0.44) — прежними числами: оба дают 900.
-        for hp in ["3", "900"] {
-            let (balance, _) = Balance::parse(&format!("[piece.Knight]\nhp = {hp}\n"));
-            assert_eq!(balance.piece(Kind::Knight).hp, 900, "hp = {hp}");
-        }
+        assert!(text.contains("[piece.Knight]   ; Конь\nattack = 10   ;"));
+        assert!(text.contains("hp = 30   ; здоровье"));
+        let (balance, _) = Balance::parse("[piece.Knight]\nhp = 30\n");
+        assert_eq!(balance.piece(Kind::Knight).hp, 900);
+        assert_eq!(shown(900), 30);
+        assert_eq!(shown(100), 4, "доля — вверх");
     }
 
     #[test]
@@ -1862,8 +1958,8 @@ mod tests {
         assert!(report.missing, "остальных строк в файле нет");
         assert_eq!(balance.cost(CardKind::FireWave), 5);
         assert_eq!(balance.param(Param::WaveDamage), 450);
-        assert_eq!(balance.piece(Kind::Pawn).attack, 500);
-        assert_eq!(balance.piece(Kind::Pawn).hp, 1000);
+        assert_eq!(balance.piece(Kind::Pawn).attack, 500 * POINT);
+        assert_eq!(balance.piece(Kind::Pawn).hp, 1000 * POINT);
         assert_eq!(balance.piece(Kind::Pawn).points, 1);
         assert_eq!(balance.mana_per_turn(), 4);
         assert_eq!(balance.cost(CardKind::Storm), 10);

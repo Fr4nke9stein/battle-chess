@@ -241,6 +241,29 @@ ONE = [  # 7×13, цифра 1: носик, стойка, подставка
     "#######",
     "#######",
 ]
+TIMES = [  # 9×9, знак умножения (гербы мульти, 0.121) — красный, как число мульти в игре
+    "##.....##",
+    "###...###",
+    ".###.###.",
+    "..#####..",
+    "...###...",
+    "..#####..",
+    ".###.###.",
+    "###...###",
+    "##.....##",
+]
+SIXTEEN = [  # 12×10, число 16 (герб короля и шестнадцати)
+    "..##...####.",
+    ".###..##..##",
+    "####..##....",
+    "..##..##....",
+    "..##..#####.",
+    "..##..##..##",
+    "..##..##..##",
+    "..##..##..##",
+    "######.####.",
+    "######......",
+]
 PLUS = [  # 11×11, толстый плюс
     "....###....",
     "....###....",
@@ -517,10 +540,15 @@ def snowflake(x, y, cx, cy, r, twigs=((0.5, 3.0), (0.78, 2.0))):
     return m
 
 
-def crest(emblem="bolt"):
+def crest(emblem="bolt", bare=False):
+    """Герб со знаком `emblem`. `bare` (для карт сил, `breach_power_cards.py`) — только знак с его
+    каймой и тенью на прозрачном поле 47×43, без щита и контура."""
     w, h = W - 2, H - 2
     body = coverage(lambda x, y: shield(x, y), w, h)
     field = coverage(lambda x, y: shield(x, y, 2.6), w, h)
+    if bare:
+        body = np.ones((h, w), bool)
+        field = body.copy()
     rim = body & ~field
     yy, xx = np.mgrid[0:h, 0:w]
     img = np.zeros((h, w, 4), np.uint8)
@@ -529,6 +557,9 @@ def crest(emblem="bolt"):
         img[mask] = (*col, 255)
 
     left = xx < w / 2
+    if bare:
+        draw_ground = put
+        put = lambda mask, col: None  # noqa: E731 — щит не рисуется
     # обод: тёмный металл, фаска к свету
     put(rim, IRON[2])
     put(rim & left, IRON[1])
@@ -554,6 +585,8 @@ def crest(emblem="bolt"):
         put(cap & (yy < 3), GOLD[1])
         put(edge & body & ~outer, GOLD[4])  # кромка уголка на щите — тень
         put(cap & outer & ((xx < w / 2) | (yy < 2)), GOLD[0] if sgn < 0 else GOLD[1])
+    if bare:
+        put = draw_ground
     marks = []  # (маска, тона)
     def bolt_mask(k, ox, oy):
         poly = [(w / 2 + (x * k + ox) * (w / 2), (0.55 + (y - 0.55) * k + oy) * h) for x, y in BOLT]
@@ -769,12 +802,53 @@ def crest(emblem="bolt"):
         guard = grid_mask(["#########", "#########"], 26, 26, w, h) | grid_mask(["###", "###"], 29, 32, w, h)
         grip = grid_mask(["#"] * 4, 30, 28, w, h)
         marks += [(sword_blade & field, STEEL), (grip & field, LEATHER), (guard & field, GOLD)]
+    # Гербы мульти (0.119, просьба пользователя): знак вверху посередине, ниже — место под число,
+    # его пишет игра пиксельным шрифтом (`paint_crest_number`: «+2», «×1.5» — из баланса).
+    if emblem == "mult":  # меч остриём вверх: клинок, гарда, рукоять, навершие
+        sword_blade = grid_mask([".#.", ".#."] + ["###"] * 7, 22, 6, w, h)
+        guard = grid_mask(["#########", "#########"], 19, 15, w, h) | grid_mask(["###", "###"], 22, 21, w, h)
+        grip = grid_mask(["#"] * 4, 23, 17, w, h)
+        marks += [(sword_blade & field, STEEL), (grip & field, LEATHER), (guard & field, GOLD)]
+    if emblem == "king_mult":  # малый золотой король вверху посередине
+        marks.append((grid_mask(KING_SMALL, 19, 6, w, h) & field, GOLD))
+        gems.append((23, 11))
+    # Гербы мульти 0.121 (просьба пользователя): вверху слева знак, справа «×» (или «16», «1»),
+    # ниже — место под число, его пишет игра.
+    if emblem in ("few", "gold_mult"):  # малый золотой король слева
+        marks.append((grid_mask(KING_SMALL, 11, 6, w, h) & field, GOLD))
+        gems.append((15, 11))
+    if emblem in ("pawn_mult", "first"):  # золотая пешка слева
+        marks.append((grid_mask(PAWN, 11, 7, w, h) & field, GOLD))
+    if emblem == "knight_mult":  # золотой конь слева
+        marks.append((grid_mask(KNIGHT, 9, 6, w, h) & field, GOLD))
+    if emblem == "queen_mult":  # малый золотой ферзь слева
+        marks.append((grid_mask(QUEEN_SMALL, 11, 7, w, h) & field, GOLD))
+    if emblem == "sword_mult":  # меч остриём вверх слева — как на гербе урона
+        sword_blade = grid_mask([".#.", ".#."] + ["###"] * 7, 15, 6, w, h)
+        guard = grid_mask(["#########", "#########"], 12, 15, w, h) | grid_mask(["###", "###"], 15, 21, w, h)
+        grip = grid_mask(["#"] * 4, 16, 17, w, h)
+        marks += [(sword_blade & field, STEEL), (grip & field, LEATHER), (guard & field, GOLD)]
+    if emblem == "bolt_mult":  # малая золотая молния слева вверху (0.124)
+        marks.append((bolt_mask(0.64, -0.33, -0.22), GOLD))
+    if emblem == "snow_mult":  # снежинка слева
+        fn = lambda x, y: snowflake(x, y, 15.5, 14.5, 7.6, ((0.6, 2.2),))  # noqa: E731
+        marks.append((coverage(fn, w, h) & field, ICE))
+    if emblem in ("gold_mult", "pawn_mult", "knight_mult", "sword_mult", "queen_mult", "flame_mult", "snow_mult",
+                  "bolt_mult", "wind_mult"):
+        marks.append((grid_mask(TIMES, 27, 10, w, h) & field, RED))
+    if emblem == "few":
+        marks.append((grid_mask(SIXTEEN, 25, 9, w, h) & field, STEEL))
+    if emblem == "first":
+        marks.append((grid_mask(ONE, 28, 8, w, h) & field, STEEL))
     if emblem == "axe_fangs":  # два клыка справа, концы загнуты друг к другу
         for cx, bend in ((27.5, 1.6), (33.5, -1.6)):
             fn = lambda x, y, cx=cx, bend=bend: fang(x, y, cx, 13.0, 31.0, bend)  # noqa: E731
             marks.append((coverage(fn, w, h) & field, BONE))
     if emblem == "axe_queen":  # золотой ферзь справа
         marks.append((grid_mask(QUEEN, 25, 14, w, h) & field, GOLD))
+    if emblem == "axe":  # один топор посередине (карта варвара)
+        haft, gold, blade = axe(w, h, 26.0, 17.0, 1.15, haft_len=15.0)
+        marks += [(haft & field, WOOD), (gold & field, GOLD), (blade & field, STEEL)]
     if emblem == "whirl":  # топор посередине в красном вихре
         under.append((coverage(lambda x, y: whirl(x, y, 23.5, 23.5, 12.5), w, h) & field, WHIRL))
         haft, gold, blade = axe(w, h, 26.5, 20.0, 0.9, haft_len=14.0)
@@ -915,6 +989,8 @@ def crest(emblem="bolt"):
         draw_tornado(23.5, 14.0, 33.0, 10.0, 13, 34.2)
     if emblem in ("wind_coin", "wind_knight", "wind_sword"):  # малый смерч слева
         draw_tornado(15.5, 12.5, 30.0, 5.2, 12, 31.0, 0.8)  # малый — ровный конус, иначе похож на бокал
+    if emblem == "wind_mult":  # малый смерч слева вверху (герб мульти, 0.124)
+        draw_tornado(15.5, 5.5, 19.5, 4.8, 11, 20.5, 0.8)
     if emblem == "winds":  # два малых смерча, симметрично середине щита
         for mid in (15.0, 32.0):
             draw_tornado(mid, 12.5, 30.0, 5.2, 12, 31.0, 0.8)
@@ -937,6 +1013,8 @@ def crest(emblem="bolt"):
         marks += [(sword_blade & field, STEEL), (grip & field, LEATHER), (guard & field, GOLD)]
     if emblem in ("flame_pawn", "flame_skull", "flame_sword", "flame_coin"):  # огонёк слева
         draw_flame(small_flame(16.0, 27.0))
+    if emblem == "flame_mult":  # огонёк слева вверху (герб мульти)
+        draw_flame(small_flame(15.5, 21.0, 0.6))
     if emblem == "flames":  # два огонька, симметрично середине щита
         for cx in (15.5, 31.5):
             draw_flame(small_flame(cx, 27.0))
@@ -1146,6 +1224,8 @@ def crest(emblem="bolt"):
                 put((xx == sx) & (yy == sy), col)
         for sx, sy in shine:
             put((xx == sx) & (yy == sy), BOMB[0])
+    if bare:
+        return img
     # контур
     out = np.zeros((H, W, 4), np.uint8)
     out[1:-1, 1:-1] = img
@@ -1216,10 +1296,18 @@ def main():
                  "king_flame", "king_bolt", "king_snow", "king_wind", "king_dark", "king_hat",
                  "hat_flame", "hat_snow", "hat_bolt", "hat_wind", "hat_dark",
                  "flame_snow", "flame_bolt", "flame_wind", "flame_dark",
-                 "snow_bolt", "snow_wind", "snow_dark", "bolt_wind", "bolt_dark", "wind_dark"):
+                 "snow_bolt", "snow_wind", "snow_dark", "bolt_wind", "bolt_dark", "wind_dark",
+                 "mult", "king_mult", "few", "gold_mult", "pawn_mult", "knight_mult", "sword_mult",
+                 "first", "queen_mult", "flame_mult", "snow_mult", "bolt_mult", "wind_mult"):
         icon = crest(name)
         Image.fromarray(icon, "RGBA").save(os.path.join(OUT, f"crest_{name}.png"))
         preview(icon, os.path.join(OUT, f"preview_crest_{name}.png"))
+    mults = ("few", "gold_mult", "pawn_mult", "knight_mult", "sword_mult", "first", "queen_mult", "flame_mult",
+             "snow_mult", "bolt_mult", "wind_mult")
+    sheet = Image.new("RGBA", (len(mults) * (W + 8) + 8, H + 16), hexc("#151821") + (255,))
+    for i, name in enumerate(mults):
+        sheet.alpha_composite(Image.open(os.path.join(OUT, f"crest_{name}.png")), (8 + i * (W + 8), 8))
+    sheet.resize((sheet.width * 4, sheet.height * 4), Image.NEAREST).save(os.path.join(OUT, "preview_crest_mults2.png"))
     axes = ("axe_sword", "axe_fangs", "axe_queen", "axes", "whirl", "fire_axe")
     sheet = Image.new("RGBA", (len(axes) * (W + 8) + 8, H + 16), hexc("#151821") + (255,))
     for i, name in enumerate(axes):

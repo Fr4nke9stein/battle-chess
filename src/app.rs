@@ -2,9 +2,6 @@
 //! панели и компьютер.
 
 use std::collections::VecDeque;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use eframe::egui::text::{LayoutJob, TextFormat};
@@ -16,21 +13,20 @@ use eframe::egui::{
 mod menu;
 mod table;
 
-use crate::ai;
 use crate::assets::{
     ANCHOR, Art, BLESS_ANCHOR, BLESS_FIGURE, BOARD, CRATER_CENTER, CRATER_FRAME_TIME,
     CRATER_FRAMES, CURSOR, CURSOR_HOTSPOT, DARK_LOOP, ELECTRIC_ANCHOR, ELECTRIC_FLASH,
-    ELECTRIC_FRAME_TIME, ELECTRIC_LOOP, FREEZE_CENTER, FREEZE_FROST, GLYPH_HEIGHT, Glyph,
-    LAVA_FRAME_TIME, LAVA_FRAMES, LAVA_HOLD, LAVA_IGNITE, LAVA_SPREAD, LAVA_WAVE_AT, METEOR_CENTER,
-    METEOR_FRAME_TIME, METEOR_FRAMES, METEOR_IMPACT, METEOR_WAVE_FRAMES, Marker, POISON_LOOP,
-    POISON_TRAIL_CENTER, POISON_TRAIL_FRAMES, PORTAL_CENTER, PORTAL_CUT, PORTAL_RADII, Pointer,
-    SPRITE, STEP_FRAME_TIME, STEP_IN, STEP_IN_AT, STEP_OUT, TILE, Textures, WAVE_CENTER,
+    ELECTRIC_FRAME_TIME, ELECTRIC_LOOP, ELECTRIC_SLOW, FREEZE_CENTER, FREEZE_FROST, GLYPH_HEIGHT,
+    Glyph, LAVA_FRAME_TIME, LAVA_FRAMES, LAVA_HOLD, LAVA_IGNITE, LAVA_SPREAD, LAVA_WAVE_AT,
+    METEOR_CENTER, METEOR_FRAME_TIME, METEOR_FRAMES, METEOR_IMPACT, METEOR_WAVE_FRAMES, Marker,
+    POISON_LOOP, POISON_TRAIL_CENTER, POISON_TRAIL_FRAMES, PORTAL_CENTER, PORTAL_CUT, PORTAL_RADII,
+    Pointer, SPRITE, STEP_FRAME_TIME, STEP_IN, STEP_IN_AT, STEP_OUT, TILE, Textures, WAVE_CENTER,
     WAVE_FRAME_TIME, WIND_LOOP,
 };
-use crate::balance::{self, shown};
+use crate::balance::{self, Rule, shown};
 use crate::game::{
-    self, Color, Crest, Event, Game, Hit, Kind, Move, Outcome, Piece, Position, Record, Square,
-    Status, Stock, Strike,
+    self, Color, Crest, Event, Game, Hit, Kind, Move, Outcome, Piece, Position, Power, Record,
+    Square, Status, Stock, Strike,
 };
 use crate::net;
 use crate::settings::{FrameRate, Settings, ZOOM_MAX, ZOOM_MIN};
@@ -38,8 +34,8 @@ use crate::sound::{Sfx, Sound};
 use crate::theme::{self, rgba};
 use menu::Screen;
 use table::{
-    Aiming, Bless, Burn, DRAW_DELAY, Draw, Freeze, Held, Portal, Returning, Seat, ShopSpot,
-    VIEW_MAX, VIEW_MIN, Wave, ice_variant,
+    Aiming, Bless, Burn, DRAW_DELAY, Draw, Freeze, Held, Portal, ROGUE_VIEW_MIN, Returning, Seat,
+    ShopSpot, VIEW_MAX, VIEW_MIN, Wave, ice_variant,
 };
 
 /// Скольжение фигуры, как у lichess (секунды).
@@ -69,40 +65,12 @@ const STATS_TIME: f64 = 0.18;
 const FLASH_TIME: f64 = 0.35;
 /// Растворение убитой фигуры.
 const FADE_TIME: f64 = 0.3;
-/// Компьютер не ходит мгновенно — так за партией легче следить.
+/// Компьютер (волны rogue-like) кончает ход не мгновенно — так за партией легче следить.
 const COMPUTER_DELAY: f64 = 0.45;
 /// Сколько висит табличка с итогом партии.
 const BANNER_TIME: f64 = 3.0;
 /// Текстура целиком.
 const UV: Rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Opponent {
-    Computer,
-    Human,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SideChoice {
-    White,
-    Black,
-    Random,
-}
-
-#[derive(Clone, Copy)]
-struct Setup {
-    opponent: Opponent,
-    side: SideChoice,
-}
-
-impl Default for Setup {
-    fn default() -> Setup {
-        Setup {
-            opponent: Opponent::Computer,
-            side: SideChoice::White,
-        }
-    }
-}
 
 /// Фигура, которую взяли мышью.
 struct Drag {
@@ -332,7 +300,7 @@ struct Figure {
     sink: Option<Sink>,
     /// Кадр слона с крыльями — слон исцеляет.
     bless: Option<usize>,
-    /// Кадр пешки с лавой и слона с электричеством (усиленный компьютер).
+    /// Кадр огненной фигуры (лава) и электрической.
     lava: Option<usize>,
     spark: Option<usize>,
     /// Кадр вихря воздушной фигуры (rogue-like).
@@ -412,8 +380,8 @@ const POISON_SKULL: Color32 = Color32::from_rgb(0x2e, 0x8c, 0x1e);
 /// Череп на могиле зомби (rogue-like).
 const GRAVE_SKULL: Color32 = Color32::from_rgb(0xb8, 0xc4, 0xa0);
 
-/// Лава в пешке усиленного компьютера: насыщение (трещины растут) или взрыв (разгораются,
-/// огненная волна, гаснут).
+/// Лава в огненной фигуре: насыщение (трещины растут) или взрыв (разгораются, огненная волна,
+/// гаснут).
 struct LavaAnim {
     square: Square,
     start: f64,
@@ -437,35 +405,6 @@ impl LavaAnim {
 struct Sink {
     depth: f32,
     scale: f32,
-}
-
-/// Компьютер думает в отдельном потоке, окно при этом не замирает.
-struct Thinking {
-    result: Receiver<Option<Move>>,
-    started: f64,
-    cancel: Arc<AtomicBool>,
-}
-
-impl Thinking {
-    fn start(position: Position, now: f64) -> Thinking {
-        let (sender, result) = mpsc::channel();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let flag = Arc::clone(&cancel);
-        std::thread::spawn(move || {
-            let _ = sender.send(ai::choose_move(&position, &flag));
-        });
-        Thinking {
-            result,
-            started: now,
-            cancel,
-        }
-    }
-}
-
-impl Drop for Thinking {
-    fn drop(&mut self) {
-        self.cancel.store(true, Ordering::Relaxed);
-    }
 }
 
 /// Где на экране доска и как перевести клетки в точки и обратно. Доска изометрическая,
@@ -588,11 +527,9 @@ pub struct BattleChessApp {
     game: Game,
     art: Art,
     sfx: Sfx,
-    /// Настройки текущей партии и то, что выбрано для следующей.
-    setup: Setup,
-    draft: Setup,
+    /// Сторона компьютера (волны rogue-like) и когда ему стало можно кончить ход.
     computer: Option<Color>,
-    thinking: Option<Thinking>,
+    computer_since: Option<f64>,
     selected: Option<Square>,
     hovered: Option<Square>,
     /// Фигура под курсором, чьи атака и здоровье показаны, и когда они начали выезжать.
@@ -640,18 +577,25 @@ pub struct BattleChessApp {
     reserve_hover: Option<(Seat, Stock)>,
     /// Rogue-like: место магазина под курсором.
     shop_hover: Option<ShopSpot>,
-    /// Rogue-like: герб под курсором (в углу или на прилавке) и его место на экране — для
+    /// Rogue-like: герб под курсором (в колонке слева или на прилавке) и его место на экране — для
     /// подсказки.
-    crest_hover: Option<(Crest, Rect)>,
+    crest_hover: Option<(game::Ware, Rect)>,
+    /// Rogue-like: выбранная карта в руке (место), карта под курсором, первая фигура зеркала.
+    power_pick: Option<usize>,
+    power_hover: Option<usize>,
+    mirror_from: Option<Square>,
     /// Rogue-like: фигура запаса, которую несут в зону продажи, и где курсор.
     sell_drag: Option<(Stock, Pos2)>,
+    /// Rogue-like: герб, выбранный на продажу, и курсор над кнопкой «Продать».
+    crest_sell: Option<usize>,
+    crest_sell_hover: bool,
     drop_pick: Option<Stock>,
     drag: Option<Drag>,
     promotion: Option<PendingPromotion>,
     anim: Option<MoveAnim>,
     /// Удары в конце хода — по очереди, после хода фигурой.
     strikes: Vec<StrikeAnim>,
-    /// Лава в пешках усиленного компьютера: насыщение и взрывы.
+    /// Лава в огненных фигурах: насыщение и взрывы.
     lavas: Vec<LavaAnim>,
     /// Rogue-like: фигуры волны проявляются на своих клетках (клетка, когда начали).
     appears: Vec<(Square, f64)>,
@@ -670,7 +614,7 @@ pub struct BattleChessApp {
     craters: Vec<(Square, f64, Option<f64>)>,
     /// Волны метеоритов крестом: клетка, когда начались.
     meteor_waves: Vec<(Square, f64)>,
-    /// Когда слоны усиленного компьютера насытились электричеством.
+    /// Начало партии: от него идут кадры электричества (вступление, потом повтор).
     spark_since: f64,
     /// Время текущего кадра.
     now: f64,
@@ -679,7 +623,6 @@ pub struct BattleChessApp {
     effects: Vec<Effect>,
     ended_at: Option<f64>,
     flipped: bool,
-    show_reference: bool,
     /// Настройки и то, что из них уже сохранено на диск.
     settings: Settings,
     saved: Settings,
@@ -727,8 +670,6 @@ impl BattleChessApp {
         theme::apply(&cc.egui_ctx);
         let balance_warnings = balance::reload();
         crate::editor::start(&cc.egui_ctx);
-        crate::editor::start(&cc.egui_ctx);
-        let setup = Setup::default();
         let mut app = BattleChessApp {
             screen: Screen::Menu,
             collection_page: 0,
@@ -738,10 +679,8 @@ impl BattleChessApp {
             game: Game::from_position(Position::start().without_cards()),
             art: Art::new(),
             sfx: Sfx::new(),
-            setup,
-            draft: setup,
             computer: None,
-            thinking: None,
+            computer_since: None,
 
             selected: None,
             hovered: None,
@@ -768,7 +707,12 @@ impl BattleChessApp {
             reserve_hover: None,
             shop_hover: None,
             crest_hover: None,
+            power_pick: None,
+            power_hover: None,
+            mirror_from: None,
             sell_drag: None,
+            crest_sell: None,
+            crest_sell_hover: false,
             net: None,
             remote: None,
             net_address: net::saved_address(),
@@ -796,7 +740,6 @@ impl BattleChessApp {
             effects: Vec::new(),
             ended_at: None,
             flipped: false,
-            show_reference: true,
             settings,
             saved: settings,
             vsync: settings.frame_rate.vsync(),
@@ -804,7 +747,7 @@ impl BattleChessApp {
             slept: 0.0,
             fps: FpsMeter::default(),
         };
-        app.new_game(setup);
+        app.new_rogue_game();
         app
     }
 
@@ -814,42 +757,9 @@ impl BattleChessApp {
         self.art.sync_costs();
     }
 
-    fn new_game(&mut self, setup: Setup) {
-        // Своя партия — сетевая (если была) закончена.
-        self.leave_network();
-        self.reload_balance();
-        self.setup = setup;
-        self.draft = setup;
-        // С 0.40 карт нет: колоды и руки пусты.
-        self.game = Game::from_position(
-            Position::start()
-                .without_cards()
-                .with_advance(self.settings.advance),
-        );
-        self.computer = match setup.opponent {
-            Opponent::Human => None,
-            Opponent::Computer => Some(match setup.side {
-                SideChoice::White => Color::Black,
-                SideChoice::Black => Color::White,
-                SideChoice::Random if coin_flip() => Color::White,
-                SideChoice::Random => Color::Black,
-            }),
-        };
-        // Усиленный компьютер: электричество в слонах с начала партии, лава в пешках — в
-        // начале каждого хода человека.
-        if let Some(computer) = self.computer
-            && self.settings.boosted
-        {
-            self.game.boost(computer);
-        }
-        self.flipped = self.computer == Some(Color::White);
-        self.reset_interaction();
-        self.show_boost();
-        self.sfx.play(Sound::Notify);
-    }
-
-    /// Rogue-like партия: игрок — белые, у компьютера фигуры приходят волнами
-    /// (`Position::rogue_start`); первая волна проявляется на глазах.
+    /// Новая партия — rogue-like (с 0.108 единственный режим против компьютера): игрок — белые,
+    /// у компьютера фигуры приходят волнами (`Position::rogue_start`); первая волна проявляется
+    /// на глазах.
     pub(super) fn new_rogue_game(&mut self) {
         self.leave_network();
         self.reload_balance();
@@ -862,6 +772,7 @@ impl BattleChessApp {
         self.flipped = false;
         self.reset_interaction();
         let now = self.now;
+        self.spark_since = now;
         let wave: Vec<Square> = self
             .game
             .position()
@@ -903,31 +814,14 @@ impl BattleChessApp {
             })
     }
 
-    /// Начало партии с усиленным компьютером: слоны насыщаются электричеством, пешки с
-    /// лавой — трещинами (с этого кадра).
-    fn show_boost(&mut self) {
-        let now = self.now;
-        self.spark_since = now;
-        let charged: Vec<Square> = self
-            .game
-            .position()
-            .pieces()
-            .filter(|(_, p)| p.lava)
-            .map(|(sq, _)| sq)
-            .collect();
-        for square in charged {
-            self.lavas.push(LavaAnim {
-                square,
-                start: now,
-                blast: false,
-            });
-        }
-    }
-
     /// Сбрасывает выделение, анимации и раздумья компьютера после смены позиции.
     fn reset_interaction(&mut self) {
         self.selected = None;
         self.drop_pick = None;
+        self.power_pick = None;
+        self.mirror_from = None;
+        self.sell_drag = None;
+        self.crest_sell = None;
         self.drag = None;
         self.promotion = None;
         self.anim = None;
@@ -943,7 +837,7 @@ impl BattleChessApp {
         self.returning.clear();
         self.held = None;
         self.card_hover = None;
-        self.thinking = None;
+        self.computer_since = None;
         self.strikes.clear();
         self.lavas.clear();
         self.appears.clear();
@@ -1018,6 +912,9 @@ impl BattleChessApp {
     /// Подсвеченная клетка, куда сейчас можно пойти выбранной фигурой или выставить фигуру
     /// запаса.
     fn is_target(&self, sq: Square) -> bool {
+        if let Some(card) = self.picked_card() {
+            return self.card_squares(card).contains(&sq);
+        }
         match (self.drop_pick, self.selected) {
             (Some(stock), _) => self
                 .game
@@ -1027,6 +924,43 @@ impl BattleChessApp {
             (None, Some(from)) => from != sq && self.has_move(from, sq),
             (None, None) => false,
         }
+    }
+
+    /// Rogue-like: выбранная карта в руке.
+    fn picked_card(&self) -> Option<game::Card> {
+        self.game.position().hand().get(self.power_pick?).copied()
+    }
+
+    /// Rogue-like: карта на месте `slot` руки.
+    fn picked_card_at(&self, slot: usize) -> Option<game::Card> {
+        self.game.position().hand().get(slot).copied()
+    }
+
+    /// Rogue-like: куда сейчас сыграть выбранную карту (у зеркала после первой фигуры — какой
+    /// второй её сделать).
+    fn card_squares(&self, card: game::Card) -> Vec<Square> {
+        self.game.position().card_squares(card, self.mirror_from)
+    }
+
+    /// Rogue-like: щелчок по карте в руке — сразу играется, если целей не просит, иначе
+    /// выбирается (повторный щелчок снимает выбор).
+    fn click_card(&mut self, slot: usize) {
+        self.mirror_from = None;
+        let Some(card) = self.game.position().hand().get(slot).copied() else {
+            return;
+        };
+        if !self.hand_usable(slot) {
+            self.power_pick = None;
+            return;
+        }
+        if card.picks() == 0 {
+            self.power_pick = None;
+            if self.game.use_card(slot, &[]) {
+                self.sfx.play(Sound::Notify);
+            }
+            return;
+        }
+        self.power_pick = (self.power_pick != Some(slot)).then_some(slot);
     }
 
     /// Rogue-like: магазин открыт, и показывать его уже можно — удары, шаги и ход доиграли.
@@ -1079,21 +1013,7 @@ impl BattleChessApp {
             .flatten()
             .filter(|&sq| pos.piece(sq).is_some_and(|p| p.is_frozen()))
             .collect();
-        let passed = outcome.passed.clone();
         let anim = MoveAnim::new(outcome, drop.unwrap_or(center(mv.from)), now);
-        // Теневая фигура бьёт тех, через кого прошла, — на середине шага.
-        let at = now + anim.end() * 0.5;
-        for h in passed {
-            let hit = Hit {
-                square: h.square,
-                target: h.target,
-                damage: h.damage,
-                killed: h.killed,
-            };
-            let effect = Effect::hit(hit, at).stacked(&self.effects);
-            self.effects.push(effect);
-            self.due_hits.push((hit, at));
-        }
         if mv.is_drop() {
             self.sfx.play(Sound::Notify);
         }
@@ -1193,8 +1113,8 @@ impl BattleChessApp {
                     chilled.push((strike.from, anim.impact()));
                 }
                 // Молния электрической фигуры задевает фигуры вокруг цели в тот же миг (между
-                // ними проскакивают разряды), шипы ледяной цели — ударившего.
-                for &hit in strike.splash.iter().map(|j| &j.hit).chain(&strike.thorns) {
+                // ними проскакивают разряды).
+                for &hit in strike.splash.iter().map(|j| &j.hit) {
                     let spark = Effect::hit(hit, anim.impact()).stacked(&self.effects);
                     self.effects.push(spark);
                 }
@@ -1222,7 +1142,7 @@ impl BattleChessApp {
             let Some(turn) = record.turn_end() else {
                 continue;
             };
-            // Пешки с лавой разгораются и взрываются по очереди после ударов; огненная волна
+            // Огненные фигуры разгораются и взрываются по очереди после ударов; огненная волна
             // начинается в кадре трещин `LAVA_WAVE_AT`.
             let mut blasts_end = start;
             for blast in &turn.blasts {
@@ -1238,7 +1158,7 @@ impl BattleChessApp {
                 blasts_end = ignite + (LAVA_FRAMES - LAVA_IGNITE) as f64 * LAVA_FRAME_TIME;
                 start += 2.0 * STRIKE_GAP;
             }
-            // Огненные фигуры (rogue-like) после взрыва снова насыщаются огнём.
+            // Огненные фигуры после взрыва снова насыщаются огнём.
             for blast in &turn.blasts {
                 if self
                     .game
@@ -1252,14 +1172,6 @@ impl BattleChessApp {
                         blast: false,
                     });
                 }
-            }
-            // Новые пешки насыщаются лавой, когда взрывы догорели.
-            for &square in &turn.charged {
-                self.lavas.push(LavaAnim {
-                    square,
-                    start: blasts_end,
-                    blast: false,
-                });
             }
             // Метеориты магов — по очереди, когда доиграли удары и взрывы; урон — в миг касания.
             let mut late = blasts_end;
@@ -1354,17 +1266,16 @@ impl BattleChessApp {
         self.strikes
             .iter()
             .filter(|s| now < s.impact())
-            .flat_map(|s| s.strike.wounded().map(move |h| (s.start, h)))
+            .flat_map(|s| s.strike.hits().map(move |h| (s.start, h)))
             .filter(|(_, h)| h.square == sq)
             .min_by(|a, b| a.0.total_cmp(&b.0))
             .map(|(_, h)| h.target)
     }
 
-    /// Кадр лавы фигуры на `sq`: взрыв идёт — кадры разгорания, впереди — ожидание; лава
-    /// насыщается — растут трещины (до начала — обычная фигура); лава есть или фигура
-    /// огненная (rogue-like) — ожидание.
+    /// Кадр лавы огненной фигуры на `sq`: взрыв идёт — кадры разгорания, впереди — ожидание;
+    /// огонь снова насыщается — растут трещины (до начала — обычная фигура); иначе — ожидание.
     fn lava_frame(&self, sq: Square, piece: Piece, now: f64) -> Option<usize> {
-        if !piece.lava && !piece.fire && self.lavas.iter().all(|a| a.square != sq) {
+        if !piece.fire && self.lavas.iter().all(|a| a.square != sq) {
             return None;
         }
         let hold = || {
@@ -1391,7 +1302,7 @@ impl BattleChessApp {
         {
             return (now >= charge.start).then(|| elapsed(charge.start));
         }
-        (piece.lava || piece.fire).then(hold)
+        piece.fire.then(hold)
     }
 
     /// Кадр тёмной ауры теневой фигуры: вступление с начала партии, потом повтор (сдвинут по
@@ -1452,12 +1363,14 @@ impl BattleChessApp {
                 && (s.start..s.end()).contains(&now)
         });
         if let Some(s) = striking {
-            return Some(ELECTRIC_FLASH + ((now - s.start) / ELECTRIC_FRAME_TIME) as usize % 3);
+            // Вспышка удара — с прежней скоростью: первые кадры трёх ступеней вспышки.
+            let step = ((now - s.start) / ELECTRIC_FRAME_TIME) as usize % 3;
+            return Some(ELECTRIC_FLASH + ELECTRIC_SLOW * step);
         }
         let f = ((now - self.spark_since).max(0.0) / ELECTRIC_FRAME_TIME) as usize;
         let [from, to] = ELECTRIC_LOOP;
         // Повтор у разных фигур сдвинут по клетке, чтобы разряды не шли хором.
-        let phase = sq as usize * 11;
+        let phase = sq as usize * 11 * ELECTRIC_SLOW;
         Some(if f < from {
             f
         } else {
@@ -1660,15 +1573,17 @@ impl BattleChessApp {
         }
     }
 
+    /// Компьютер (волны rogue-like) сам не ходит: фигуры волн шагают в конце его хода
+    /// (`march`). Он ждёт, пока доиграют ход, удары (метеориты, яд) и карты игрока, и через
+    /// `COMPUTER_DELAY` кончает ход.
     fn drive_computer(&mut self, now: f64) {
         let Some(computer) = self.computer else {
             return;
         };
         if self.game.is_over() || self.game.position().side() != computer {
-            self.thinking = None;
+            self.computer_since = None;
             return;
         }
-        // Компьютер ждёт, пока доиграют ход, удары (метеориты, яд) и карты соперника.
         if self.anim.is_some()
             || !self.strikes.is_empty()
             || !self.due_hits.is_empty()
@@ -1676,30 +1591,10 @@ impl BattleChessApp {
         {
             return;
         }
-        let pos = self.game.position();
-        if pos.moved() {
-            // Фигурой сходил — конец хода: карт компьютер пока не играет.
+        let since = *self.computer_since.get_or_insert(now);
+        if now - since >= COMPUTER_DELAY {
+            self.computer_since = None;
             self.end_turn(now);
-            return;
-        }
-        let Some(thinking) = &self.thinking else {
-            self.thinking = Some(Thinking::start(pos.clone(), now));
-            return;
-        };
-        if now - thinking.started < COMPUTER_DELAY {
-            return;
-        }
-        match thinking.result.try_recv() {
-            Ok(choice) => {
-                self.thinking = None;
-                match choice {
-                    Some(mv) => self.play(mv, None, now),
-                    // Ходить нечем (фигуры заморожены) — ход фигурой пропускается.
-                    None => self.end_turn(now),
-                }
-            }
-            Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => self.thinking = None,
         }
     }
 
@@ -1742,7 +1637,7 @@ impl BattleChessApp {
         // другом месте — разыгрывается. Правая кнопка или Esc возвращают её в руку.
         let over_board = ui.rect_contains_pointer(board.area);
         self.crest_hover = pointer
-            .filter(|_| over_board && self.sell_drag.is_none())
+            .filter(|_| over_board)
             .and_then(|p| self.crest_under(board, p));
         if self.holding_card() {
             let at = pointer.map(|p| board.to_art(p));
@@ -1784,6 +1679,13 @@ impl BattleChessApp {
             if let (Some(sell), Some(p)) = (&mut self.sell_drag, pointer) {
                 sell.1 = p;
             }
+            self.power_hover = pointer
+                .filter(|_| over_board)
+                .and_then(|p| self.hand_under(board, p));
+            let sell_spot = self.crest_sell_spot(board);
+            self.crest_sell_hover = pointer
+                .zip(sell_spot)
+                .is_some_and(|(p, (_, rect))| rect.contains(board.to_art(p).to_pos2()));
             self.hovered = None;
             self.stats_for = None;
             self.button_hover = false;
@@ -1796,8 +1698,29 @@ impl BattleChessApp {
                 }
                 return;
             }
+            if pressed && self.crest_sell_hover {
+                if let Some((index, _)) = sell_spot
+                    && self.game.sell_crest(index)
+                {
+                    self.sfx.play(Sound::Kill);
+                }
+                self.crest_sell = None;
+                return;
+            }
+            if pressed {
+                // Щелчок по своему гербу в колонке выбирает его на продажу, мимо — снимает выбор.
+                let crest = pointer.and_then(|p| self.column_crest_under(board, p));
+                self.crest_sell = crest.filter(|&c| self.crest_sell != Some(c));
+                if crest.is_some() {
+                    return;
+                }
+            }
             if pressed && let (Some((_, stock)), Some(p)) = (self.reserve_hover, pointer) {
                 self.sell_drag = Some((stock, p));
+                return;
+            }
+            if pressed && let Some(slot) = self.power_hover {
+                self.click_card(slot);
                 return;
             }
             if pressed && let Some(spot) = self.shop_hover.filter(|&s| self.shop_usable(s)) {
@@ -1805,9 +1728,9 @@ impl BattleChessApp {
                     ShopSpot::Offer(i) => self.game.buy(i),
                     ShopSpot::Reroll => self.game.reroll(),
                     ShopSpot::Leave => self.game.leave_shop(),
+                    ShopSpot::Chest(slot) => self.game.open_chest(slot),
+                    ShopSpot::Pick(i) => self.game.take_from_chest(i),
                     ShopSpot::Sell => false,
-                    ShopSpot::Crest(i) => self.game.buy_crest(i),
-                    ShopSpot::CrestReroll => self.game.reroll_crests(),
                 };
                 if done {
                     self.sfx.play(Sound::Move);
@@ -1816,6 +1739,8 @@ impl BattleChessApp {
             return;
         }
         self.sell_drag = None;
+        self.crest_sell = None;
+        self.crest_sell_hover = false;
         // Кнопка «Конец хода» срабатывает, когда её отпускают, не уведя курсор.
         self.button_hover = pointer.is_some_and(|p| over_board && self.over_button(board, p));
 
@@ -1883,8 +1808,24 @@ impl BattleChessApp {
         }
         if cancel {
             self.drop_pick = None;
+            self.power_pick = None;
+            self.mirror_from = None;
+        }
+        // Карта в руке: щелчок играет её сразу или выбирает (подсвечены свои фигуры, на которые
+        // её можно сыграть), повторный — снимает выбор.
+        self.power_hover = pointer
+            .filter(|_| over_board)
+            .and_then(|p| self.hand_under(board, p));
+        if pressed && let Some(i) = self.power_hover {
+            self.click_card(i);
+            self.drop_pick = None;
+            self.selected = None;
+            self.drag = None;
+            return;
         }
         if pressed && let Some((seat, stock)) = self.reserve_hover {
+            self.power_pick = None;
+            self.mirror_from = None;
             self.drop_pick = if self.reserve_usable(seat, stock) && self.drop_pick != Some(stock) {
                 Some(stock)
             } else {
@@ -1932,6 +1873,26 @@ impl BattleChessApp {
     }
 
     fn press(&mut self, sq: Square, pointer: Pos2, board: &BoardGeom, now: f64) {
+        // Выбрана карта: щелчок по подсвеченной своей фигуре играет её (у зеркала первый щелчок
+        // выбирает фигуру, которая станет копией), мимо — отменяет.
+        if let Some(slot) = self.power_pick.take()
+            && let Some(card) = self.picked_card_at(slot)
+            && self.card_squares(card).contains(&sq)
+        {
+            self.selected = None;
+            self.drag = None;
+            if card.picks() == 2 && self.mirror_from.is_none() {
+                self.mirror_from = Some(sq);
+                self.power_pick = Some(slot);
+                return;
+            }
+            let targets: Vec<Square> = self.mirror_from.take().into_iter().chain([sq]).collect();
+            if self.game.use_card(slot, &targets) {
+                self.sfx.play(Sound::Notify);
+            }
+            return;
+        }
+        self.mirror_from = None;
         // Выбрана фигура запаса: щелчок по подсвеченной клетке выставляет её, мимо — отменяет.
         if let Some(stock) = self.drop_pick.take() {
             let drop = self
@@ -2092,7 +2053,11 @@ impl BattleChessApp {
         let ppp = ui.ctx().pixels_per_point();
         // Карт нет (с 0.40): вписываются доска, кнопка и запас (`VIEW_MIN`…`VIEW_MAX`), а не
         // стол с руками и колодами. Ctrl/⌘ + колесо над доской — свой масштаб (`Settings::zoom`).
-        let (view_min, view_max) = (VIEW_MIN, VIEW_MAX);
+        // В rogue-like слева от доски ещё колонка гербов (с 0.114, на месте бывшей левой
+        // панели) — `ROGUE_VIEW_MIN`.
+        let rogue = self.game.position().rogue().is_some();
+        let view_min = if rogue { ROGUE_VIEW_MIN } else { VIEW_MIN };
+        let view_max = VIEW_MAX;
         let need = view_max - view_min;
         let wheel = ui.input(|i| i.modifiers.command.then(|| i.raw_scroll_delta.y));
         if let Some(dy) = wheel.filter(|dy| *dy != 0.0)
@@ -2250,6 +2215,21 @@ impl BattleChessApp {
             }
         }
 
+        // На какие свои фигуры сыграть выбранную карту; первая фигура зеркала — в рамке.
+        if let Some(card) = self.picked_card()
+            && self.human_to_move()
+        {
+            if let Some(from) = self.mirror_from {
+                mark(from, Marker::Target, Color32::WHITE);
+            }
+            for sq in self.card_squares(card) {
+                mark(sq, Marker::Move, Color32::WHITE);
+                if self.hovered == Some(sq) {
+                    mark(sq, Marker::Target, target_tint);
+                }
+            }
+        }
+
         // Ходы выбранной фигуры — синим, клетка под курсором — в рамке.
         if let Some(from) = self.selected
             && self.human_to_move()
@@ -2277,12 +2257,11 @@ impl BattleChessApp {
             ice: self.ice(sq, piece, now),
             ..self.dressed(sq, piece, center(sq), now)
         };
-        // Убитая ударом (молнией слона, шипами ледяной цели) фигура: до касания стоит на месте
-        // (погибший о шипы — с выпадом), после — растворяется.
+        // Убитая ударом (и молнией) фигура: до касания стоит на месте, после — растворяется.
         let mut struck: Vec<Square> = self
             .strikes
             .iter()
-            .flat_map(|s| s.strike.wounded().map(|h| h.square))
+            .flat_map(|s| s.strike.hits().map(|h| h.square))
             .collect();
         struck.sort_unstable();
         struck.dedup();
@@ -2953,7 +2932,11 @@ impl BattleChessApp {
         let hp_color = hp_color(piece.hp as f32 / piece.max_hp() as f32);
         let attack = [
             &[(Glyph::Sword, PIXEL_STEEL)][..],
-            &paint(&Glyph::digits(shown(piece.attack())), PIXEL_WHITE),
+            // Урон удара (с 0.119 у фигур игрока — атака × мульти).
+            &paint(
+                &Glyph::digits(shown(self.game.position().strike_damage(piece))),
+                PIXEL_WHITE,
+            ),
         ]
         .concat();
         let health = [
@@ -3110,8 +3093,18 @@ impl BattleChessApp {
                 Pointer::Off
             };
         }
+        if self.crest_sell_hover {
+            return Pointer::Hover;
+        }
         if self.sell_drag.is_some() {
             return Pointer::Move;
+        }
+        if let Some(slot) = self.power_hover {
+            return if self.hand_usable(slot) {
+                Pointer::Hover
+            } else {
+                Pointer::Off
+            };
         }
         if let Some((seat, stock)) = self.reserve_hover {
             return if self.reserve_usable(seat, stock) || self.reserve_sellable(seat, stock) {
@@ -3325,13 +3318,7 @@ impl BattleChessApp {
             );
         }
         match self.computer {
-            Some(computer) if computer == color => {
-                if self.game.position().boosted() == Some(color) {
-                    "компьютер · усиленный".to_owned()
-                } else {
-                    "компьютер".to_owned()
-                }
-            }
+            Some(computer) if computer == color => "компьютер".to_owned(),
             Some(_) => "вы".to_owned(),
             None => "игрок".to_owned(),
         }
@@ -3367,12 +3354,7 @@ impl BattleChessApp {
                 );
                 if active {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if self.thinking.is_some() && self.computer == Some(color) {
-                            ui.add(egui::Spinner::new().size(14.0).color(theme::TEXT_DIM));
-                            ui.label(RichText::new("думает").color(theme::TEXT_DIM));
-                        } else {
-                            ui.label(RichText::new("ходит").color(theme::GREEN));
-                        }
+                        ui.label(RichText::new("ходит").color(theme::GREEN));
                     });
                 }
             });
@@ -3383,11 +3365,11 @@ impl BattleChessApp {
                         .color(theme::TEXT_DIM),
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let health: i32 = pos
+                    // Сумма без переполнения: у фигур волн дальних уровней здоровья очень много.
+                    let health = pos
                         .pieces()
                         .filter(|(_, p)| p.color == color)
-                        .map(|(_, p)| p.hp as i32)
-                        .sum();
+                        .fold(0i32, |sum, (_, p)| sum.saturating_add(p.hp));
                     ui.label(
                         RichText::new(format!("армия: {} HP", shown(health)))
                             .size(12.5)
@@ -3436,10 +3418,43 @@ impl BattleChessApp {
             Status::Ongoing if self.aiming_card() => {
                 (self.aim_hint().to_owned(), theme::TEXT_BRIGHT)
             }
+            Status::Ongoing if self.picked_card().is_some() => (
+                match (self.picked_card(), self.mirror_from) {
+                    (Some(game::Card::Mirror), Some(from)) => format!(
+                        "Карта зеркала: щёлкните по фигуре, копией которой станет фигура на {}",
+                        game::square_name(from)
+                    ),
+                    (Some(game::Card::Mirror), None) => {
+                        "Карта зеркала: щёлкните по своей фигуре, которая станет копией другой"
+                            .to_owned()
+                    }
+                    (card, _) => format!(
+                        "{}: щёлкните по своей подсвеченной фигуре (повторный щелчок по карте — \
+                         отмена)",
+                        card.map_or("", |c| c.title())
+                    ),
+                },
+                theme::GOLD,
+            ),
+            Status::Ongoing if pos.chest_open().is_some() => (
+                match pos.chest_open().and_then(|slot| pos.chest(slot)) {
+                    Some(offer) => format!(
+                        "{}: выберите {} из {} (осталось {}) — щёлкните по вещи",
+                        offer.title(),
+                        offer.picks(),
+                        offer.choices(),
+                        offer.picks() - usize::from(offer.taken)
+                    ),
+                    None => String::new(),
+                },
+                theme::GOLD,
+            ),
             Status::Ongoing if pos.shop_open() => (
-                "Магазин: покупайте фигуры в запас за золото, продавайте — перетащив из \
-                 запаса в «Продажу»; «Обновить» — другие фигуры, «Уйти» — к расстановке. \
-                 Гербы справа усиливают фигуры до конца забега"
+                "Магазин: покупайте фигуры в запас и гербы — они усиливают фигуры до конца \
+                 забега; продавайте фигуры запаса (перетащите в «Продажу») и гербы (щёлкните по \
+                 гербу в колонке слева); сундук фигур, гербов или карт даёт выбрать одно из трёх; «Обновить» — другой \
+                 товар на прилавке (каждое следующее обновление дороже, сундуки не меняются), \
+                 «Уйти» — к расстановке"
                     .to_owned(),
                 theme::GOLD,
             ),
@@ -3465,7 +3480,7 @@ impl BattleChessApp {
                 )
             }
             Status::Ongoing if pos.moved() && self.human_to_move() => (
-                format!("Ход {} · сыграйте карту или закончите ход", side.genitive()),
+                format!("Ход {} · закончите ход", side.genitive()),
                 theme::TEXT_BRIGHT,
             ),
             Status::Ongoing if self.game.legal_moves().is_empty() && self.human_to_move() => (
@@ -3630,18 +3645,11 @@ impl BattleChessApp {
                 },
             );
             if ui
-                .selectable_label(self.show_reference, "Справка")
-                .on_hover_text("Показать или скрыть левую панель")
-                .clicked()
-            {
-                self.show_reference = !self.show_reference;
-            }
-            if ui
                 .button("Меню")
                 .on_hover_text("Выйти в главное меню (партия начнётся заново)")
                 .clicked()
             {
-                self.thinking = None;
+                self.computer_since = None;
                 self.leave_network();
                 self.screen = Screen::Menu;
             }
@@ -3694,13 +3702,33 @@ impl BattleChessApp {
                             .size(15.5)
                             .color(theme::TEXT_BRIGHT),
                     );
+                    // Фигуры игрока бьют атакой × мульти (с 0.119).
+                    let damage = self.game.position().strike_damage(piece);
+                    let attack = if damage == piece.attack() {
+                        format!("Атака {}", shown(damage))
+                    } else {
+                        format!(
+                            "Атака {} × {} = {}",
+                            shown(piece.attack()),
+                            game::mult_text(self.game.position().piece_mult(piece)),
+                            shown(damage)
+                        )
+                    };
                     ui.label(format!(
-                        "Атака {}  ·  HP {}/{}",
-                        shown(piece.attack()),
+                        "{attack}  ·  HP {}/{}",
                         shown(piece.hp),
                         shown(piece.max_hp())
                     ));
                     hp_meter(ui, piece.hp, piece.max_hp());
+                    // Маг копит метеорит (с 0.108): когда следующий.
+                    if piece.wizard {
+                        ui.label(match piece.rest + u8::from(piece.fresh) {
+                            0 => "Метеорит — в конце хода".to_owned(),
+                            1 => "Метеорит — через ход".to_owned(),
+                            n @ 2..=4 => format!("Метеорит — через {n} хода"),
+                            n => format!("Метеорит — через {n} ходов"),
+                        });
+                    }
                     // Герб красной молнии: заряд электрической фигуры и как далеко летит молния.
                     let pos = self.game.position();
                     if piece.spark && pos.has_crest(Crest::RedBolt) {
@@ -3718,40 +3746,9 @@ impl BattleChessApp {
             });
         });
     }
-    // ----- Левая панель: новая партия и справка -----
+    // ----- Разделы экранов «Настройки» и «Правила» главного меню (с 0.114) -----
 
-    fn reference_panel(&mut self, ui: &mut egui::Ui) {
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.label(
-                    RichText::new("Боевые шахматы")
-                        .size(24.0)
-                        .family(theme::bold())
-                        .color(theme::TEXT_BRIGHT),
-                );
-                ui.label(
-                    RichText::new(
-                        "Фигуры не гибнут с одного удара: у каждой есть атака и здоровье.",
-                    )
-                    .color(theme::TEXT_DIM),
-                );
-                ui.add_space(10.0);
-                card(ui, |ui| self.new_game_section(ui));
-                ui.add_space(8.0);
-                card(ui, |ui| self.settings_section(ui));
-                ui.add_space(8.0);
-                card(ui, |ui| self.stats_section(ui));
-                ui.add_space(8.0);
-
-                card(ui, |ui| self.damage_section(ui));
-                ui.add_space(8.0);
-                card(ui, rules_section);
-            });
-    }
-
-    fn settings_section(&mut self, ui: &mut egui::Ui) {
-        section_title(ui, "Настройки");
+    pub(super) fn settings_section(&mut self, ui: &mut egui::Ui) {
         option_label(ui, "Громкость");
         self.volume_controls(ui);
         option_label(ui, "Частота кадров");
@@ -3802,56 +3799,7 @@ impl BattleChessApp {
         });
     }
 
-    fn new_game_section(&mut self, ui: &mut egui::Ui) {
-        section_title(ui, "Новая партия");
-        option_label(ui, "Соперник");
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.draft.opponent, Opponent::Computer, "компьютер");
-            ui.selectable_value(&mut self.draft.opponent, Opponent::Human, "второй игрок");
-        });
-        if self.draft.opponent == Opponent::Computer {
-            option_label(ui, "Играть за");
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.draft.side, SideChoice::White, "белых");
-                ui.selectable_value(&mut self.draft.side, SideChoice::Black, "чёрных");
-                ui.selectable_value(&mut self.draft.side, SideChoice::Random, "случайно");
-            });
-            option_label(ui, "Фигуры компьютера");
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.settings.boosted, false, "обычные");
-                let _ = ui
-                    .selectable_value(&mut self.settings.boosted, true, "усиленные")
-                    .on_hover_text(
-                        "Лава: в начале вашего хода случайные пешки компьютера насыщаются \
-                         лавой и в конце его хода взрываются огненной волной по вашим фигурам.",
-                    );
-            });
-        }
-        option_label(ui, "Взятие");
-        // Короткие подписи: длинные не влезали в панель и раздували её (чёрная полоса).
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.settings.advance, false, "на месте");
-            let _ = ui
-                .selectable_value(&mut self.settings.advance, true, "с перемещением")
-                .on_hover_text(
-                    "Убив фигуру вблизи, фигура встаёт на её клетку и больше в этот ход не бьёт. \
-                     Цели бьются по важности, из равных — с меньшим здоровьем.",
-                );
-        });
-        ui.add_space(8.0);
-        let start = egui::Button::new(
-            RichText::new("Начать партию")
-                .size(15.0)
-                .color(Color32::WHITE),
-        )
-        .fill(theme::BLUE)
-        .min_size(vec2(ui.available_width(), 32.0));
-        if ui.add(start).clicked() {
-            self.new_game(self.draft);
-        }
-    }
-
-    fn stats_section(&self, ui: &mut egui::Ui) {
+    pub(super) fn stats_section(&self, ui: &mut egui::Ui) {
         section_title(ui, "Характеристики");
         egui::Grid::new("stats")
             .num_columns(4)
@@ -3868,7 +3816,7 @@ impl BattleChessApp {
                     piece_icon(ui, &self.art, Color::White, kind, 26.0);
                     ui.label(kind.title());
                     let stats = kind.stats();
-                    let max_hp = self.game.position().kind_max_hp(kind);
+                    let max_hp = rogue_max_hp(kind);
                     ui.label(
                         RichText::new(shown(stats.attack).to_string()).color(theme::TEXT_BRIGHT),
                     );
@@ -3886,7 +3834,7 @@ impl BattleChessApp {
         );
     }
 
-    fn damage_section(&self, ui: &mut egui::Ui) {
+    pub(super) fn damage_section(&self, ui: &mut egui::Ui) {
         section_title(ui, "Ударов до убийства");
         ui.label(
             RichText::new(
@@ -3909,7 +3857,7 @@ impl BattleChessApp {
                     piece_icon(ui, &self.art, Color::White, attacker, 24.0);
                     for defender in Kind::ALL {
                         let dealt = attacker.stats().attack;
-                        let hp = self.game.position().kind_max_hp(defender);
+                        let hp = rogue_max_hp(defender);
                         let hits = (hp + dealt - 1) / dealt;
                         let (rect, response) =
                             ui.allocate_exact_size(vec2(32.0, 24.0), Sense::hover());
@@ -3973,14 +3921,6 @@ impl eframe::App for BattleChessApp {
         let side_frame = egui::Frame::default()
             .fill(theme::PAGE)
             .inner_margin(Margin::same(12));
-        if self.show_reference {
-            egui::SidePanel::left("reference")
-                .resizable(false)
-                .exact_width(280.0)
-                .show_separator_line(false)
-                .frame(side_frame)
-                .show(ctx, |ui| self.reference_panel(ui));
-        }
         egui::SidePanel::right("game")
             .resizable(false)
             .exact_width(320.0)
@@ -4005,7 +3945,6 @@ impl eframe::App for BattleChessApp {
             || self
                 .deck_hover
                 .is_some_and(|(_, since)| now - since < STATS_TIME);
-        // Лава в пешках и молнии вокруг слонов усиленного компьютера движутся всю партию.
         if self.anim.is_some()
             || !self.strikes.is_empty()
             || !self.meteors.is_empty()
@@ -4017,7 +3956,6 @@ impl eframe::App for BattleChessApp {
             || !self.marches.is_empty()
             || !self.appears.is_empty()
             || !self.lavas.is_empty()
-            || self.game.position().boosted().is_some()
             || !self.effects.is_empty()
             || banner
             || stats
@@ -4027,8 +3965,9 @@ impl eframe::App for BattleChessApp {
             || self.hovered_target().is_some()
         {
             ctx.request_repaint();
-        } else if self.thinking.is_some() {
-            ctx.request_repaint_after(Duration::from_millis(50));
+        } else if self.computer_since.is_some() || self.idle_animation() {
+            // Компьютер ждёт, особые фигуры и могилы движутся и в покое — кадр раз в 30 мс.
+            ctx.request_repaint_after(Duration::from_millis(30));
         }
         self.paint_cursor(ctx);
         self.save_settings(ctx);
@@ -4036,6 +3975,25 @@ impl eframe::App for BattleChessApp {
 }
 
 impl BattleChessApp {
+    /// В партии есть то, что движется и в покое: особые фигуры (огонь, молнии, вихрь, тень,
+    /// яд) на доске, в запасе или на прилавке, могилы зомби, горящие кратеры.
+    fn idle_animation(&self) -> bool {
+        if self.screen != Screen::Game {
+            return false;
+        }
+        let pos = self.game.position();
+        pos.pieces()
+            .any(|(_, p)| p.fire || p.spark || p.wind || p.shade || p.venom)
+            || (0..64).any(|sq| pos.grave(sq).is_some())
+            || pos.craters() != 0
+            || pos.shop_open()
+            || pos.rogue().is_some_and(|r| {
+                pos.reserve(r.player)
+                    .iter()
+                    .any(|(stock, ..)| stock.power != Power::Plain)
+            })
+    }
+
     /// Без VSync не даём кадрам идти чаще выбранного предела.
     fn limit_frame_rate(&mut self) {
         let cap = match self.settings.frame_rate {
@@ -4226,49 +4184,104 @@ fn option_label(ui: &mut egui::Ui, text: &str) {
     ui.label(RichText::new(text).size(12.5).color(theme::TEXT_DIM));
 }
 
-const RULES: [&str; 12] = [
-    "Ход — один ход фигурой и, по желанию, до трёх карт до и после него. Сходив фигурой, \
-     нажмите «Конец хода» (или Space); если карт больше не сыграть, ход кончается сам.",
-    "Бить ходом нельзя: фигура ходит только на пустую клетку. Фигуры бьют сами — в конце хода \
-     своей стороны.",
-    "В конце хода каждая незамёрзшая фигура бьёт одну чужую фигуру рядом — по правилам своего \
-     хода: пешка — по диагонали вперёд, слон — по диагонали, ладья — по прямой, ферзь и король \
-     — во все стороны, конь — буквой «Г».",
-    "Бьют по очереди: a8, a7, …, a1, потом b8 … h1. Цель — фигура с наименьшим здоровьем, при \
-     равенстве — дороже по очкам, потом — первая по той же очереди.",
-    "Удар снимает с цели столько HP, сколько у атакующего атаки, — без случайностей и без \
-     ответа. Убив цель, атакующий встаёт на её клетку (пешка на последней горизонтали \
-     становится ферзём), ранив — остаётся на месте.",
-    "Огненная волна: выберите свою фигуру — все фигуры вокруг неё, и чужие, и свои, \
-     получают 300 урона.",
-    "Буря, лавина и ледяной барьер: от короля тянется стрелка, подсвечены клетки, на которые \
-     ляжет лёд. Замёрзшая фигура (кроме короля) пропускает ход своей стороны — не ходит и не \
-     бьёт; своя, замёрзшая в свой ход, оттает в начале вашего следующего хода. Ледяная зона \
-     барьера держится до вашего следующего хода и замораживает каждую \
-     вставшую в неё фигуру.",
-    "Проигрывает тот, у кого не осталось ни одной фигуры. Король гибнет, как любая фигура: \
-     партия идёт дальше, но без короля карты больше не сыграть. Шах — короля могут убить \
-     ударом в конце хода соперника; это только предупреждение.",
-    "Рокировка — как обычно, взятия на проходе нет. Пешка превращается, дойдя до последней \
-     горизонтали, и не в короля; новая фигура приходит с полным здоровьем.",
-    "Ходить нечем (фигуры заморожены или заперты) — ход фигурой пропускается: можно сыграть \
-     карты и закончить ход.",
-    "Ничья: 50 ходов без ударов и ходов пешками, троекратное повторение.",
-    "Компьютер пока карт не играет.",
-];
+/// Правила rogue-like (с 0.108 — основной режим) для экрана «Правила»; числа — из баланса.
+fn rules() -> Vec<String> {
+    let rule = |rule: Rule| balance::balance().rule(rule);
+    vec![
+        format!(
+            "Ход — до {} ходов разными фигурами (воздушная ходит дважды за один); сколько \
+             осталось — над кнопкой «Конец хода» (или Space). Закончить ход можно и не сходив.",
+            rule(Rule::RogueMoves)
+        ),
+        "Бить ходом нельзя: фигура ходит только на пустую клетку. Фигуры бьют сами — в конце \
+         хода своей стороны: пешка — по диагонали вперёд, конь — буквой «Г», король — вокруг, \
+         слон, ладья и ферзь — первую фигуру на своих линиях."
+            .to_owned(),
+        "Удар снимает с цели столько здоровья, сколько у атакующего атаки, — без случайностей и \
+         без ответа."
+            .to_owned(),
+        "Урон ваших фигур — атака × мульти (сначала 1; сейчас — над золотом). Гербы мульти \
+         применяются по порядку покупки: герб урона прибавляет к мульти своё число, герб урона \
+         короля умножает его на своё число за каждый удар вашего короля в этом ходу. Урон и король, \
+         король ударил дважды: 10 × (1 + 4) × 1.5 × 1.5; король и урон: 10 × (1 × 1.5 × 1.5 + 4). \
+         Прибавки от ударов и временных эффектов действуют до конца хода. Предела урона нет. \
+         Взрыв огненной фигуры и метеорит мага бьют уроном самой фигуры — атака × мульти, \
+         горящий кратер — уроном упавшего метеорита."
+            .to_owned(),
+        "Фигуры соперника выходят волнами на его крайнюю горизонталь и в конце каждого его хода \
+         шагают вперёд. Волна дошла до вашей первой горизонтали или погиб король — поражение."
+            .to_owned(),
+        format!(
+            "Уровень — несколько волн; отбили все — магазин и расстановка, потом следующий \
+             уровень. Всего уровней — {}. На первом у фигур волн здоровья на {} меньше, на              каждом следующем — в {} раза больше, чем на прошлом.",
+            rule(Rule::RogueLevels),
+            rule(Rule::RogueFirstLevelHpCut),
+            game::mult_text(game::hundredths(Rule::RogueLevelHpPercent))
+        ),
+        format!(
+            "Золото — за каждую побеждённую фигуру. В магазине на каждом месте фигура (в запас) \
+             или герб (усиливает до конца забега); фигура — с шансом {}%. «Обновить» стоит {}, \
+             каждое следующее — на {} дороже.",
+            rule(Rule::RogueShopPiecePercent),
+            rule(Rule::RogueRerollCost),
+            rule(Rule::RogueRerollStep)
+        ),
+        format!(
+            "Фигуру из запаса выставляют вместо хода — {} за ход, на две первые горизонтали \
+             (пешку — на вторую) и пока ваших фигур на доске меньше {}.",
+            match rule(Rule::RogueDropsPerTurn) {
+                1 => "одну".to_owned(),
+                n => format!("до {n}"),
+            },
+            rule(Rule::RogueMaxPieces)
+        ),
+        format!(
+            "Сундуки магазина: фигур, гербов и карт — одно из {} на выбор. Карта ложится в руку \
+             (до {}, слева вверху); щёлкните по ней — карты на фигуры (силы, ранг, зеркало) \
+             попросят щёлкнуть по своей фигуре, остальные сыграются сразу. Наведите курсор на \
+             карту — появится, что она делает.",
+            rule(Rule::RogueChestChoices),
+            rule(Rule::RogueHandSize)
+        ),
+        format!(
+            "Продажа в магазине: фигуру запаса перетащите в «Продажу» (за цену обычной такой же, \
+             золотую — дороже), герб — щёлкните по нему в колонке гербов слева и нажмите «Продать» \
+             ({}).",
+            rule(Rule::RogueCrestSellPrice)
+        ),
+        "Расстановка: выжившие фигуры возвращаются на клетки начала уровня здоровыми; их можно \
+         передвигать и менять местами на двух первых горизонталях."
+            .to_owned(),
+        format!(
+            "Особые фигуры: огненные взрываются, электрические бьют молнией, воздушные ходят \
+             дважды, золотые приносят больше золота, теневые ходят сквозь фигуры, ледяные \
+             замораживают ударивших, варвары бьют снова после убийства, маги шлют метеорит раз \
+             в {}.",
+            match rule(Rule::RogueWizardEvery) {
+                1 => "ход".to_owned(),
+                n @ 2..=4 => format!("{n} хода"),
+                n => format!("{n} ходов"),
+            }
+        ),
+        "Замёрзшая фигура пропускает ход своей стороны — не ходит и не бьёт.".to_owned(),
+    ]
+}
+/// Правила списком — на экране «Правила» главного меню.
 fn rules_section(ui: &mut egui::Ui) {
-    egui::CollapsingHeader::new(
-        RichText::new("Правила")
-            .size(15.5)
-            .family(theme::bold())
-            .color(theme::TEXT_BRIGHT),
-    )
-    .default_open(true)
-    .show(ui, |ui| {
-        for rule in RULES {
-            ui.label(format!("• {rule}"));
-        }
-    });
+    for rule in rules() {
+        ui.label(format!("• {rule}"));
+        ui.add_space(3.0);
+    }
+}
+
+/// Полное здоровье фигуры вида `kind` в rogue-like (у коня — своё, `rogue_knight_hp`): для
+/// таблиц экрана «Правила», какая бы партия ни была начата.
+fn rogue_max_hp(kind: Kind) -> i32 {
+    if kind == Kind::Knight {
+        game::rogue_knight_hp()
+    } else {
+        kind.stats().max_hp
+    }
 }
 
 /// Действия по ходам: подряд идущие действия одной стороны, без отметок конца хода.
@@ -4446,12 +4459,6 @@ fn ease_out_back(t: f32) -> f32 {
 
 fn ease_out(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
-}
-
-fn coin_flip() -> bool {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .is_ok_and(|d| d.subsec_nanos() % 2 == 0)
 }
 
 #[cfg(test)]

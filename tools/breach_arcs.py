@@ -129,11 +129,36 @@ def raster(pts):
 
 class Bolt:
     def __init__(self, pts, front, life=2, width=1):
+        self.pts, self.width = pts, width
         self.mask = raster(pts)
         if width > 1:
             self.mask |= np.roll(self.mask, 1, 1)
         self.front, self.life, self.age = front, life, 0
         self.ends = [pts[0], pts[-1]]
+        # замедленная полоса: кадр появления и сколько кадров видна; начала ломаной по длине
+        self.born, self.span = None, life
+        self._prefix = {}
+
+    def prefix(self, frac):
+        """Маска начала молнии — доля frac её длины (молния «прорастает» от начала)."""
+        key = round(frac, 3)
+        if key not in self._prefix:
+            seg = [math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(self.pts, self.pts[1:])]
+            left = sum(seg) * frac
+            pts = [self.pts[0]]
+            for (a, b), s in zip(zip(self.pts, self.pts[1:]), seg):
+                if left >= s:
+                    pts.append(b)
+                    left -= s
+                    continue
+                k = left / s if s > 0 else 0
+                pts.append((a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k))
+                break
+            m = raster(pts)
+            if self.width > 1:
+                m |= np.roll(m, 1, 1)
+            self._prefix[key] = m
+        return self._prefix[key]
 
 
 def paint_bolts(layer, bolts):
@@ -151,6 +176,28 @@ def paint_bolts(layer, bolts):
             layer[core] = (*CYAN[3], 255)
 
 
+GROW = 2  # замедленная полоса: за столько кадров молния прорастает от начала до конца
+
+
+def paint_bolts_slow(layer, alive):
+    """Молнии замедленной полосы, alive — (молния, её кадр): первые GROW кадров прорастает, потом
+    гаснет ступенями — яркая (белое ядро, голубая кайма, тёмный край), голубая, тёмно-голубая."""
+    for b, age in sorted(alive, key=lambda p: -p[1]):
+        core = b.prefix((age + 1) / (GROW + 1)) if age < GROW else b.mask
+        stage = age / b.span
+        edge = burn.neighbours_any(core) & ~core
+        if stage < 0.45:
+            rim = burn.neighbours_any(core | edge) & ~core & ~edge
+            layer[rim & (layer[..., 3] == 0)] = (*CYAN[5], 150)
+            layer[edge] = (*CYAN[3], 255)
+            layer[core] = (*CYAN[0], 255)
+        elif stage < 0.75:
+            layer[edge & (layer[..., 3] == 0)] = (*CYAN[5], 170)
+            layer[core] = (*CYAN[3], 255)
+        else:
+            layer[core] = (*CYAN[4], 220)
+
+
 def edge_point(sil, cx, cy, ang):
     """Последний пиксель силуэта по лучу из центра."""
     best = (cx, cy)
@@ -166,12 +213,27 @@ def ground_point(r, ang):
     return FAX + math.cos(ang) * r, FAY + math.sin(ang) * r * 0.5
 
 
-def render(code, seed=7, bodies=None, under=None, length=None):
+def render(code, seed=7, bodies=None, under=None, length=None, slow=1, _wrap=None):
     """Кадры электричества. bodies(f) — своё тело фигуры в кадре f (холст FW×FH, аура — по обычному
     силуэту; что тело выносит за силуэт, ложится поверх ауры и задних молний); under(f) — свой слой
     вместо золотой ауры (тогда и контур фигуры ею не подсвечивается); length — столько кадров без
-    концовки: после LOOP_END повтор продолжается."""
+    концовки: после LOOP_END повтор продолжается.
+
+    slow (0.116, просьба пользователя) — во столько раз медленнее при том же кадре FRAME_MS: кадров
+    вступления, повтора и концовки в slow раз больше (повтор — [LOOP_START·slow, LOOP_END·slow)),
+    length — тоже в этих кадрах. Аура течёт по пикселю за кадр (а не по 3 за slow кадров), сила ауры
+    и вспышка тела меняются плавно, искры летят в slow раз медленнее; молнии и искорки ауры
+    выпадают те же, что и без замедления (те же броски зерна), но каждая — в свой кадр внутри шага
+    (кроме вспышки), прорастает за GROW кадров и гаснет ступенями (`paint_bolts_slow`); искорки ауры
+    тоже появляются вразнобой и поднимаются с ней. Повтор сшит: молнии, родившиеся в конце повтора,
+    догорают в его начале (для этого полоса считается дважды — `_wrap`), молнии вступления в повтор
+    не переходят. С slow = 1 кадры прежние."""
+    if slow > 1 and _wrap is None:
+        render(code, seed, bodies, under, length, slow, _wrap=[])
+        _wrap = render.timeline
     rng = np.random.default_rng(seed)
+    jit = np.random.default_rng(seed + 991)  # кадры появления внутри шага замедленной полосы
+    timeline = []  # все молнии замедленной полосы
     sprite = np.array(Image.open(os.path.join(fw.art.ROOT, "assets", "breach", "pieces", f"{code}.png")).convert("RGBA"))
     canvas = np.zeros((FH, FW, 4), np.uint8)
     canvas[SY : SY + sprite.shape[0], SX : SX + sprite.shape[1]] = sprite
@@ -195,24 +257,36 @@ def render(code, seed=7, bodies=None, under=None, length=None):
     yy, xx = np.mgrid[0:FH, 0:FW]
     bolts = []
     sparks = burn.Particles()
+    glints = []  # искорки ауры замедленной полосы: (y, x, кадр появления)
     frames = []
-    for f in range(FRAMES if length is None else length):
+    total = FRAMES * slow if length is None else length
+    loop0, loop1 = LOOP_START * slow, min(total, LOOP_END * slow if length is None else total)
+    for fs in range(total):
+        # f — кадр без замедления (ему подчинены молнии), t — то же время дробно, sub — шаг внутри
+        f, sub = divmod(fs, slow)
+        t = fs / slow
+        beat = sub == 0
         looping = f < LOOP_END or length is not None
         # сила ауры: растёт во вступлении, держится, опадает в концовке
-        if f < LOOP_START:
-            grow = np.clip((f - 1) / (FLASH - 1), 0, 1)
+        if t < LOOP_START:
+            grow = np.clip((t - 1) / (FLASH - 1), 0, 1)
         elif looping:
             grow = 1.0
         else:
-            grow = max(0.0, 1 - (f - LOOP_END + 1) / (FRAMES - LOOP_END))
-        lf = (f - LOOP_START) % loop_len  # фаза повтора — чтобы шов совпал
-        shift = 3 * lf if f >= LOOP_START else 3 * f
+            grow = max(0.0, 1 - (t - LOOP_END + 1) / (FRAMES - LOOP_END))
+        lf = (t - LOOP_START) % loop_len  # фаза повтора — чтобы шов совпал
+        shift = 3 * lf if t >= LOOP_START else 3 * t
+        if slow == 1:
+            shift = int(shift)
         n, nt = noise(shift), tongues(shift)
-        # ---- новые молнии этого кадра
-        for b in bolts:
-            b.age += 1
-        bolts = [b for b in bolts if b.age < b.life]
-        if f < FLASH:  # искорки по телу
+        # ---- новые молнии этого кадра (при замедлении — раз в slow кадров)
+        if beat:
+            for b in bolts:
+                b.age += 1
+            bolts = [b for b in bolts if b.age < b.life]
+        if not beat:
+            pass
+        elif f < FLASH:  # искорки по телу
             for _ in range(1 + f // 2):
                 a = rng.uniform(0, 2 * math.pi)
                 p = edge_point(sil, cx, cy + rng.uniform(-10, 14), a)
@@ -252,40 +326,71 @@ def render(code, seed=7, bodies=None, under=None, length=None):
                     p = edge_point(sil, cx, base - 6, a)
                     q = ground_point(rng.uniform(18, 26), a)
                     for _ in range(3):
-                        sparks.items.append(dict(x=q[0], y=q[1], vx=rng.uniform(-1.2, 1.2), vy=rng.uniform(-1.6, -0.4),
-                                                 drag=0.85, life=int(rng.integers(2, 5)), age=0))
+                        vx, vy = rng.uniform(-1.2, 1.2), rng.uniform(-1.6, -0.4)
+                        life = int(rng.integers(2, 5))
+                        sparks.items.append(dict(x=q[0], y=q[1], vx=vx / slow, vy=vy / slow, drag=0.85 ** (1 / slow),
+                                                 life=life * slow, age=0))
                 bolts.append(Bolt(bolt_points(p, q, rng, 0.3), front=q[1] > cy + 4, life=2))
+        alive = []
+        if slow > 1:
+            for b in bolts:
+                if b.born is None:  # новая: свой кадр внутри шага, вспышка — разом
+                    b.born = fs + (0 if f == FLASH else int(jit.integers(0, slow)))
+                    b.span = b.life * slow
+                    timeline.append(b)
+            looped = loop0 <= fs < loop1
+            for b in timeline:
+                if 0 <= fs - b.born < b.span and not (looped and b.born < loop0):
+                    alive.append((b, fs - b.born))
+            if looped:  # родившиеся в конце повтора догорают в его начале
+                for b in _wrap:
+                    age = fs + (loop1 - loop0) - b.born
+                    if b.born >= loop0 and 0 <= age < b.span and b.born + b.span > loop1:
+                        alive.append((b, age))
         # ---- аура: золотое пламя вокруг силуэта, вверх — длинными языками, бегущими вверх
         side = (3.5 + 4.5 * n) * grow
         side = np.where(yy > base - 3, side * 0.35, side)
         up = (5 + 22 * nt ** 2) * grow
         aura = ((d <= side) | (gap <= up)) & ~sil & (grow > 0)
         aura &= yy < base + 2
-        img = np.zeros((FH, FW, 4), np.uint8) if under is None else under(f).copy()
+        img = np.zeros((FH, FW, 4), np.uint8) if under is None else under(fs).copy()
         if under is None and aura.any():
             outer = burn.boundary(aura) & ~burn.neighbours_any(sil)
             img[aura] = (*GOLD[2], 150)
             img[aura & ((d <= 2) | (gap <= up * 0.35))] = (*GOLD[1], 185)
             img[aura & ((d <= 1) | (gap <= up * 0.15))] = (*GOLD[0], 215)
             img[outer] = (*GOLD[3], 235)
-            # искорки ауры: короткие черточки, бегут вверх
-            pts = np.argwhere(aura & ~outer)
-            for y, x in pts[rng.choice(len(pts), size=min(5, len(pts)), replace=False)]:
-                img[max(0, y - 1) : y + 1, x] = (*GOLD[0], 255)
+            # искорки ауры: короткие черточки, бегут вверх (при замедлении — новые раз в slow кадров,
+            # между ними поднимаются с аурой по пикселю за кадр)
+            inside = aura & ~outer
+            if beat:
+                pts = np.argwhere(inside)
+                chosen = pts[rng.choice(len(pts), size=min(5, len(pts)), replace=False)]
+                glints = [g for g in glints if fs - g[2] < slow]
+                glints += [(y, x, fs + (int(jit.integers(0, slow)) if slow > 1 else 0)) for y, x in chosen]
+            for y, x, born in glints:
+                y -= fs - born
+                if 0 <= fs - born < slow and y >= 0 and inside[y, x]:
+                    img[max(0, y - 1) : y + 1, x] = (*GOLD[0], 255)
         # ---- задние молнии (кольца по земле на вспышке нет с 2026-10-18 — просьба пользователя)
         back = np.zeros((FH, FW, 4), np.uint8)
         front_l = np.zeros((FH, FW, 4), np.uint8)
-        paint_bolts(back, [b for b in bolts if not b.front])
+        if slow > 1:
+            paint_bolts_slow(back, [(b, age) for b, age in alive if not b.front])
+        else:
+            paint_bolts(back, [b for b in bolts if not b.front])
         m = back[..., 3] > 0
         img[m] = back[m]
         # ---- слон: подсветка контура аурой, на вспышке — бело-голубой
-        body = (canvas if bodies is None else bodies(f)).copy()
+        body = (canvas if bodies is None else bodies(fs)).copy()
         rgb = body[..., :3].astype(float)
         if grow > 0 and under is None:
             k = 0.35 * grow
             rgb[rim] = rgb[rim] * (1 - k) + np.array(GOLD[0], float) * k
-        if f in (FLASH, FLASH + 1):
+        if FLASH <= t < FLASH + 2:
             k = 0.55 if f == FLASH else 0.25
+            if slow > 1:  # гаснет плавно: 0.55 → 0.25 → 0
+                k = float(np.interp(t, [FLASH, FLASH + 1, FLASH + 2], [0.55, 0.25, 0.0]))
             inner = sil & ~ring_edge
             rgb[inner] = rgb[inner] * (1 - k) + np.array(CYAN[1], float) * k
         body[..., :3] = rgb.astype(np.uint8)
@@ -299,23 +404,29 @@ def render(code, seed=7, bodies=None, under=None, length=None):
             img[loose, :3] = np.round(rgb[loose]).astype(np.uint8)
             img[loose, 3] = np.round(oa[loose, 0] * 255).astype(np.uint8)
         # ---- передние молнии, искры
-        paint_bolts(front_l, [b for b in bolts if b.front])
+        if slow > 1:
+            paint_bolts_slow(front_l, [(b, age) for b, age in alive if b.front])
+        else:
+            paint_bolts(front_l, [b for b in bolts if b.front])
         m = front_l[..., 3] > 0
         img[m] = front_l[m]
-        for b in bolts:  # вспышка на концах молний
-            if b.age == 0:
-                for x, y in b.ends:
-                    x, y = int(x), int(y)
-                    if 1 <= x < FW - 1 and 1 <= y < FH - 1 and not sil[y, x]:
-                        img[y, x - 1 : x + 2] = (*CYAN[1], 255)
-                        img[y - 1 : y + 2, x] = (*CYAN[1], 255)
-                        img[y, x] = (*CYAN[0], 255)
+        # вспышка на концах молний (замедленная: у начала — пока прорастает, у конца — как дорастёт)
+        flashes = [b.ends for b in bolts if b.age == 0] if slow == 1 else (
+            [b.ends[:1] for b, age in alive if age < GROW] + [b.ends[1:] for b, age in alive if GROW <= age < GROW + 2])
+        for ends in flashes:
+            for x, y in ends:
+                x, y = int(x), int(y)
+                if 1 <= x < FW - 1 and 1 <= y < FH - 1 and not sil[y, x]:
+                    img[y, x - 1 : x + 2] = (*CYAN[1], 255)
+                    img[y - 1 : y + 2, x] = (*CYAN[1], 255)
+                    img[y, x] = (*CYAN[0], 255)
         for p in sparks.items:
             x, y = int(p["x"]), int(p["y"])
             if 0 <= x < FW and 0 <= y < FH:
-                img[y, x] = (*CYAN[[0, 2, 4][min(p["age"], 2)]], 255)
+                img[y, x] = (*CYAN[[0, 2, 4][min(p["age"] // slow, 2)]], 255)
         sparks.step()
         frames.append(img)
+    render.timeline = timeline
     return frames
 
 

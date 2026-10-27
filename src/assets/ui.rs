@@ -10,7 +10,7 @@ use eframe::egui::{self, TextureHandle, TextureOptions, Vec2, vec2};
 
 use super::Pixels;
 use super::cards::{Sprite, rotsprite, sprite};
-use crate::game::{Color, Crest, Kind, Piece, Power};
+use crate::game::{Card, Chest, Color, Crest, Kind, Piece, Power};
 
 /// Кнопка «Конец хода» без тени; тень лежит в картинке справа и снизу.
 pub const BUTTON: Vec2 = vec2(53.0, 35.0);
@@ -20,6 +20,12 @@ pub const COIN: Vec2 = vec2(32.0, 32.0);
 pub const COIN_SMALL: Vec2 = vec2(16.0, 16.0);
 /// Гербы rogue-like из арт-проекта (`tools/breach_crest.py`), без тени.
 pub const CREST: Vec2 = vec2(49.0, 45.0);
+/// Сундуки магазина rogue-like (`tools/breach_chest.py`, с 0.110), без тени.
+pub const CHEST: Vec2 = vec2(46.0, 40.0);
+/// Большие сундуки (с 0.113).
+pub const BIG_CHEST: Vec2 = vec2(55.0, 46.0);
+/// Карты сил rogue-like (`tools/breach_power_cards.py`, с 0.111), без тени.
+pub const POWER_CARD: Vec2 = vec2(51.0, 70.0);
 /// Кадр огненной волны и центр верхней грани клетки фигуры в нём.
 pub const WAVE_FRAME: Vec2 = vec2(184.0, 168.0);
 pub const WAVE_CENTER: Vec2 = vec2(92.0, 98.0);
@@ -92,15 +98,17 @@ pub const LAVA_SPREAD: usize = 13;
 pub const LAVA_HOLD: [usize; 2] = [13, 17];
 pub const LAVA_IGNITE: usize = 17;
 pub const LAVA_WAVE_AT: usize = 21;
-/// Электричество в слоне усиленного компьютера (`tools/breach_arcs.py`, вариант «не гаснет»):
-/// кадр больше спрайта, точка опоры — центр клетки, по 60 мс. Вступление со вспышкой
+/// Электричество фигуры (с 0.116 — замедленное `electric_slow_*` из `tools/breach_spark_slow.py`:
+/// движение в `ELECTRIC_SLOW` раз медленнее, чем у `electric_hold`, кадров во столько же раз
+/// больше): кадр больше спрайта, точка опоры — центр клетки, по 60 мс. Вступление со вспышкой
 /// `ELECTRIC_FLASH`, потом без конца повторяются кадры `ELECTRIC_LOOP`.
-pub const ELECTRIC_FRAMES: usize = 24;
+pub const ELECTRIC_SLOW: usize = 3;
+pub const ELECTRIC_FRAMES: usize = 24 * ELECTRIC_SLOW;
 pub const ELECTRIC_FRAME_TIME: f64 = 0.06;
 pub const ELECTRIC_FIGURE: Vec2 = vec2(120.0, 120.0);
 pub const ELECTRIC_ANCHOR: Vec2 = vec2(60.0, 92.0);
-pub const ELECTRIC_FLASH: usize = 5;
-pub const ELECTRIC_LOOP: [usize; 2] = [8, 24];
+pub const ELECTRIC_FLASH: usize = 5 * ELECTRIC_SLOW;
+pub const ELECTRIC_LOOP: [usize; 2] = [8 * ELECTRIC_SLOW, 24 * ELECTRIC_SLOW];
 /// Вихрь воздушной фигуры (`tools/breach_wind.py`, с 0.67): кадр 120×120 с той же точкой
 /// опоры, что у электричества, 60 мс; вступление [0, 8), повтор [8, 40).
 pub const WIND_FRAMES: usize = 40;
@@ -160,88 +168,79 @@ const BUTTONS: [&[u8]; 10] = breach!(
 const BUTTON_STATES: usize = 5;
 /// Монеты: большая и маленькая.
 const COINS: [&[u8]; 2] = breach!("ui/coin_32.png", "ui/coin_16.png");
+/// Сундуки в порядке `Chest::ALL`.
+const CHESTS: [&[u8]; 6] = breach!(
+    "ui/chest_pieces.png",
+    "ui/chest_crests.png",
+    "ui/chest_cards.png",
+    "ui/chest_pieces_big.png",
+    "ui/chest_crests_big.png",
+    "ui/chest_cards_big.png"
+);
+/// Карты rogue-like в порядке `Card::ALL`: силы, потом маска, герб, две монеты, монета, зеркало,
+/// ранг, перо.
+const POWER_CARDS: [&[u8]; 15] = breach!(
+    "ui/card_fire.png",
+    "ui/card_spark.png",
+    "ui/card_wind.png",
+    "ui/card_gold.png",
+    "ui/card_shade.png",
+    "ui/card_ice.png",
+    "ui/card_barbarian.png",
+    "ui/card_wizard.png",
+    "ui/card_mask.png",
+    "ui/card_crest.png",
+    "ui/card_double.png",
+    "ui/card_coin.png",
+    "ui/card_mirror.png",
+    "ui/card_rank.png",
+    "ui/card_feather.png"
+);
 /// Гербы в порядке `Crest::ALL`.
-const CRESTS: [&[u8]; 80] = breach!(
+const CRESTS: [&[u8]; 43] = breach!(
     "ui/crest_heart.png",
-    "ui/crest_coin.png",
     "ui/crest_snow2.png",
-    "ui/crest_pawn.png",
-    "ui/crest_spikes.png",
     "ui/crest_crystal.png",
     "ui/crest_axe_sword.png",
     "ui/crest_axe_fangs.png",
-    "ui/crest_axe_queen.png",
-    "ui/crest_axes.png",
     "ui/crest_whirl.png",
     "ui/crest_fire_axe.png",
-    "ui/crest_flame_pawn.png",
     "ui/crest_flames.png",
     "ui/crest_flame_skull.png",
     "ui/crest_flame_sword.png",
-    "ui/crest_flame_coin.png",
     "ui/crest_bomb.png",
-    "ui/crest_dark_rook.png",
     "ui/crest_dark_skull.png",
     "ui/crest_dark_flames.png",
     "ui/crest_dark_portal.png",
-    "ui/crest_dark_coin.png",
     "ui/crest_dark_eye.png",
     "ui/crest_winds.png",
-    "ui/crest_wind_coin.png",
-    "ui/crest_wind_knight.png",
     "ui/crest_wind_sword.png",
-    "ui/crest_bolt_bishop.png",
-    "ui/crest_bolt_coin.png",
     "ui/crest_bolt_plus.png",
     "ui/crest_bolts.png",
     "ui/crest_red_bolt.png",
     "ui/crest_bolt_one.png",
-    "ui/crest_pawns2.png",
-    "ui/crest_bishops2.png",
-    "ui/crest_knights2.png",
-    "ui/crest_rooks2.png",
-    "ui/crest_queens2.png",
     "ui/crest_reroll_coin.png",
-    "ui/crest_hat_coin.png",
     "ui/crest_hats.png",
-    "ui/crest_hat_bishop.png",
     "ui/crest_meteor.png",
     "ui/crest_hat_meteor.png",
     "ui/crest_hat_plus.png",
     "ui/crest_gold_king.png",
-    "ui/crest_king_coin.png",
-    "ui/crest_kings2.png",
     "ui/crest_king_queen.png",
     "ui/crest_king_skull.png",
     "ui/crest_piggy.png",
-    "ui/crest_axe_flame.png",
-    "ui/crest_axe_bolt.png",
-    "ui/crest_axe_wind.png",
-    "ui/crest_axe_king.png",
-    "ui/crest_axe_dark.png",
-    "ui/crest_axe_snow.png",
-    "ui/crest_axe_hat.png",
-    "ui/crest_king_flame.png",
-    "ui/crest_king_bolt.png",
-    "ui/crest_king_wind.png",
-    "ui/crest_king_dark.png",
-    "ui/crest_king_snow.png",
-    "ui/crest_king_hat.png",
-    "ui/crest_hat_flame.png",
-    "ui/crest_hat_bolt.png",
-    "ui/crest_hat_wind.png",
-    "ui/crest_hat_dark.png",
-    "ui/crest_hat_snow.png",
-    "ui/crest_flame_snow.png",
-    "ui/crest_snow_bolt.png",
-    "ui/crest_snow_wind.png",
-    "ui/crest_snow_dark.png",
-    "ui/crest_flame_bolt.png",
-    "ui/crest_flame_wind.png",
-    "ui/crest_flame_dark.png",
-    "ui/crest_bolt_wind.png",
-    "ui/crest_bolt_dark.png",
-    "ui/crest_wind_dark.png",
+    "ui/crest_mult.png",
+    "ui/crest_king_mult.png",
+    "ui/crest_few.png",
+    "ui/crest_gold_mult.png",
+    "ui/crest_pawn_mult.png",
+    "ui/crest_knight_mult.png",
+    "ui/crest_sword_mult.png",
+    "ui/crest_first.png",
+    "ui/crest_queen_mult.png",
+    "ui/crest_flame_mult.png",
+    "ui/crest_snow_mult.png",
+    "ui/crest_bolt_mult.png",
+    "ui/crest_wind_mult.png",
 );
 /// Звенья s, m, l и наконечник — по состояниям `Aim` (idle, enemy, ally).
 const ARROW: [&[u8]; 12] = breach!(
@@ -435,18 +434,18 @@ const SPARK_STEP_IN_PNG: [&[u8]; 12] = breach!(
     "effects/spark/shadowstep_in_bK.png",
 );
 const FIRE_ELECTRIC_PNG: [&[u8]; 12] = breach!(
-    "effects/fire/electric_hold_wP.png",
-    "effects/fire/electric_hold_wN.png",
-    "effects/fire/electric_hold_wB.png",
-    "effects/fire/electric_hold_wR.png",
-    "effects/fire/electric_hold_wQ.png",
-    "effects/fire/electric_hold_wK.png",
-    "effects/fire/electric_hold_bP.png",
-    "effects/fire/electric_hold_bN.png",
-    "effects/fire/electric_hold_bB.png",
-    "effects/fire/electric_hold_bR.png",
-    "effects/fire/electric_hold_bQ.png",
-    "effects/fire/electric_hold_bK.png",
+    "effects/fire/electric_slow_wP.png",
+    "effects/fire/electric_slow_wN.png",
+    "effects/fire/electric_slow_wB.png",
+    "effects/fire/electric_slow_wR.png",
+    "effects/fire/electric_slow_wQ.png",
+    "effects/fire/electric_slow_wK.png",
+    "effects/fire/electric_slow_bP.png",
+    "effects/fire/electric_slow_bN.png",
+    "effects/fire/electric_slow_bB.png",
+    "effects/fire/electric_slow_bR.png",
+    "effects/fire/electric_slow_bQ.png",
+    "effects/fire/electric_slow_bK.png",
 );
 const FIRE_WIND_PNG: [&[u8]; 12] = breach!(
     "effects/fire/wind_wP.png",
@@ -519,18 +518,18 @@ const ICE_LAVA_PNG: [&[u8]; 12] = breach!(
     "effects/ice/lava_crack_bK.png",
 );
 const ICE_ELECTRIC_PNG: [&[u8]; 12] = breach!(
-    "effects/ice/electric_hold_wP.png",
-    "effects/ice/electric_hold_wN.png",
-    "effects/ice/electric_hold_wB.png",
-    "effects/ice/electric_hold_wR.png",
-    "effects/ice/electric_hold_wQ.png",
-    "effects/ice/electric_hold_wK.png",
-    "effects/ice/electric_hold_bP.png",
-    "effects/ice/electric_hold_bN.png",
-    "effects/ice/electric_hold_bB.png",
-    "effects/ice/electric_hold_bR.png",
-    "effects/ice/electric_hold_bQ.png",
-    "effects/ice/electric_hold_bK.png",
+    "effects/ice/electric_slow_wP.png",
+    "effects/ice/electric_slow_wN.png",
+    "effects/ice/electric_slow_wB.png",
+    "effects/ice/electric_slow_wR.png",
+    "effects/ice/electric_slow_wQ.png",
+    "effects/ice/electric_slow_wK.png",
+    "effects/ice/electric_slow_bP.png",
+    "effects/ice/electric_slow_bN.png",
+    "effects/ice/electric_slow_bB.png",
+    "effects/ice/electric_slow_bR.png",
+    "effects/ice/electric_slow_bQ.png",
+    "effects/ice/electric_slow_bK.png",
 );
 const ICE_WIND_PNG: [&[u8]; 12] = breach!(
     "effects/ice/wind_wP.png",
@@ -603,18 +602,18 @@ const WIZARD_LAVA_PNG: [&[u8]; 12] = breach!(
     "effects/wizard/lava_crack_bK.png",
 );
 const WIZARD_ELECTRIC_PNG: [&[u8]; 12] = breach!(
-    "effects/wizard/electric_hold_wP.png",
-    "effects/wizard/electric_hold_wN.png",
-    "effects/wizard/electric_hold_wB.png",
-    "effects/wizard/electric_hold_wR.png",
-    "effects/wizard/electric_hold_wQ.png",
-    "effects/wizard/electric_hold_wK.png",
-    "effects/wizard/electric_hold_bP.png",
-    "effects/wizard/electric_hold_bN.png",
-    "effects/wizard/electric_hold_bB.png",
-    "effects/wizard/electric_hold_bR.png",
-    "effects/wizard/electric_hold_bQ.png",
-    "effects/wizard/electric_hold_bK.png",
+    "effects/wizard/electric_slow_wP.png",
+    "effects/wizard/electric_slow_wN.png",
+    "effects/wizard/electric_slow_wB.png",
+    "effects/wizard/electric_slow_wR.png",
+    "effects/wizard/electric_slow_wQ.png",
+    "effects/wizard/electric_slow_wK.png",
+    "effects/wizard/electric_slow_bP.png",
+    "effects/wizard/electric_slow_bN.png",
+    "effects/wizard/electric_slow_bB.png",
+    "effects/wizard/electric_slow_bR.png",
+    "effects/wizard/electric_slow_bQ.png",
+    "effects/wizard/electric_slow_bK.png",
 );
 const WIZARD_WIND_PNG: [&[u8]; 12] = breach!(
     "effects/wizard/wind_wP.png",
@@ -687,18 +686,18 @@ const GOLD_LAVA_PNG: [&[u8]; 12] = breach!(
     "effects/gold/lava_crack_bK.png",
 );
 const GOLD_ELECTRIC_PNG: [&[u8]; 12] = breach!(
-    "effects/gold/electric_hold_wP.png",
-    "effects/gold/electric_hold_wN.png",
-    "effects/gold/electric_hold_wB.png",
-    "effects/gold/electric_hold_wR.png",
-    "effects/gold/electric_hold_wQ.png",
-    "effects/gold/electric_hold_wK.png",
-    "effects/gold/electric_hold_bP.png",
-    "effects/gold/electric_hold_bN.png",
-    "effects/gold/electric_hold_bB.png",
-    "effects/gold/electric_hold_bR.png",
-    "effects/gold/electric_hold_bQ.png",
-    "effects/gold/electric_hold_bK.png",
+    "effects/gold/electric_slow_wP.png",
+    "effects/gold/electric_slow_wN.png",
+    "effects/gold/electric_slow_wB.png",
+    "effects/gold/electric_slow_wR.png",
+    "effects/gold/electric_slow_wQ.png",
+    "effects/gold/electric_slow_wK.png",
+    "effects/gold/electric_slow_bP.png",
+    "effects/gold/electric_slow_bN.png",
+    "effects/gold/electric_slow_bB.png",
+    "effects/gold/electric_slow_bR.png",
+    "effects/gold/electric_slow_bQ.png",
+    "effects/gold/electric_slow_bK.png",
 );
 const GOLD_WIND_PNG: [&[u8]; 12] = breach!(
     "effects/gold/wind_wP.png",
@@ -771,18 +770,18 @@ const BARBARIAN_LAVA_PNG: [&[u8]; 12] = breach!(
     "effects/barbarian/lava_crack_bK.png",
 );
 const BARBARIAN_ELECTRIC_PNG: [&[u8]; 12] = breach!(
-    "effects/barbarian/electric_hold_wP.png",
-    "effects/barbarian/electric_hold_wN.png",
-    "effects/barbarian/electric_hold_wB.png",
-    "effects/barbarian/electric_hold_wR.png",
-    "effects/barbarian/electric_hold_wQ.png",
-    "effects/barbarian/electric_hold_wK.png",
-    "effects/barbarian/electric_hold_bP.png",
-    "effects/barbarian/electric_hold_bN.png",
-    "effects/barbarian/electric_hold_bB.png",
-    "effects/barbarian/electric_hold_bR.png",
-    "effects/barbarian/electric_hold_bQ.png",
-    "effects/barbarian/electric_hold_bK.png",
+    "effects/barbarian/electric_slow_wP.png",
+    "effects/barbarian/electric_slow_wN.png",
+    "effects/barbarian/electric_slow_wB.png",
+    "effects/barbarian/electric_slow_wR.png",
+    "effects/barbarian/electric_slow_wQ.png",
+    "effects/barbarian/electric_slow_wK.png",
+    "effects/barbarian/electric_slow_bP.png",
+    "effects/barbarian/electric_slow_bN.png",
+    "effects/barbarian/electric_slow_bB.png",
+    "effects/barbarian/electric_slow_bR.png",
+    "effects/barbarian/electric_slow_bQ.png",
+    "effects/barbarian/electric_slow_bK.png",
 );
 const BARBARIAN_WIND_PNG: [&[u8]; 12] = breach!(
     "effects/barbarian/wind_wP.png",
@@ -942,18 +941,18 @@ const WIND_PNG: [&[u8]; 12] = breach!(
     "effects/wind_bK.png",
 );
 const ELECTRIC_PNG: [&[u8]; 12] = breach!(
-    "effects/electric_hold_wP.png",
-    "effects/electric_hold_wN.png",
-    "effects/electric_hold_wB.png",
-    "effects/electric_hold_wR.png",
-    "effects/electric_hold_wQ.png",
-    "effects/electric_hold_wK.png",
-    "effects/electric_hold_bP.png",
-    "effects/electric_hold_bN.png",
-    "effects/electric_hold_bB.png",
-    "effects/electric_hold_bR.png",
-    "effects/electric_hold_bQ.png",
-    "effects/electric_hold_bK.png",
+    "effects/electric_slow_wP.png",
+    "effects/electric_slow_wN.png",
+    "effects/electric_slow_wB.png",
+    "effects/electric_slow_wR.png",
+    "effects/electric_slow_wQ.png",
+    "effects/electric_slow_wK.png",
+    "effects/electric_slow_bP.png",
+    "effects/electric_slow_bN.png",
+    "effects/electric_slow_bB.png",
+    "effects/electric_slow_bR.png",
+    "effects/electric_slow_bQ.png",
+    "effects/electric_slow_bK.png",
 );
 /// Контур звеньев по состояниям — им обводится повёрнутое звено.
 const ARROW_OUTLINE: [[u8; 3]; 3] = [[0x0d, 0x0f, 0x17], [0x1a, 0x05, 0x05], [0x06, 0x14, 0x1c]];
@@ -989,6 +988,8 @@ pub enum ArrowPart {
 pub struct UiArt {
     buttons: Vec<Pixels>,
     coins: Vec<Pixels>,
+    chests: Vec<Pixels>,
+    power_cards: Vec<Pixels>,
     crests: Vec<Pixels>,
     arrow: Vec<Pixels>,
     targets: Vec<Pixels>,
@@ -1149,6 +1150,8 @@ impl UiArt {
         UiArt {
             buttons: decode(&BUTTONS),
             coins: decode(&COINS),
+            chests: decode(&CHESTS),
+            power_cards: decode(&POWER_CARDS),
             crests: decode(&CRESTS),
             arrow: decode(&ARROW),
             targets: decode(&TARGETS),
@@ -1278,6 +1281,8 @@ impl UiArt {
             k,
             buttons: all("end-turn", &self.buttons),
             coins: all("coin", &self.coins),
+            chests: all("chest", &self.chests),
+            power_cards: all("power-card", &self.power_cards),
             crests: all("crest", &self.crests),
             targets: all("target", &self.targets),
             wave: all("fire-wave", &self.wave),
@@ -1389,6 +1394,8 @@ pub struct UiTextures {
     k: usize,
     buttons: Vec<TextureHandle>,
     coins: Vec<TextureHandle>,
+    chests: Vec<TextureHandle>,
+    power_cards: Vec<TextureHandle>,
     crests: Vec<TextureHandle>,
     targets: Vec<TextureHandle>,
     wave: Vec<TextureHandle>,
@@ -1421,6 +1428,17 @@ impl UiTextures {
     /// Монета: большая (`COIN`) или маленькая (`COIN_SMALL`).
     pub fn coin(&self, big: bool) -> &TextureHandle {
         &self.coins[usize::from(!big)]
+    }
+
+    /// Сундук магазина.
+    pub fn chest(&self, chest: Chest, big: bool) -> &TextureHandle {
+        &self.chests[chest as usize + if big { Chest::ALL.len() } else { 0 }]
+    }
+
+    /// Карта rogue-like.
+    pub fn rogue_card(&self, card: Card) -> &TextureHandle {
+        let i = Card::ALL.iter().position(|&c| c == card).unwrap_or(0);
+        &self.power_cards[i]
     }
 
     /// Герб (`CREST`).
@@ -1547,6 +1565,25 @@ mod tests {
             assert_eq!(
                 [image.width, image.height],
                 [CREST.x as usize, CREST.y as usize]
+            );
+        }
+        assert_eq!(art.power_cards.len(), Card::ALL.len());
+        for image in &art.power_cards {
+            assert_eq!(
+                [image.width, image.height],
+                [POWER_CARD.x as usize, POWER_CARD.y as usize]
+            );
+        }
+        assert_eq!(art.chests.len(), 2 * Chest::ALL.len());
+        for (i, image) in art.chests.iter().enumerate() {
+            let size = if i < Chest::ALL.len() {
+                CHEST
+            } else {
+                BIG_CHEST
+            };
+            assert_eq!(
+                [image.width, image.height],
+                [size.x as usize, size.y as usize]
             );
         }
         for (image, size) in art.coins.iter().zip([COIN, COIN_SMALL]) {

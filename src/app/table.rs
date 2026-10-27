@@ -18,21 +18,21 @@ use eframe::egui::{
 
 use super::{
     BattleChessApp, BoardGeom, Effect, Figure, Mark, PIXEL_WHITE, STATS_TIME, Sink, UV,
-    ease_in_out, ease_out, ease_out_back,
+    ease_in_out, ease_out, ease_out_back, paint,
 };
 use crate::assets::{
-    ANCHOR, ARROW_HEAD, ARROW_SPACING, Aim, ArrowPart, BIG_WAVE_CENTER, BIG_WAVE_FRAMES,
+    ANCHOR, ARROW_HEAD, ARROW_SPACING, Aim, ArrowPart, BIG_CHEST, BIG_WAVE_CENTER, BIG_WAVE_FRAMES,
     BLESS_FRAME_TIME, BLESS_FRAMES, BURN_CARD_AT, BURN_FRAME, BURN_FRAME_TIME, BURN_FRAMES, BUTTON,
-    Button, CARD, COIN, COIN_SMALL, COST_TINT, CREST, CardPic, DARK_LOOP, ELECTRIC_ANCHOR,
+    Button, CARD, CHEST, COIN, COIN_SMALL, COST_TINT, CREST, CardPic, DARK_LOOP, ELECTRIC_ANCHOR,
     ELECTRIC_FRAME_TIME, ELECTRIC_LOOP, EMBLEM_ZOOM, FREEZE_CENTER, FREEZE_CLINK, FREEZE_DELAY,
     FREEZE_FRAME_TIME, FREEZE_FRAMES, FrameSprite, GLYPH_HEIGHT, Glyph, LAVA_FRAME_TIME, LAVA_HOLD,
     POINTS_TINT, PORTAL_CENTER, PORTAL_FRAME, PORTAL_FRAME_TIME, PORTAL_FRAMES, PORTAL_SCALE,
-    PORTAL_SINK, SHADOW_SHIFT, SPRITE, Sprite, TARGET_PAD, TILE, Textures, WAVE_CENTER, WAVE_FRAME,
-    WAVE_FRAME_TIME, WAVE_FRAMES, WIND_LOOP, cost_corner,
+    PORTAL_SINK, POWER_CARD, SHADOW_SHIFT, SPRITE, Sprite, TARGET_PAD, TILE, Textures, WAVE_CENTER,
+    WAVE_FRAME, WAVE_FRAME_TIME, WAVE_FRAMES, WIND_LOOP, cost_corner,
 };
 use crate::game::{
-    Area, CRESTS, CardKind, CardPlay, Color, Crest, Event, Family, Heal, Piece, Points, Power,
-    Square, Status, Stock, WaveHit, crest_price, crest_reroll_cost, file_of, rank_of,
+    Area, Card, CardKind, CardPlay, ChestState, Color, Crest, Event, Family, Heal, Piece, Points,
+    Power, Square, Status, Stock, Ware, WaveHit, crest_sell_price, file_of, mult_text, rank_of,
 };
 use crate::sound::Sound;
 use crate::theme;
@@ -80,6 +80,11 @@ const POINTS_SPACING: f32 = 6.0;
 /// Число очков над знаком — вдвое крупнее цифры цены на карте, с отступом от знака.
 const POINTS_FONT: f32 = 2.0;
 const POINTS_RAISE: f32 = 4.0;
+/// Мульти (с 0.119): цвет чисел, отступ над числом золота и строка числа на гербе от его верха,
+/// пиксели арта.
+const MULT_RED: Color32 = Color32::from_rgb(0xff, 0x5a, 0x4a);
+const MULT_GAP: f32 = 6.0;
+const BADGE_TOP: f32 = 26.0;
 /// Взятая карта догоняет курсор: за 1/`FOLLOW` секунды проходит две трети пути —
 /// середина карты за доли секунды «прилипает» к курсору и дальше идёт за ним с
 /// лёгкой задержкой.
@@ -129,6 +134,8 @@ pub const TABLE_MAX: Vec2 = vec2(548.0, 410.0);
 /// полосы запаса у углов доски (своя — слева внизу, соперника — справа вверху).
 pub const VIEW_MIN: Vec2 = vec2(-64.0, -34.0);
 pub const VIEW_MAX: Vec2 = vec2(530.0, 370.0);
+/// В rogue-like (с 0.114) слева вписывается ещё колонка гербов (`CRESTS_AT`).
+pub const ROGUE_VIEW_MIN: Vec2 = vec2(-178.0, -34.0);
 
 /// Место за столом: своё — внизу справа, соперника — вверху слева.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -417,44 +424,59 @@ const GOLD_AT: Vec2 = vec2(484.0, 330.0);
 const MOVES_GAP: f32 = 3.0;
 /// Число ходов, когда они кончились.
 const MOVES_SPENT: Color32 = Color32::from_rgb(0xd8, 0x4a, 0x3a);
-/// Магазин после уровня — панель посреди доски: место фигуры, промежуток, поля, высота
-/// заголовка и кнопок, пиксели арта.
-const SHOP_SLOT: Vec2 = vec2(50.0, 72.0);
+/// Магазин после уровня — панель посреди доски: место товара (фигуры или герба), промежуток,
+/// поля, высота заголовка и кнопок, пиксели арта.
+const SHOP_SLOT: Vec2 = vec2(57.0, 72.0);
 const SHOP_GAP: f32 = 8.0;
 const SHOP_PAD: f32 = 10.0;
 const SHOP_TITLE: f32 = 18.0;
 const SHOP_BUTTON: f32 = 22.0;
+/// Мест в ряду прилавка; следующие — рядом ниже.
+const SHOP_ROW: usize = 6;
 /// Фигура на прилавке — в долю обычного размера; основание — так низко в ячейке.
 const SHOP_PIECE: f32 = 0.75;
 const SHOP_GROUND: f32 = 50.0;
 
+/// Кнопка «Конец хода» горит: фигурой сходили, ходить нечем или идёт расстановка.
+fn pos_ready(pos: &crate::game::Position, stuck: bool) -> bool {
+    pos.moved() || stuck || pos.planning()
+}
+
 /// Что под курсором в магазине.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ShopSpot {
+    /// Место прилавка: фигура или герб (с 0.108 — на одном прилавке).
     Offer(usize),
     Reroll,
     Leave,
-    /// Зона продажи слева от магазина: сюда перетаскивают фигуру из запаса.
+    /// Сундук под прилавком (с 0.110).
+    Chest(usize),
+    /// Место в открытом сундуке.
+    Pick(usize),
+    /// Зона продажи слева от магазина (с 0.112 снова): сюда перетаскивают фигуру из запаса.
     Sell,
-    /// Герб на прилавке гербов справа от магазина (с 0.77).
-    Crest(usize),
-    /// «Обновить» гербы.
-    CrestReroll,
 }
 
-/// Зона продажи (слева от магазина, с 0.66) — шириной в место прилавка с полями.
+/// Зона продажи — шириной в место прилавка с полями, пиксели арта.
 const SELL_WIDTH: f32 = 64.0;
+/// Кнопка продажи герба под гербом в колонке, пиксели арта.
+const CREST_SELL: Vec2 = vec2(74.0, 18.0);
 
-/// Гербы (rogue-like, с 0.77): место герба на прилавке и отступ картинки от его верха,
-/// пиксели арта.
-const CREST_SLOT: Vec2 = vec2(57.0, 72.0);
+/// Сундук на своём месте — отступ картинки от верха места, пиксели арта.
+const CHEST_TOP: f32 = 7.0;
+/// Рука карт сил (rogue-like, с 0.111) — в левом верхнем углу поля: левый верхний угол первой
+/// карты и промежуток, пиксели арта; выбранная карта приподнята.
+const POWER_HAND_AT: Vec2 = vec2(-62.0, -32.0);
+const POWER_HAND_GAP: f32 = 4.0;
+const POWER_HAND_LIFT: f32 = 5.0;
+
+/// Гербы (rogue-like, с 0.77): отступ картинки герба от верха места на прилавке, пиксели арта.
 const CREST_TOP: f32 = 4.0;
-/// Купленные гербы — в правом верхнем углу поля: поле от края и промежуток, пиксели экрана
-/// в долях масштаба арта.
-const CREST_MARGIN: f32 = 6.0;
+/// Купленные гербы (с 0.114) — колонкой слева от руки и запаса, где была левая панель: левый
+/// верхний угол первого герба, промежуток и гербов в ряду, пиксели арта; ряды идут вниз.
+const CRESTS_AT: Vec2 = vec2(-174.0, -32.0);
 const CREST_GAP: f32 = 4.0;
-/// Гербов в ряду в углу; следующие — рядом ниже.
-const CREST_ROW: usize = 6;
+const CREST_COLUMNS: usize = 2;
 /// Подсказка герба: ширина текста, поля, пиксели арта.
 const TIP_WIDTH: f32 = 150.0;
 const TIP_PAD: f32 = 5.0;
@@ -1609,35 +1631,65 @@ impl BattleChessApp {
 
     // ----- Rogue-like: золото и магазин -----
 
-    /// Панели магазина — фигуры и гербы справа от них — и места на них (пиксели арта). Вместе
-    /// с зоной продажи слева они стоят посреди доски.
-    fn shop_layout(&self) -> ([Rect; 2], Vec<(ShopSpot, Rect)>) {
+    /// Панель магазина посреди доски и места на ней (пиксели арта): прилавок рядами по
+    /// `SHOP_ROW`, под ним сундуки, ниже — «Обновить» и «Уйти». Открыт сундук — вместо этого
+    /// панель сундука с вещами на выбор.
+    fn shop_layout(&self) -> (Rect, Vec<(ShopSpot, Rect)>) {
         let pos = self.game.position();
-        let n = pos.offers().len().max(1) as f32;
-        let m = pos.crest_offers().len().max(1) as f32;
-        let width = n * SHOP_SLOT.x + (n - 1.0) * SHOP_GAP + 2.0 * SHOP_PAD;
-        let crest_width = m * CREST_SLOT.x + (m - 1.0) * SHOP_GAP + 2.0 * SHOP_PAD;
-        let height = SHOP_PAD + SHOP_TITLE + SHOP_SLOT.y + SHOP_GAP + SHOP_BUTTON + SHOP_PAD;
-        let total = SELL_WIDTH + SHOP_GAP + width + SHOP_GAP + crest_width;
-        let corner = Pos2::new(
-            MID.x - total / 2.0 + SELL_WIDTH + SHOP_GAP,
-            MID.y - height / 2.0,
-        );
-        let panel = Rect::from_min_size(corner, vec2(width, height));
-        let crests = Rect::from_min_size(
-            Pos2::new(panel.max.x + SHOP_GAP, panel.min.y),
-            vec2(crest_width, height),
+        let open = pos.chest_open();
+        let n = match open {
+            Some(chest) => pos.chest_wares(chest).len(),
+            None => pos.wares().len(),
+        }
+        .max(1);
+        let columns = n.min(SHOP_ROW) as f32;
+        let rows = n.div_ceil(SHOP_ROW) as f32;
+        let row_width = |k: f32| k * SHOP_SLOT.x + (k - 1.0) * SHOP_GAP;
+        let chests = pos.chests().len();
+        let width = row_width(columns.max(chests as f32)) + 2.0 * SHOP_PAD;
+        let height = if open.is_some() {
+            SHOP_PAD + SHOP_TITLE + rows * (SHOP_SLOT.y + SHOP_GAP) - SHOP_GAP + SHOP_PAD
+        } else {
+            SHOP_PAD + SHOP_TITLE + (rows + 1.0) * (SHOP_SLOT.y + SHOP_GAP) + SHOP_BUTTON + SHOP_PAD
+        };
+        let panel = Rect::from_min_size(
+            Pos2::new(MID.x - width / 2.0, MID.y - height / 2.0),
+            vec2(width, height),
         );
         let mut spots = Vec::new();
         let top = panel.min.y + SHOP_PAD + SHOP_TITLE;
-        for i in 0..n as usize {
-            let x = panel.min.x + SHOP_PAD + i as f32 * (SHOP_SLOT.x + SHOP_GAP);
-            spots.push((
-                ShopSpot::Offer(i),
-                Rect::from_min_size(Pos2::new(x, top), SHOP_SLOT),
-            ));
+        let first = panel.center().x - row_width(columns) / 2.0;
+        for i in 0..n {
+            let (row, col) = ((i / SHOP_ROW) as f32, (i % SHOP_ROW) as f32);
+            let at = Pos2::new(
+                first + col * (SHOP_SLOT.x + SHOP_GAP),
+                top + row * (SHOP_SLOT.y + SHOP_GAP),
+            );
+            let spot = if open.is_some() {
+                ShopSpot::Pick(i)
+            } else {
+                ShopSpot::Offer(i)
+            };
+            spots.push((spot, Rect::from_min_size(at, SHOP_SLOT)));
         }
-        let y = top + SHOP_SLOT.y + SHOP_GAP;
+        if open.is_some() {
+            return (panel, spots);
+        }
+        spots.push((
+            ShopSpot::Sell,
+            Rect::from_min_size(
+                Pos2::new(panel.min.x - SHOP_GAP - SELL_WIDTH, panel.min.y),
+                vec2(SELL_WIDTH, height),
+            ),
+        ));
+        // Сундуки — рядом посередине под прилавком.
+        let y = top + rows * (SHOP_SLOT.y + SHOP_GAP);
+        let left = panel.center().x - row_width(chests as f32) / 2.0;
+        for k in 0..chests {
+            let at = Pos2::new(left + k as f32 * (SHOP_SLOT.x + SHOP_GAP), y);
+            spots.push((ShopSpot::Chest(k), Rect::from_min_size(at, SHOP_SLOT)));
+        }
+        let y = y + SHOP_SLOT.y + SHOP_GAP;
         let half = (width - 2.0 * SHOP_PAD - SHOP_GAP) / 2.0;
         let left = panel.min.x + SHOP_PAD;
         spots.push((
@@ -1651,28 +1703,7 @@ impl BattleChessApp {
                 vec2(half, SHOP_BUTTON),
             ),
         ));
-        spots.push((
-            ShopSpot::Sell,
-            Rect::from_min_size(
-                Pos2::new(panel.min.x - SHOP_GAP - SELL_WIDTH, panel.min.y),
-                vec2(SELL_WIDTH, height),
-            ),
-        ));
-        for i in 0..m as usize {
-            let x = crests.min.x + SHOP_PAD + i as f32 * (CREST_SLOT.x + SHOP_GAP);
-            spots.push((
-                ShopSpot::Crest(i),
-                Rect::from_min_size(Pos2::new(x, top), CREST_SLOT),
-            ));
-        }
-        spots.push((
-            ShopSpot::CrestReroll,
-            Rect::from_min_size(
-                Pos2::new(crests.min.x + SHOP_PAD, y),
-                vec2(crest_width - 2.0 * SHOP_PAD, SHOP_BUTTON),
-            ),
-        ));
-        ([panel, crests], spots)
+        (panel, spots)
     }
 
     /// Место магазина под курсором.
@@ -1691,98 +1722,217 @@ impl BattleChessApp {
         let gold = pos.rogue().map_or(0, |r| r.gold);
         match spot {
             ShopSpot::Offer(i) => pos
-                .offers()
+                .wares()
                 .get(i)
                 .copied()
                 .flatten()
-                .is_some_and(|kind| pos.shop_price(kind) <= gold),
+                .is_some_and(|ware| pos.ware_price(ware) <= gold),
             ShopSpot::Reroll => pos.reroll_price() <= gold,
             ShopSpot::Leave => true,
-            ShopSpot::Sell => self.sell_drag.is_some(),
-            ShopSpot::Crest(i) => {
-                pos.crest_offers().get(i).copied().flatten().is_some() && crest_price() <= gold
+            ShopSpot::Chest(slot) => {
+                pos.chest_for_sale(slot) && pos.chest(slot).is_some_and(|o| o.price() <= gold)
             }
-            // Обновлять есть что, пока куплены не все гербы.
-            ShopSpot::CrestReroll => crest_reroll_cost() <= gold && pos.crests().len() < CRESTS,
+            ShopSpot::Pick(i) => pos
+                .chest_open()
+                .is_some_and(|chest| pos.chest_wares(chest).get(i).copied().flatten().is_some()),
+            ShopSpot::Sell => self.sell_drag.is_some(),
         }
     }
 
-    /// Купленные гербы в правом верхнем углу поля (пиксели экрана): первый — справа.
-    fn crest_corner(&self, board: &BoardGeom) -> Vec<(Crest, Rect)> {
-        let s = board.scale;
-        let size = CREST * s;
-        let right = board.area.max.x - CREST_MARGIN * s;
-        let top = board.area.min.y + CREST_MARGIN * s;
-        self.game
-            .position()
-            .crests()
+    /// Купленные гербы колонкой слева (пиксели экрана), по порядку покупки — по
+    /// `CREST_COLUMNS` в ряд сверху вниз. Не помещаются до низа поля — ряды сходятся и
+    /// наползают друг на друга (следующий рисуется поверх).
+    fn crest_column(&self, board: &BoardGeom) -> Vec<(Crest, Rect)> {
+        let crests = self.game.position().crests();
+        let rows = crests.len().div_ceil(CREST_COLUMNS);
+        let room = VIEW_MAX.y - CRESTS_AT.y - CREST.y;
+        let step = (CREST.y + CREST_GAP).min(room / rows.saturating_sub(1).max(1) as f32);
+        crests
             .into_iter()
             .enumerate()
             .map(|(i, crest)| {
-                let (row, col) = ((i / CREST_ROW) as f32, (i % CREST_ROW) as f32);
-                let x = right - size.x - col * (size.x + CREST_GAP * s);
-                let y = top + row * (size.y + CREST_GAP * s);
-                (
-                    crest,
-                    Rect::from_min_size(board.snap(Pos2::new(x, y)), size),
-                )
+                let (row, col) = ((i / CREST_COLUMNS) as f32, (i % CREST_COLUMNS) as f32);
+                let min = CRESTS_AT + vec2(col * (CREST.x + CREST_GAP), row * step);
+                let at = board.snap(board.art_to_screen(min));
+                (crest, Rect::from_min_size(at, CREST * board.scale))
             })
             .collect()
     }
 
-    /// Герб под курсором и его место на экране: купленный в углу или на прилавке магазина.
-    pub(super) fn crest_under(&self, board: &BoardGeom, pointer: Pos2) -> Option<(Crest, Rect)> {
-        if let Some(found) = self
-            .crest_corner(board)
+    /// Герб или карта силы под курсором и место на экране — для подсказки: купленный герб в
+    /// колонке, карта в руке, герб или карта на прилавке и в сундуке.
+    pub(super) fn crest_under(&self, board: &BoardGeom, pointer: Pos2) -> Option<(Ware, Rect)> {
+        if let Some((crest, rect)) = self
+            .crest_column(board)
             .into_iter()
+            .rev()
             .find(|(_, rect)| rect.contains(pointer))
         {
-            return Some(found);
+            return Some((Ware::Crest(crest), rect));
+        }
+        let at = board.to_art(pointer).to_pos2();
+        if let Some((_, card, rect)) = self
+            .hand_slots()
+            .into_iter()
+            .find(|(.., rect)| rect.contains(at))
+        {
+            return Some((
+                Ware::Card(card),
+                Rect::from_min_max(
+                    board.art_to_screen(rect.min.to_vec2()),
+                    board.art_to_screen(rect.max.to_vec2()),
+                ),
+            ));
         }
         if !self.shop_ready() {
             return None;
         }
-        let at = board.to_art(pointer).to_pos2();
-        let offers = self.game.position().crest_offers();
-        self.shop_layout()
-            .1
-            .into_iter()
-            .find_map(|(spot, rect)| match spot {
-                ShopSpot::Crest(i) if rect.contains(at) => Some((
-                    offers.get(i).copied().flatten()?,
+        let pos = self.game.position();
+        let wares = pos.wares();
+        let chest = pos
+            .chest_open()
+            .map(|c| pos.chest_wares(c))
+            .unwrap_or_default();
+        self.shop_layout().1.into_iter().find_map(|(spot, rect)| {
+            let ware = match spot {
+                ShopSpot::Offer(i) => wares.get(i),
+                ShopSpot::Pick(i) => chest.get(i),
+                _ => None,
+            };
+            match ware.copied().flatten().filter(|_| rect.contains(at))? {
+                ware @ (Ware::Crest(_) | Ware::Card(_)) => Some((
+                    ware,
                     Rect::from_min_max(
                         board.art_to_screen(rect.min.to_vec2()),
                         board.art_to_screen(rect.max.to_vec2()),
                     ),
                 )),
-                _ => None,
-            })
+                Ware::Piece(_) => None,
+            }
+        })
     }
 
-    /// Купленные гербы — в правом верхнем углу поля.
+    /// Купленные гербы — колонкой слева; выбранный на продажу — в золотой рамке, под ним —
+    /// кнопка «Продать» с ценой.
     fn paint_crests(&self, painter: &Painter, board: &BoardGeom, tex: &Textures) {
-        for (crest, rect) in self.crest_corner(board) {
+        let s = board.scale;
+        for (index, (crest, rect)) in self.crest_column(board).into_iter().enumerate() {
             painter.image(tex.ui.crest(crest).id(), rect, UV, Color32::WHITE);
+            self.paint_crest_badge(painter, tex, rect, crest);
+            if self.crest_sell == Some(index) && self.crest_sell_spot(board).is_some() {
+                painter.rect_stroke(
+                    rect.expand(s),
+                    CornerRadius::ZERO,
+                    Stroke::new(s, Color32::from_rgb(0xff, 0xe2, 0x7a)),
+                    StrokeKind::Inside,
+                );
+            }
+        }
+        if let Some((_, rect)) = self.crest_sell_spot(board) {
+            let edge = if self.crest_sell_hover {
+                Color32::from_rgb(0xff, 0xe2, 0x7a)
+            } else {
+                Color32::from_rgb(0xd0, 0x7d, 0x1c)
+            };
+            self.shop_plate(painter, board, rect, self.crest_sell_hover, edge);
+            let center = rect.center().to_vec2();
+            painter.text(
+                board.art_to_screen(vec2(rect.min.x + 23.0, center.y)),
+                Align2::CENTER_CENTER,
+                "Продать",
+                FontId::new(7.0 * s, theme::bold()),
+                theme::TEXT_BRIGHT,
+            );
+            self.paint_price(
+                painter,
+                board,
+                tex,
+                vec2(rect.max.x - 16.0, center.y),
+                crest_sell_price(),
+                theme::GOLD,
+            );
         }
     }
 
-    /// Подсказка герба под курсором: название и что он даёт — на плашке под его местом
-    /// (не помещается — над ним), в пределах поля.
+    /// Место в списке гербов (`Position::crests`) герба колонки под курсором (экранные точки);
+    /// наползающие — верхний.
+    pub(super) fn column_crest_under(&self, board: &BoardGeom, pointer: Pos2) -> Option<usize> {
+        self.crest_column(board)
+            .into_iter()
+            .enumerate()
+            .rev()
+            .find(|(_, (_, rect))| rect.contains(pointer))
+            .map(|(index, _)| index)
+    }
+
+    /// Кнопка продажи выбранного герба (пиксели арта) — под ним, пока магазин ждёт.
+    pub(super) fn crest_sell_spot(&self, board: &BoardGeom) -> Option<(usize, Rect)> {
+        let index = self.crest_sell?;
+        if !self.shop_ready() || !self.game.position().can_sell() {
+            return None;
+        }
+        let (_, rect) = *self.crest_column(board).get(index)?;
+        // Под гербом от его левого края, но не правее колонки (не заходит на руку карт).
+        let right = CRESTS_AT.x + CREST_COLUMNS as f32 * (CREST.x + CREST_GAP) - CREST_GAP;
+        let (left, bottom) = (board.to_art(rect.min).x, board.to_art(rect.max).y);
+        let min = Pos2::new(left.min(right - CREST_SELL.x), bottom + 2.0);
+        Some((index, Rect::from_min_size(min, CREST_SELL)))
+    }
+
+    /// Rogue-like: фигуру `stock` из запаса на месте `seat` можно продать — магазин ждёт, запас
+    /// свой и она готова.
+    pub(super) fn reserve_sellable(&self, seat: Seat, stock: Stock) -> bool {
+        let pos = self.game.position();
+        self.shop_ready()
+            && pos.can_sell()
+            && self.human_to_move()
+            && pos
+                .rogue()
+                .is_some_and(|r| r.player == self.seat_color(seat))
+            && pos
+                .reserve(self.seat_color(seat))
+                .iter()
+                .any(|&(s, ready, _)| s == stock && ready > 0)
+    }
+
+    /// Подсказка герба или карты силы под курсором: название и что даёт — на плашке под его
+    /// местом (не помещается — над ним), в пределах поля.
     fn paint_crest_tip(&self, painter: &Painter, board: &BoardGeom) {
-        let Some((crest, anchor)) = self.crest_hover else {
+        let Some((ware, anchor)) = self.crest_hover else {
             return;
+        };
+        let (name, description) = match ware {
+            Ware::Crest(crest) => {
+                // Гербы с числами складываются (с 0.124): сколько таких уже есть.
+                let mut text = crest.description();
+                if crest.stacks() {
+                    let count = self.game.position().crest_count(crest);
+                    text += &match count {
+                        0 => " Складывается: можно купить ещё.".to_owned(),
+                        n => format!(" Складывается: можно купить ещё (у вас — {n})."),
+                    };
+                }
+                (crest.title().to_owned(), text)
+            }
+            Ware::Card(card) => {
+                let mut text = card.description();
+                // Маска: во что превратится сейчас.
+                if card == Card::Mask {
+                    text += &match self.game.position().last_card() {
+                        Some(last) => format!(" Сейчас — {}.", last.title().to_lowercase()),
+                        None => " Карт ещё не играли.".to_owned(),
+                    };
+                }
+                (card.title().to_owned(), text)
+            }
+            Ware::Piece(stock) => (stock.name(), String::new()),
         };
         let s = board.scale;
         let pad = TIP_PAD * s;
         let wrap = TIP_WIDTH * s;
-        let title = painter.layout(
-            crest.title().to_owned(),
-            FontId::new(8.0 * s, theme::bold()),
-            theme::GOLD,
-            wrap,
-        );
+        let title = painter.layout(name, FontId::new(8.0 * s, theme::bold()), theme::GOLD, wrap);
         let text = painter.layout(
-            crest.description(),
+            description,
             FontId::new(7.0 * s, theme::bold()),
             theme::TEXT_BRIGHT,
             wrap,
@@ -1794,14 +1944,19 @@ impl BattleChessApp {
         let size = inner + Vec2::splat(2.0 * pad);
         let area = board.area;
         let below = anchor.max.y + 3.0 * s;
-        let y = if below + size.y <= area.max.y {
-            below
+        let (x, y) = if self.crest_column(board).iter().any(|&(_, r)| r == anchor) {
+            // Герб колонки — подсказка справа от него, не закрывая соседние гербы.
+            let y = anchor.min.y.min(area.max.y - size.y).max(area.min.y);
+            (anchor.max.x + 3.0 * s, y)
+        } else if below + size.y <= area.max.y {
+            (anchor.center().x - size.x / 2.0, below)
         } else {
-            anchor.min.y - 3.0 * s - size.y
+            (
+                anchor.center().x - size.x / 2.0,
+                anchor.min.y - 3.0 * s - size.y,
+            )
         };
-        let x = (anchor.center().x - size.x / 2.0)
-            .min(area.max.x - size.x)
-            .max(area.min.x);
+        let x = x.min(area.max.x - size.x).max(area.min.x);
         let rect = Rect::from_min_size(board.snap(Pos2::new(x, y)), size);
         painter.rect_filled(
             rect.translate(vec2(2.0, 3.0) * s),
@@ -1833,21 +1988,6 @@ impl BattleChessApp {
             text,
             theme::TEXT_BRIGHT,
         );
-    }
-
-    /// Rogue-like: фигуру `stock` из запаса на месте `seat` можно продать — открыт магазин,
-    /// запас свой и она готова.
-    pub(super) fn reserve_sellable(&self, seat: Seat, stock: Stock) -> bool {
-        let pos = self.game.position();
-        self.shop_ready()
-            && self.human_to_move()
-            && pos
-                .rogue()
-                .is_some_and(|r| r.player == self.seat_color(seat))
-            && pos
-                .reserve(self.seat_color(seat))
-                .iter()
-                .any(|&(s, ready, _)| s == stock && ready > 0)
     }
 
     /// Плашка в стиле ячеек запаса: тень, тёмный контур, заливка и кромка.
@@ -1941,6 +2081,39 @@ impl BattleChessApp {
     }
 
     /// Золото игрока справа снизу: большая монета, число над ней.
+    /// Число герба мульти (с 0.119) — «+2», «×1.5» из баланса — пиксельным шрифтом под знаком;
+    /// `rect` — картинка герба на экране.
+    fn paint_crest_badge(&self, painter: &Painter, tex: &Textures, rect: Rect, crest: Crest) {
+        let Some(badge) = self.game.position().crest_badge(crest) else {
+            return;
+        };
+        let text = paint(&Glyph::text(&badge), MULT_RED);
+        let px = rect.width() / CREST.x;
+        let width = self.text_width(&text) * px;
+        let corner = Pos2::new(rect.center().x - width / 2.0, rect.min.y + BADGE_TOP * px);
+        self.pixel_text(painter, tex, corner, px, &text);
+    }
+
+    /// Мульти игрока (с 0.119) — над золотом: «×1», «×2.25».
+    fn paint_mult(&self, painter: &Painter, board: &BoardGeom, tex: &Textures) {
+        let pos = self.game.position();
+        if pos.rogue().is_none() {
+            return;
+        }
+        let text = paint(
+            &Glyph::text(&format!("×{}", mult_text(pos.mult()))),
+            MULT_RED,
+        );
+        let px = board.scale * POINTS_FONT;
+        let width = self.text_width(&text) * px;
+        let top = GOLD_AT.y - POINTS_RAISE - 2.0 * GLYPH_HEIGHT * POINTS_FONT - MULT_GAP;
+        let mut corner =
+            board.art_to_screen(vec2(GOLD_AT.x + COIN.x / 2.0, top)) - vec2(width / 2.0, 0.0);
+        // Длинное число — не правее поля (справа — панель).
+        corner.x = corner.x.min(board.art_to_screen(VIEW_MAX).x - width);
+        self.pixel_text(painter, tex, corner, px, &text);
+    }
+
     pub(super) fn paint_gold(&self, painter: &Painter, board: &BoardGeom, tex: &Textures) {
         let Some(r) = self.game.position().rogue() else {
             return;
@@ -1960,31 +2133,45 @@ impl BattleChessApp {
         self.pixel_text(painter, tex, corner, px, &text);
     }
 
-    /// Магазин после уровня: фигуры на прилавке с ценами, «Обновить» и «Уйти».
+    /// Магазин после уровня: фигуры и гербы на прилавке с ценами, под ними сундуки, «Обновить»
+    /// (с ценой — растёт с каждым обновлением) и «Уйти»; открыт сундук — его вещи на выбор.
     fn paint_shop(&self, painter: &Painter, board: &BoardGeom, tex: &Textures) {
         let pos = self.game.position();
         if !self.shop_ready() {
             return;
         }
         let s = board.scale;
-        let ([panel, crests], spots) = self.shop_layout();
-        for (rect, title, edge) in [
-            (panel, "МАГАЗИН", Color32::from_rgb(0x8a, 0x45, 0x10)),
-            (crests, "ГЕРБЫ", Color32::from_rgb(0x2f, 0x6f, 0x8a)),
-        ] {
-            self.shop_plate(painter, board, rect, false, edge);
-            let title_at = board.art_to_screen(vec2(rect.center().x, rect.min.y + SHOP_PAD + 6.0));
-            painter.text(
-                title_at,
-                Align2::CENTER_CENTER,
-                title,
-                FontId::new(10.0 * s, theme::bold()),
-                theme::GOLD,
-            );
-        }
-        let offers = pos.offers();
-        let crest_offers = pos.crest_offers();
-        let player = pos.rogue().map_or(Color::White, |r| r.player);
+        let (panel, spots) = self.shop_layout();
+        let open = pos.chest_open();
+        self.shop_plate(
+            painter,
+            board,
+            panel,
+            false,
+            Color32::from_rgb(0x8a, 0x45, 0x10),
+        );
+        let title = match open.and_then(|slot| pos.chest(slot)) {
+            Some(offer) => {
+                let left = offer.picks() - usize::from(offer.taken);
+                let what = match left {
+                    1 => "одно".to_owned(),
+                    n => n.to_string(),
+                };
+                format!("{} · выберите {what}", offer.title().to_uppercase())
+            }
+            None => "МАГАЗИН".to_owned(),
+        };
+        let title_at = board.art_to_screen(vec2(panel.center().x, panel.min.y + SHOP_PAD + 6.0));
+        painter.text(
+            title_at,
+            Align2::CENTER_CENTER,
+            title,
+            FontId::new(10.0 * s, theme::bold()),
+            theme::GOLD,
+        );
+        let wares = pos.wares();
+        let chest = open.map(|c| pos.chest_wares(c)).unwrap_or_default();
+        let dim = Color32::from_rgb(0x6c, 0x76, 0x8a);
         for (spot, rect) in spots {
             let usable = self.shop_usable(spot);
             let hovered = usable && self.shop_hover == Some(spot);
@@ -1997,97 +2184,74 @@ impl BattleChessApp {
             };
             self.shop_plate(painter, board, rect, hovered, edge);
             let center = rect.center().to_vec2();
+            let tint = if usable {
+                Color32::WHITE
+            } else {
+                Color32::from_white_alpha(110)
+            };
+            let price_tint = if usable { theme::GOLD } else { theme::RED };
+            let note = |text: &str| {
+                painter.text(
+                    board.art_to_screen(center),
+                    Align2::CENTER_CENTER,
+                    text,
+                    FontId::new(7.0 * s, theme::bold()),
+                    dim,
+                );
+            };
             match spot {
                 ShopSpot::Offer(i) => {
-                    let Some(kind) = offers.get(i).copied().flatten() else {
-                        painter.text(
-                            board.art_to_screen(center),
-                            Align2::CENTER_CENTER,
-                            "куплено",
-                            FontId::new(7.0 * s, theme::bold()),
-                            Color32::from_rgb(0x6c, 0x76, 0x8a),
-                        );
+                    let Some(ware) = wares.get(i).copied().flatten() else {
+                        note("куплено");
                         continue;
                     };
-                    let ground = board.art_to_screen(vec2(center.x, rect.min.y + SHOP_GROUND));
-                    let sprite = Rect::from_min_size(
-                        board.snap(ground - ANCHOR * s * SHOP_PIECE),
-                        SPRITE * s * SHOP_PIECE,
-                    );
-                    let tint = if usable {
-                        Color32::WHITE
-                    } else {
-                        Color32::from_white_alpha(110)
-                    };
-                    let cell = Rect::from_min_max(
-                        board.art_to_screen(rect.min.to_vec2()),
-                        board.art_to_screen(rect.max.to_vec2()),
-                    )
-                    .shrink(s);
-                    self.paint_stock(painter, tex, player, kind, sprite, cell, tint);
-                    let price_tint = if usable { theme::GOLD } else { theme::RED };
+                    self.paint_ware(painter, board, tex, rect, ware, tint);
                     self.paint_price(
                         painter,
                         board,
                         tex,
                         vec2(center.x, rect.max.y - 11.0),
-                        pos.shop_price(kind),
+                        pos.ware_price(ware),
                         price_tint,
                     );
                 }
-                ShopSpot::Crest(i) => {
-                    let Some(crest) = crest_offers.get(i).copied().flatten() else {
-                        painter.text(
-                            board.art_to_screen(center),
-                            Align2::CENTER_CENTER,
-                            "куплен",
-                            FontId::new(7.0 * s, theme::bold()),
-                            Color32::from_rgb(0x6c, 0x76, 0x8a),
-                        );
+                ShopSpot::Pick(i) => {
+                    // Цены нет — вещь ниже, посередине места; карта — во всё место.
+                    if let Some(ware) = chest.get(i).copied().flatten() {
+                        let shift = if matches!(ware, Ware::Card(_)) {
+                            1.0
+                        } else {
+                            8.0
+                        };
+                        let lower = rect.translate(vec2(0.0, shift));
+                        self.paint_ware(painter, board, tex, lower, ware, tint);
+                    }
+                }
+                ShopSpot::Chest(slot) => {
+                    let Some(offer) = pos.chest(slot) else {
                         continue;
                     };
+                    if offer.state == ChestState::Taken {
+                        note("открыт");
+                        continue;
+                    }
+                    // Большой — крупнее и выше: дно на той же линии.
+                    let size = if offer.big { BIG_CHEST } else { CHEST };
+                    let top = rect.min.y + CHEST_TOP + CHEST.y - size.y;
                     let picture = Rect::from_min_size(
-                        board.snap(board.art_to_screen(vec2(
-                            center.x - (CREST.x / 2.0).floor(),
-                            rect.min.y + CREST_TOP,
-                        ))),
-                        CREST * s,
+                        board.snap(
+                            board.art_to_screen(vec2(center.x - (size.x / 2.0).floor(), top)),
+                        ),
+                        size * s,
                     );
-                    let tint = if usable {
-                        Color32::WHITE
-                    } else {
-                        Color32::from_white_alpha(110)
-                    };
-                    painter.image(tex.ui.crest(crest).id(), picture, UV, tint);
+                    painter.image(tex.ui.chest(offer.kind, offer.big).id(), picture, UV, tint);
                     self.paint_price(
                         painter,
                         board,
                         tex,
                         vec2(center.x, rect.max.y - 11.0),
-                        crest_price(),
-                        if usable { theme::GOLD } else { theme::RED },
-                    );
-                }
-                ShopSpot::CrestReroll => {
-                    let label_at = board.art_to_screen(vec2(rect.min.x + 26.0, center.y));
-                    painter.text(
-                        label_at,
-                        Align2::CENTER_CENTER,
-                        "Обновить",
-                        FontId::new(8.0 * s, theme::bold()),
-                        if usable {
-                            theme::TEXT_BRIGHT
-                        } else {
-                            Color32::from_rgb(0x6c, 0x76, 0x8a)
-                        },
-                    );
-                    self.paint_price(
-                        painter,
-                        board,
-                        tex,
-                        vec2(rect.max.x - 17.0, center.y),
-                        crest_reroll_cost(),
-                        if usable { theme::GOLD } else { theme::RED },
+                        offer.price(),
+                        price_tint,
                     );
                 }
                 ShopSpot::Reroll => {
@@ -2097,20 +2261,15 @@ impl BattleChessApp {
                         Align2::CENTER_CENTER,
                         "Обновить",
                         FontId::new(8.0 * s, theme::bold()),
-                        if usable {
-                            theme::TEXT_BRIGHT
-                        } else {
-                            Color32::from_rgb(0x6c, 0x76, 0x8a)
-                        },
+                        if usable { theme::TEXT_BRIGHT } else { dim },
                     );
-                    let tint = if usable { theme::GOLD } else { theme::RED };
                     self.paint_price(
                         painter,
                         board,
                         tex,
                         vec2(rect.max.x - 17.0, center.y),
                         pos.reroll_price(),
-                        tint,
+                        price_tint,
                     );
                 }
                 ShopSpot::Leave => {
@@ -2146,7 +2305,7 @@ impl BattleChessApp {
                                 Align2::CENTER_CENTER,
                                 "перетащите\nфигуру\nиз запаса",
                                 FontId::new(6.0 * s, theme::bold()),
-                                Color32::from_rgb(0x8c, 0x96, 0xaa),
+                                dim,
                             );
                         }
                     }
@@ -2155,6 +2314,7 @@ impl BattleChessApp {
         }
         // Фигура, которую несут на продажу, — под курсором.
         if let Some((stock, at)) = self.sell_drag {
+            let player = pos.rogue().map_or(Color::White, |r| r.player);
             let size = SPRITE * s * SHOP_PIECE;
             let rect = Rect::from_min_size(board.snap(at - size / 2.0), size);
             self.paint_stock(
@@ -2166,6 +2326,145 @@ impl BattleChessApp {
                 painter.clip_rect(),
                 Color32::WHITE,
             );
+        }
+    }
+
+    /// Вещь магазина или сундука на месте `rect` (пиксели арта): фигура — уменьшенным
+    /// спрайтом (с анимацией силы), герб — картинкой.
+    fn paint_ware(
+        &self,
+        painter: &Painter,
+        board: &BoardGeom,
+        tex: &Textures,
+        rect: Rect,
+        ware: Ware,
+        tint: Color32,
+    ) {
+        let s = board.scale;
+        let center = rect.center().to_vec2();
+        match ware {
+            Ware::Piece(stock) => {
+                let player = self
+                    .game
+                    .position()
+                    .rogue()
+                    .map_or(Color::White, |r| r.player);
+                let ground = board.art_to_screen(vec2(center.x, rect.min.y + SHOP_GROUND));
+                let sprite = Rect::from_min_size(
+                    board.snap(ground - ANCHOR * s * SHOP_PIECE),
+                    SPRITE * s * SHOP_PIECE,
+                );
+                let cell = Rect::from_min_max(
+                    board.art_to_screen(rect.min.to_vec2()),
+                    board.art_to_screen(rect.max.to_vec2()),
+                )
+                .shrink(s);
+                self.paint_stock(painter, tex, player, stock, sprite, cell, tint);
+            }
+            Ware::Crest(crest) => {
+                let picture = Rect::from_min_size(
+                    board.snap(board.art_to_screen(vec2(
+                        center.x - (CREST.x / 2.0).floor(),
+                        rect.min.y + CREST_TOP,
+                    ))),
+                    CREST * s,
+                );
+                painter.image(tex.ui.crest(crest).id(), picture, UV, tint);
+                self.paint_crest_badge(painter, tex, picture, crest);
+            }
+            Ware::Card(card) => {
+                // Карта во всё место: в сундуке её не сдвигают вниз (`Pick` — на 8).
+                let picture =
+                    Rect::from_min_size(
+                        board.snap(board.art_to_screen(vec2(
+                            center.x - (POWER_CARD.x / 2.0).floor(),
+                            rect.min.y,
+                        ))),
+                        POWER_CARD * s,
+                    );
+                painter.image(tex.ui.rogue_card(card).id(), picture, UV, tint);
+            }
+        }
+    }
+
+    // ----- Rogue-like: карты сил в руке -----
+
+    /// Карты в руке (место, карта, прямоугольник в пикселях арта): в левом верхнем углу поля,
+    /// выбранная приподнята.
+    pub(super) fn hand_slots(&self) -> Vec<(usize, Card, Rect)> {
+        self.game
+            .position()
+            .hand()
+            .into_iter()
+            .enumerate()
+            .map(|(i, card)| {
+                let lift = if self.power_pick == Some(i) {
+                    POWER_HAND_LIFT
+                } else {
+                    0.0
+                };
+                let min = POWER_HAND_AT + vec2(i as f32 * (POWER_CARD.x + POWER_HAND_GAP), -lift);
+                (i, card, Rect::from_min_size(min.to_pos2(), POWER_CARD))
+            })
+            .collect()
+    }
+
+    /// Карта руки под курсором.
+    pub(super) fn hand_under(&self, board: &BoardGeom, pointer: Pos2) -> Option<usize> {
+        let at = board.to_art(pointer).to_pos2();
+        self.hand_slots()
+            .into_iter()
+            .find(|(.., rect)| rect.contains(at))
+            .map(|(i, ..)| i)
+    }
+
+    /// Карту с места `slot` можно сыграть сейчас (`Position::card_ready`) — и магазин её ждёт.
+    pub(super) fn hand_usable(&self, slot: usize) -> bool {
+        let pos = self.game.position();
+        self.human_to_move()
+            && (!pos.shop_open() || self.shop_ready())
+            && pos
+                .hand()
+                .get(slot)
+                .is_some_and(|&card| pos.card_ready(card))
+    }
+
+    /// Рука карт сил: тень, карта (нельзя сыграть — притушена), выбранная — в золотой рамке,
+    /// под курсором — в светлой.
+    fn paint_hand(&self, painter: &Painter, board: &BoardGeom, tex: &Textures) {
+        let s = board.scale;
+        for (i, card, rect) in self.hand_slots() {
+            let screen = Rect::from_min_size(
+                board.snap(board.art_to_screen(rect.min.to_vec2())),
+                POWER_CARD * s,
+            );
+            let usable = self.hand_usable(i);
+            painter.rect_filled(
+                screen.translate(vec2(2.0, 3.0) * s),
+                CornerRadius::ZERO,
+                Color32::from_black_alpha(77),
+            );
+            let tint = if usable {
+                Color32::WHITE
+            } else {
+                Color32::from_gray(150)
+            };
+            painter.image(tex.ui.rogue_card(card).id(), screen, UV, tint);
+            let edge = if self.power_pick == Some(i) {
+                Some(Color32::from_rgb(0xff, 0xe2, 0x7a))
+            } else if usable && self.power_hover == Some(i) {
+                Some(Color32::from_rgb(0xd0, 0x7d, 0x1c))
+            } else {
+                None
+            };
+            if let Some(edge) = edge {
+                painter.rect_stroke(
+                    screen.expand(s),
+                    CornerRadius::ZERO,
+                    Stroke::new(s, edge),
+                    StrokeKind::Inside,
+                );
+            }
         }
     }
 
@@ -2190,9 +2489,12 @@ impl BattleChessApp {
             Button::Pressed
         } else if self.button_hover {
             Button::Hover
-        } else {
-            // Фигурой уже сходили: осталась только карта — пора заканчивать ход.
+        } else if pos_ready(self.game.position(), self.game.legal_moves().is_empty()) {
+            // Фигурой уже сходили (или ходить нечем, или расстановка) — пора заканчивать ход.
             Button::Ready
+        } else {
+            // С 0.111 закончить ход можно и не сходив — кнопка просто не горит.
+            Button::Normal
         }
     }
 
@@ -2230,7 +2532,9 @@ impl BattleChessApp {
             );
         }
         self.paint_reserve(painter, board, tex);
+        self.paint_hand(painter, board, tex);
         self.paint_gold(painter, board, tex);
+        self.paint_mult(painter, board, tex);
         self.paint_crests(painter, board, tex);
         self.paint_shop(painter, board, tex);
         self.paint_crest_tip(painter, board);

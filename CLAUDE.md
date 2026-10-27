@@ -290,7 +290,7 @@ PATH (`C:\Program Files\Git\cmd`, `C:\Program Files\GitHub CLI`). В репоз�
   `rogue_knight_hp` (`Rule::RogueKnightHp` = 3 единицы; у пользователя в `[piece.Knight]` стоит 2):
   `crested` теперь и разница с обычным здоровьем коня в `bonus_hp` (вызывается в `rogue_start`,
   `spawn_wave`, `take_stock` обоих видов запаса, `begin_planning`, превращении пешки), справка и
-  «Ударов до убийства» — по `Position::kind_max_hp`. Кристалл замораживает на `frozen` = 1:
+  «Ударов до убийства» — по `Position::kind_max_hp` (с 0.114 — `rogue_max_hp` в `app.rs`). Кристалл замораживает на `frozen` = 1:
   фигура во льду до конца хода соперника, к своему ходу оттаивает и ходит.
   **0.79** (просьба пользователя): ядовитые фигуры волн — `Piece::venom`, выходят в `spawn_wave` на
   уровне `Rule::RoguePoisonLevel` (2) с шансом `RoguePoisonPercent` (50). Удар ядовитой по выжившей
@@ -564,6 +564,261 @@ PATH (`C:\Program Files\Git\cmd`, `C:\Program Files\GitHub CLI`). В репоз�
   `Grave::venom` — восстаёт ядовитым. Спрайты — `tools/breach_poison_zombie.py`
   (`pieces/poison_zombie/`, `POISON_ZOMBIE_*`, в `piece_body`/`piece_shadow` раньше ядовитых); лужи-анимации
   у них нет (`poison_frame` — `None` у зомби), след шага остаётся.
+  **0.108** (просьба пользователя): rogue-like — основной режим. Обычной партии против компьютера
+  нет: «Начать играть» в меню → `new_rogue_game` (`Choice::Rogue`/`Choice::Boost` убраны); `new_game`,
+  `Setup`/`Opponent`/`SideChoice`, `Thinking`, `coin_flip` и `src/ai.rs` удалены (`make_turn` —
+  только для тестов); компьютер (волны) кончает ход сам через `COMPUTER_DELAY` (`computer_since` в
+  `drive_computer`); в левой панели «Новая партия» — «Взятие» и «Начать заново»; правила панели —
+  `rules()` (rogue-like, числа из баланса). Мультиплеер (классическая партия) остался. Усиленного
+  компьютера нет: `Position::boost`/`boosted`/`charge_lava`, `Piece::lava`, `TurnEnd::charged`,
+  `Game::boost`, `show_boost`, `Settings::boosted` (строка `boosted=` старого settings.ini молча
+  пропускается) убраны; `lava_blasts` — только огненные, `explode(center, us)` без `raw`,
+  `blast_area`/`wide_blast` без `crested`. Магазин: фигуры и гербы на одном прилавке —
+  `Rogue::wares: [Option<Ware>; SHOP_MAX]` (`SHOP_MAX` = 8, `Ware::{Piece(Stock), Crest(Crest)}`,
+  `Position::wares`, в тестах `offers()` — только фигуры), мест `Rule::RogueShopSlots` (6), на каждом
+  фигура с шансом `RogueShopPiecePercent` (25), иначе герб (разные, из некупленных; кончились —
+  фигура): `roll_shop` (xorshift64*: у простого xorshift младшие биты соседних чисел связаны — выбор
+  «фигура или герб» сдвигал доли видов); `buy(slot)` — и фигура, и герб (`ware_price`); обновление —
+  `reroll_price` = `RogueRerollCost` (5; с гербом монеты и обновления — `RogueCrestRerollCoinCost`) +
+  `RogueRerollStep` (1) × `Rogue::rerolls` (обнуляется в `begin_planning`). Убраны `crest_offers`,
+  `roll_crests`, `buy_crest`, `reroll_crests`, `RogueAction::{Sell, RerollCrests}`, продажа (`sell`,
+  `sell_price`, зона, `sell_drag`, `reserve_sellable`), герб `Crest::KingCoin` (`CRESTS` = 79,
+  картинка убрана из `CRESTS` в `assets/ui.rs`, файл остался), правила `lava_pawns`,
+  `rogue_gold_sell_percent`, `rogue_crest_slots`, `rogue_crest_reroll_cost` (в `RETIRED_RULES`).
+  Интерфейс — одна панель «МАГАЗИН» посреди доски (`shop_layout` → `(Rect, места)`, `SHOP_SLOT`
+  57×72, по `SHOP_ROW` = 6 в ряд, `ShopSpot::{Offer, Reroll, Leave}`), подсказка герба — и на
+  прилавке (`crest_under`). Выставление в rogue-like: не больше `Rule::RogueDropsPerTurn` (1) за ход
+  (`Position::drops`, `drops_left`; расстановку не считает), пока своих фигур на доске меньше
+  `RogueMaxPieces` (16, `board_room`; и в расстановке — полная армия выставлять не даёт), только на
+  две первые горизонтали (`drop_squares` → `arrange_fits`, пешка — на вторую). Первый уровень: у
+  фигур волн здоровья меньше на `RogueFirstLevelHpCut` (1 ед., не меньше единицы; в `crested`, не у
+  босса). Маги — метеорит раз в `RogueWizardEvery` (2) своих ходов: `Piece::rest` (после метеорита —
+  every − 1, каждый следующий свой конец хода −1; только что выставленный и замёрзший не копят), в
+  карточке фигуры справа — «Метеорит — в конце хода / через ход». Особые фигуры, могилы и кратеры
+  движутся и в покое — `idle_animation` (кадр раз в 30 мс; раньше в rogue-like их двигал только
+  курсор). В `balance.ini` пользователя `rogue_shop_slots` 3 → 6, `rogue_reroll_cost` 2 → 5, строки
+  удалённых правил убраны, новые дописаны; копия — `balance.ini.before-0.108`.
+  **0.109** (просьбы пользователя): мест в магазине снова 3 (`RogueShopSlots`; в `balance.ini`
+  пользователя 6 → 3, копия `balance.ini.before-0.109`). Особая пешка превращается в особую фигуру:
+  `Piece::new(kind, us).with(pawn)` + `crested` в `make_move` и `advance_to` (раньше — обычная).
+  Очередь ударов — по горизонталям сверху вниз, в каждой слева направо: a8, b8, …, h8, a7, …, h1
+  (`strike_queue`, `strike_order`; ею же идут взрывы огненных и метеориты магов, она же —
+  последний ключ выбора цели).
+  **0.110** (просьба пользователя): сундуки магазина — `Chest::{Pieces, Crests}` (`ALL`, `title`),
+  `chest_price` (`Rule::RogueChestPiecesPrice` 15, `RogueChestCrestsPrice` 20), на выбор
+  `chest_choices` (`RogueChestChoices` 3, массивы `CHEST_MAX` = 5). В `Rogue`: `chest_wares`
+  [сундук][место] (`Ware`), `chests: [ChestState; 2]` (`Closed`/`Open`/`Taken`). `roll_chests` в
+  `begin_planning` (до `roll_shop`, зерно и уровень; обновление не трогает): фигуры — разные, по
+  весам прилавка (`stock_weights`, `draw_stock`, случайность `shop_random` — xorshift64*), гербы —
+  разные некупленные; `roll_shop` не кладёт на прилавок гербы сундука. `open_chest` (платить,
+  `Open`; пока открыт — `buy`/`reroll`/`leave_shop`/второй сундук — нельзя), `take_from_chest(slot)`
+  (`receive` — общая выдача фигуры или герба, сундук `Taken` и пуст); `RogueAction::{OpenChest,
+  TakeFromChest}`, `Game::open_chest`/`take_from_chest`, `Position::chest_open`/`chest_state`/
+  `chest_wares`/`chest_for_sale`. Интерфейс: под прилавком — два места сундуков
+  (`ShopSpot::Chest`, картинка `CHEST` 46×40 из нашего `tools/breach_chest.py`:
+  `ui/chest_pieces.png` — дерево, железо, золотая пешка; `ui/chest_crests.png` — бордо, золото,
+  щит; `UiTextures::chest`), открытый сундук — панель «СУНДУК … · выберите одно» (`ShopSpot::Pick`,
+  `paint_ware`), подсказка герба — и там.
+  **0.111** (просьбы пользователя): конец хода без хода фигурой — `Game::can_end_turn` = не конец
+  партии и не магазин (кнопка горит янтарным только после хода, `pos_ready` в `table.rs`). Гербов
+  объединения нет (28 вариантов `Crest` с `AxeFlame` по `WindDark`, `unlocks`, `combo_open`; `CRESTS`
+  = 51, их картинки убраны из `CRESTS` в `assets/ui.rs`): в `stock_weights` все пары `COMBOS` сами,
+  вместе — `Rule::RogueComboWeightPercent` (25) от всех одиночных особых того же вида (поровну на пару:
+  вес × доля × число одиночных / число пар, с множителями обеих сил; маг-пешки нет);
+  `SPECIAL_POWERS` — восемь сил по порядку. Карты сил: `Ware::Card(Power)`, `Chest::Cards`
+  (`Rule::RogueChestCardsPrice` 15; `chests`/`chest_wares` — на 3 сундука; в `roll_chests` — разные
+  силы поровну; купить, пока в руке есть место), рука `Rogue::hand: [Option<Power>; ROGUE_HAND_MAX]`
+  (5; держат `hand_size` = `Rule::RogueHandSize` 3; `receive` кладёт карту), `Position::hand`,
+  `cards_playable` (ход игрока, не расстановка и не магазин), `power_card_targets(power)` (своя, не
+  король/босс, не объединённая, без этой силы, маг — не пешка), `play_power_card(slot, sq)` →
+  `Piece::with_power` + `crested`, рука сдвигается; `RogueAction::PlayCard { power, square, piece }`
+  («Сыграна карта огня на g1: теперь это …»), `Game::play_power_card`; `Power::card_title`/
+  `card_description`. Интерфейс (`table.rs`): рука — в левом верхнем углу поля (`POWER_HAND_AT`,
+  `hand_slots`/`hand_under`/`hand_usable`/`paint_hand`, выбранная приподнята на `POWER_HAND_LIFT` и в
+  золотой рамке), в `app.rs` — `power_pick`/`power_hover`/`picked_power`: щелчок по карте выбирает,
+  цели — `Marker::Move` (в `is_target`), щелчок по цели играет (`press`); подсказка — `crest_hover`
+  теперь `(Ware, Rect)` (гербы и карты, `paint_crest_tip`); в сундуке карта во всё место
+  (`paint_ware`). Арт — наши `tools/breach_power_cards.py` (`ui/card_<fire|spark|wind|gold|shade|ice|
+  barbarian|wizard>.png`, 51×70: рамка тёмного металла с золотыми уголками и ромбами, поле в цвет
+  силы, знак из `breach_crest.crest(знак, bare=True)` — у `crest` для этого режим без щита; новый знак
+  `axe` — один топор) и третий сундук `ui/chest_cards.png` (`breach_chest.py`: синий, серебро, на
+  крышке — карта с красным ромбом); `POWER_CARD`, `UiTextures::power_card`. В `balance.ini`
+  пользователя `rogue_combo_weight_percent` 100 → 25, копия `balance.ini.before-0.111`.
+  **0.112** (просьбы пользователя): продажа снова — `Position::sell`/`Game::sell`, `sell_price`
+  (обычная такая же в магазине, золотая × `Rule::RogueGoldSellPercent` 200, снова не в
+  `RETIRED_RULES`), `can_sell` (магазин, сундук не открыт), `RogueAction::Sell`; зона `ShopSpot::Sell`
+  слева от панели (`SELL_WIDTH`), `sell_drag` и `reserve_sellable` в приложении — как в 0.107. Продажа
+  гербов — `sell_crest` (`crest_sell_price` = `Rule::RogueCrestSellPrice` 5, гербы сдвигаются, фигуры
+  `crested` заново), `RogueAction::SellCrest`; в магазине щелчок по гербу в углу (`corner_crest_under`)
+  выбирает его (`crest_sell`, золотая рамка), под ним кнопка «Продать» с ценой (`crest_sell_spot`,
+  `CREST_SELL`, `crest_sell_hover`). Карты — `Card { Power(Power), Mask, Crest, Double, Coin, Mirror,
+  Rank, Feather }` (`ALL` — 15, `title`/`description`/`picks`), `Ware::Card(Card)`, рука
+  `[Option<Card>; …]`, `Rogue::{last_card, card_rolls}`. В сундуке карт — разные, поровну, зеркало —
+  `Rule::RogueRareCardPercent` (30) от обычной (`draw_card`). `Position::card_ready` (карты на фигуры
+  — `cards_playable` и есть цели, остальные — свой ход, сундук не открыт), `card_squares(card, first)`
+  (силы — `power_card_targets`, ранг — свои не король/ферзь/босс, `next_rank`; зеркало — свои не
+  король, у которых есть образец `mirror_templates`: другой вид или силы, пешкой — не на первой и
+  последней), `use_card(slot, targets)` (маска → `last_card` на её место; остальные уходят из руки и
+  становятся `last_card`; герб — случайный некупленный, сперва не с прилавка и не из сундука,
+  `card_random`; две монеты — ×2; монета — `sell_total`; перо — две `draw_card` кроме пера),
+  `CardUse` в `RogueAction::PlayCard`, описание — `card_text`; `Game::use_card`. `receive` герба
+  убирает его с прилавка и из сундуков. Приложение: `click_card` (без целей — сразу, иначе выбор),
+  зеркало — `mirror_from` (первая фигура в рамке, потом образец), `picked_card`/`card_squares`,
+  подсказка маски — «Сейчас — …». Карты в магазине тоже кликаются (только готовые). Арт — наш
+  `tools/breach_power_cards.py`: `ui/card_<mask|crest|double|coin|mirror|rank|feather>.png` (знаки
+  `sym_*` нарисованы в генераторе: маска, щит со звездой, две `coin_24`, `coin_32`, ручное зеркало,
+  зелёная стрелка, перо), `UiTextures::rogue_card(card)` по `Card::ALL`.
+  **0.112.1** (просьба пользователя): десятичная база — атака 10, здоровье 30 и т. д. Внутренние числа
+  прежние (`UNIT` = 300 — одна «старая» единица, тесты считают в ней), показ и файл — в очках
+  `balance::POINT` = `UNIT` / 10: `shown`, `to_file`, `from_file` (старое правило «число от 100 —
+  прежний файл» убрано). Правила здоровья и урона rogue-like в `balance.ini` — в очках: в коде
+  `rule(…).clamp(0, 999) * POINT`, стандартные ×10 (`rogue_knight_hp` 30, `rogue_boss_hp` 100, …);
+  «не меньше одной единицы» — по-прежнему `UNIT`. `balance.ini` пользователя переведён (атака и
+  здоровье фигур, `lava_damage` и эти правила ×10), копия `balance.ini.before-0.112.1`; файл друга на
+  Mac переводить вручную тем же способом.
+  **0.113** (просьба пользователя): в магазине два сундука, бывают большие. `Rogue::chests:
+  [Option<ChestOffer>; CHEST_SLOTS]` (3; в магазине — `chest_slots` = `Rule::RogueChestSlots` 2) вместо
+  `chest_wares`/`chests` по видам; `ChestOffer { kind, big, state, taken, wares }` (`title` «Большой
+  сундук фигур», `choices`, `picks`, `price`, `wares`). `roll_chests` → `roll_chests_with(forced)`:
+  разные виды в случайном порядке, большой — с шансом `RogueBigChestPercent` (30); у большого
+  `RogueBigChestChoices` (5) на выбор, берут `RogueBigChestPicks` (2), цена × `RogueBigChestPricePercent`
+  (200). API по месту: `chests`, `chest(slot)`, `chest_wares(slot)`, `chest_open` → место,
+  `chest_for_sale(slot)` (сундук карт — пока в руке есть место на все `picks`), `open_chest(slot)`,
+  `take_from_chest(item)` (взятое — `None`, `taken` +1; набрали `picks` — `Taken`);
+  `RogueAction::OpenChest { chest, big, price }`. В тестах — `set_chests(&[(вид, большой)])`.
+  Интерфейс: `ShopSpot::Chest(место)`, ряд сундуков по их числу, большой — `BIG_CHEST` 55×46 (дно на
+  той же линии), заголовок открытого — «… · выберите N». Арт — `tools/breach_chest.py`: `chest(kind,
+  big)`, `ui/chest_<вид>_big.png` (шире и выше, золотые уголки, красные камни на полосах),
+  `UiTextures::chest(kind, big)`.
+  **0.114** (просьбы пользователя): левой панели партии нет (`show_reference`, «Справка»,
+  `reference_panel`, `new_game_section` убраны). В главном меню — кнопки «Настройки» и «Правила»
+  (`Screen::{Settings, Rules}`, `Choice::{Settings, Rules}`, `settings_screen`/`rules_screen` в
+  `menu.rs`; содержимое egui в плашке — `panel`: рамка как у кнопок, внутри `ScrollArea`; Esc —
+  назад): настройки — `settings_section`, правила — `rules_section` (список `rules()`) слева,
+  `stats_section` и `damage_section` справа, здоровье — `rogue_max_hp` (rogue-like всегда;
+  `Position::kind_max_hp` теперь только для тестов). На месте панели — купленные гербы: колонка
+  слева от руки и запаса (`crest_column` в `table.rs`, `CRESTS_AT` = (−174, −32), по
+  `CREST_COLUMNS` = 2 в ряд, не помещаются до `VIEW_MAX.y` — ряды сходятся, попадание — с
+  последнего), в rogue-like вписывается `ROGUE_VIEW_MIN` = (−178, −34) (`board_area`); кнопка
+  «Продать» — под гербом, не правее колонки; подсказка герба колонки — справа от него;
+  `corner_crest_under` → `column_crest_under`. Фигуры волн уровня — все усиленные своего вида:
+  `rogue_<poison|armor|vampire|zombie|armored_vampire|venom_zombie>_percent` = 100 (в
+  `balance.ini` пользователя 50 → 100, копия `balance.ini.before-0.114`); на 1-м уровне и с 8-го
+  вида нет — обычные.
+  **0.115** (просьба пользователя): электричество фигуры в покое вдвое медленнее —
+  `SPARK_FRAME_TIME` = 2 × `ELECTRIC_FRAME_TIME` (120 мс) в `spark_frame` и в запасе/магазине
+  (`paint_stock`); вспышка удара и другие силы (вихрь, аура, в том числе их полосы у объединённых с
+  молнией) — по-прежнему 60 мс.
+  **0.116** (просьба пользователя: ещё в полтора раза медленнее, но так же плавно, как до замедлений):
+  `SPARK_FRAME_TIME` убран, кадр снова 60 мс, а полосы — замедленные `electric_slow_*` (все 12 фигур и
+  основы `barbarian`/`gold`/`wizard`/`ice`/`fire`) из нашего `tools/breach_spark_slow.py`:
+  `breach_arcs.render(..., slow=3, length=72)` — у `render` новый `slow` (с 1 кадры байт-в-байт
+  прежние): аура течёт по пикселю за кадр, рост ауры и вспышка тела плавные, молнии и искорки ауры
+  выпадают раз в `slow` кадров теми же бросками зерна, искры летят медленнее; `bodies(f)`/`under(f)` —
+  по настоящему кадру (у огненной трещины мерцают с прежней скоростью). В игре `ELECTRIC_SLOW` = 3:
+  `ELECTRIC_FRAMES` 72, `ELECTRIC_FLASH` 15, `ELECTRIC_LOOP` [24, 72]; вспышка удара — кадры
+  `ELECTRIC_FLASH + ELECTRIC_SLOW × (0..3)` по 60 мс (прежняя скорость), сдвиг повтора по клетке ×3.
+  Старые `electric_hold_*` остаются (арт-проект и превью объединённых).
+  **0.117** (пользователь: «молния всё равно не плавная» — молнии появлялись разом раз в 3 кадра и
+  стояли): в `render` при `slow` > 1 каждая молния — `Bolt::born`/`span` — в свой кадр внутри шага
+  (второе зерно `seed + 991`, вспышка — разом), первые `GROW` = 2 кадра прорастает от начала
+  (`Bolt::prefix`), потом гаснет ступенями (`paint_bolts_slow`: яркая до 45% жизни, голубая до 75%,
+  тёмно-голубая); вспышка на концах — у начала, пока растёт, у конца — когда доросла; искорки ауры
+  тоже вразнобой. Повтор сшит: полоса считается дважды (`_wrap`, `render.timeline`) — молнии конца
+  повтора догорают в его начале, молнии вступления в повтор не переходят. Полосы `electric_slow_*`
+  перерисованы тем же `tools/breach_spark_slow.py`, код игры не менялся.
+  **0.118** (просьба пользователя): убраны все гербы скидок и частоты фигур — `Crest::{Coin, Pawn,
+  AxeQueen, Axes, FlamePawn, FlameCoin, DarkRook, DarkCoin, WindCoin, WindKnight, BoltBishop, BoltCoin,
+  Pawns, Bishops, Knights, Rooks, Queens, HatCoin, HatBishop, Kings2}` (`CRESTS` = 31, их картинки
+  убраны из `CRESTS` в `assets/ui.rs`, файлы остались), их правила — в `RETIRED_RULES` (из
+  `balance.ini` пользователя строки удалены, копия `balance.ini.before-0.118`). `Position::shop_price`
+  = свободная `shop_price`; `power_percent` и `paired` убраны — в `stock_weights` их множители
+  стали постоянными ×100 (веса и броски прилавка без гербов прежние). Герб монеты и обновления
+  (`RerollCoin`) остался — он об обновлении, не о фигурах.
+  **0.119** (просьба пользователя): мульти. Урон удара фигуры игрока — `Position::strike_damage` =
+  атака × `Position::mult()`, до целого очка (`POINT`), не больше `MAX_DAMAGE_POINTS`; у фигур волн —
+  атака. `mult()` — свёртка гербов в порядке покупки от 1: `Crest::Mult` — `m + mult_add()`
+  (`Rule::RogueCrestMultAddPercent` 200, в сотых), `Crest::KingMult` — `m × king_mult()^king_hits`
+  (`Rule::RogueCrestKingMultPercent` 150); не больше `MAX_MULT`. `Rogue::king_hits` — удары короля
+  игрока (не толстосума) в этом бою: `count_king_hit` после удара в `strike` и в раундах `strike_all`
+  (круговой не считается); обнуляется в `begin_planning`. Мульти берут: обычный удар, повторы, удар
+  тени насквозь (`DarkSkull`), разлёт молнии (`SparkPercent` от урона удара); круговой удар,
+  взрывы, метеориты, яд — нет. Гербы — `CRESTS` = 33, картинки `ui/crest_<mult|king_mult>.png` из
+  `tools/breach_crest.py` (меч / малый король вверху, низ пустой), число на них пишет игра —
+  `Crest::badge` («+2», «×1.5», `mult_text`), `paint_crest_badge` (в колонке и на прилавке, строка
+  `BADGE_TOP` = 26). Мульти игрока — над числом золота (`paint_mult`, `MULT_RED`), в карточке фигуры
+  «Атака 10 × 2.25 = 23», на табличке атаки — урон. Шрифт: `Glyph::{Times, Dot}` (`*`, `.`),
+  `Glyph::text`.
+  **0.120** (просьба пользователя): **правило** — удары короля и все прибавки к мульти от ударов или
+  временных эффектов действуют до конца хода, если пользователь не уточнит иначе: `end_turn_mult` в
+  `end_turn` после ударов, взрывов, метеоритов, яда и `death_blasts` обнуляет `Rogue::king_hits`
+  (новые такие счётчики сбрасывать там же). Предела урона нет: `MAX_MULT`/`MAX_DAMAGE_POINTS`
+  убраны, `strike_damage` насыщается только на `i32::MAX` (~71 млн очков; `as` у f64), проценты от
+  урона — `percent_of` (через i64: молния, шипы, оборона), суммы урона в нотации — `damage_sum`.
+  **0.121** (просьба пользователя): гербы мульти и мульти у взрывов и метеоритов. Мульти — по фигуре
+  и виду урона: `mult_for(attacker, from, Blow)` (`Blow::{Strike, Blast, Meteor}`), свёртка гербов
+  по порядку покупки; `damage(from, attacker, blow)` — урон фигуры игрока (у волн — атака);
+  `strike_damage(piece)` и `piece_mult(piece)` — для глаз (без первой бьющей), `mult()` — общее
+  (над золотом, без гербов отдельных фигур и взрыва). Счёт хода — `Rogue::turn: TurnCounts`
+  (`king_hits`, `pawn_hits`, `knight_hits`, `queen_hits`, `blasts`, `meteors`, `jumped`, маска
+  `struck`, `first`), копит `note_blow` (удары — в `strike` и раундах `strike_all`, кроме кругового;
+  взрывы — `explode`; метеориты — `meteors`; прыжки теней — `make_move`, `shade_passed`), сброс —
+  `end_turn_mult` и `begin_planning`; `advance_to` переносит `struck`/`first`. Новые гербы
+  (`CRESTS` = 41): `FewMult` (× (`RogueCrestFewBase` 16 − своих на доске), не меньше ×1 — выбор
+  пользователя), `GoldMult` (золотым + золото), `PawnMult` (×1.5^удары пешек), `KnightMult` (коням
+  +1 × удары коней), `SwordMult` (×1.2^ударившие раньше), `FirstStrike` (первой фигуре, нанёсшей
+  урон, +10), `QueenMult` (+3 × удары ферзя), `FlameMult` (×1.5^взрывы), `SnowMult` (×2^замёрзшие,
+  все на доске — выбор пользователя); числа — `Rule::RogueCrest*Percent` в сотых. Изменены: `AxeSword`
+  — варварам ×2 (атаки сверху и `bonus_attack` в `crested` больше нет, −здоровье осталось),
+  `FlameSword` — взрыву +2 (выбор пользователя: «сделать мульти-гербом»), `Bomb` — взрыву ×2 (и
+  задевает своих), `Meteor` — первому метеориту в ходу +10, `DarkSkull` — +3 за каждую фигуру, через
+  которую прошли теневые (удара насквозь, `Outcome::passed` и его анимации больше нет). Взрыв —
+  `explode(center, piece)`, урон `damage(.., Blast)` (`fire_damage` убран), метеорит — урон мага
+  (`Blow::Meteor`), кратер — `Position::crater_damage` (урон упавшего метеорита). Герб снежинки и
+  шипов убран (`Strike::thorns`, `Strike::wounded` — теперь `hits`). Правила `lava_damage` (с ним —
+  `rule_in_units`), `rogue_crest_spikes_percent`, `rogue_crest_axe_attack`, `rogue_wizard_damage`,
+  `rogue_crest_flame_sword_damage`, `rogue_crest_bomb_damage`, `rogue_crest_meteor_damage`,
+  `rogue_crest_crater_damage` — в `RETIRED_RULES` (из `balance.ini` пользователя удалены, копия
+  `balance.ini.before-0.121`). Числа на гербах — `Position::crest_badge` (у `FewMult` и `GoldMult` —
+  сколько дают сейчас). Картинки — `tools/breach_crest.py`: `few`, `gold_mult`, `pawn_mult`,
+  `knight_mult`, `sword_mult`, `first`, `queen_mult`, `flame_mult`, `snow_mult` (вверху слева знак —
+  король, пешка, конь, меч, ферзь, малый огонёк, снежинка; справа красный `TIMES` 9×9, `SIXTEEN` или
+  `ONE`; низ — под число), превью `preview_crest_mults2.png`.
+  **0.122** (просьбы пользователя): здоровье фигур волн растёт по уровням — `Piece::tough` (уровень −
+  1, ставят `spawn_wave` и `rise_zombies`), `max_hp` и здоровье восставшего — через `Piece::scaled`
+  (× `Rule::RogueLevelHpPercent` / 100 = 5 за уровень, насыщается на `i32::MAX`; уровень 10 — ×5⁹),
+  «армия: N HP» в панели — сумма с насыщением. Цены: герб — 10 (`RogueCrestPrice`), объединённая — ×2
+  от обычной, как одиночные особые (`RogueComboPercent` 200), сундуки фигур/гербов/карт — 10/15/10
+  (большие ×200% — 20/30/20, на 10 дешевле прежних). В `balance.ini` пользователя заменено, копия
+  `balance.ini.before-0.122`.
+  **0.123** (просьбы пользователя): сундук гербов — 10 (`RogueChestCrestsPrice`, большой — 20);
+  круговой удар варвара бьёт уроном самой фигуры (`damage(.., Strike)`, в счёт ударов хода не
+  идёт), правило `rogue_crest_whirl_damage` — в `RETIRED_RULES` (в `balance.ini` пользователя
+  удалено, цена заменена, копия `balance.ini.before-0.123`). **Список гербов для пользователя —
+  `Гербы.txt` в корне** (название и описание каждого, числа стандартного баланса; пишет
+  `crest_list_text` в `game/tests.rs`). После любой правки гербов (новый, другое описание или
+  число) — `cargo test --release refresh_crest_list -- --ignored`; тест `crest_list_is_up_to_date`
+  падает, если файл устарел.
+  **0.124** (просьбы пользователя): гербы `Crest::{BoltMult, WindMult}` (`CRESTS` = 43; картинки
+  `ui/crest_<bolt_mult|wind_mult>.png` — малая молния / малый смерч и красный «×»): молнии — мульти
+  + `RogueCrestBoltAddPercent` (500) за каждую фигуру перед задетой в цепочке (`Blow::Spark(до неё)`;
+  в `strike_raw` у источников молнии — глубина цепочки, цель — 1), воздушным — + `RogueCrestWindAddPercent`
+  (500) × `TurnCounts::wind_moves` (ходы воздушных игрока за ход, в `make_move`). Здоровье волн — ×4
+  за уровень (`RogueLevelHpPercent` 400). Гербы складываются (`Crest::stacks`: все мульти, сердце,
+  двойная снежинка (+1 ход за копию), топор и меч, топор и клыки, огненный топор, огонь и меч, бомба,
+  теневой огонь и череп, две шляпы (+1 метеорит за копию), метеорит, король, король и ферзь, копилка):
+  `Rogue::crests` — `[Option<Crest>; CREST_SLOTS]` (64), `crest_count`/`crest_times` (числа × копии в
+  `crested`, `barbarian_repeats`, `strike_raw`, `strike`, `meteors`, `piggy_bank`), мульти — каждая
+  копия в свёртке. Доступность — `crest_available` (место есть и герб складывается или его нет):
+  `roll_shop`, `roll_chests`, `buy`, `take_from_chest`, карта герба; `receive` убирает с прилавка и из
+  сундуков только гербы-механики. Продажа — по месту: `sell_crest(index)`, в приложении
+  `crest_sell: Option<usize>`, `column_crest_under`/`crest_sell_spot` — по месту в колонке.
+  Подсказка складывающегося герба — «Складывается: можно купить ещё (у вас — N)», в `Гербы.txt` —
+  «Складывается.». В `balance.ini` пользователя `rogue_level_hp_percent` 500 → 400, копия
+  `balance.ini.before-0.124`.
+  **0.125** (просьбы пользователя): герб коня и умножения — мульти всем фигурам (без проверки вида в
+  `mult_for`); герб урона — +4 (`RogueCrestMultAddPercent` 400; в `balance.ini` пользователя 200 → 400,
+  копия `balance.ini.before-0.125`).
 - `src/net.rs` (с 0.45, просьба пользователя: «очень простой мультиплеер») — клиент ретранслятора
   `tools/mp_server.py` (Python 3, без библиотек, `python3 mp_server.py [порт]`, порт 47900):
   сервер сажает двух подключившихся за доску (первый — белые), шлёт `WAIT`/`START white|black`/
@@ -583,7 +838,7 @@ PATH (`C:\Program Files\Git\cmd`, `C:\Program Files\GitHub CLI`). В репоз�
   нельзя: ходы только на пустые клетки (`MoveKind::{Quiet, CastleShort, CastleLong}`, пешка —
   только вперёд, взятия на проходе нет), а фигуры бьют сами в `end_turn` (`strike_all` →
   `Vec<Strike>`, в истории `Event::EndTurn(color, strikes)`, `Record::strikes`): каждая
-  свободная фигура стороны, закончившей ход, по очереди `strike_queue` (a8…a1, b8…h1;
+  свободная фигура стороны, закончившей ход, по очереди `strike_queue` (до 0.109 — a8…a1, b8…h1, с 0.109 — a8…h8, a7…h1;
   `strike_order`) бьёт одну чужую в досягаемости `strike_steps` (одна клетка по правилам
   хода, пешка — по диагонали вперёд, конь — «Г»): цель — меньше HP, при равенстве дороже по
   `Kind::points`, потом раньше в очереди; барьер соперника недосягаем; убийца с 0.33 встаёт
@@ -593,7 +848,7 @@ PATH (`C:\Program Files\Git\cmd`, `C:\Program Files\GitHub CLI`). В репоз�
   снимает ровно атаку (`damage_at`). Если карта оставила без фигур обе стороны, проигрывает
   сыгравший (`refresh` проверяет его первым). Конец хода — `TurnEnd { strikes, blasts, charged }`
   (`Event::EndTurn(color, TurnEnd)`, `Record::turn_end`, `is_quiet`). Усиленный компьютер (с
-  0.39, просьба пользователя): `Position::boost(color)` / `Game::boost` (`boosted`) — слоны
+  0.39 до 0.108, убран — просьба пользователя; ниже — как было): `Position::boost(color)` / `Game::boost` (`boosted`) — слоны
   стороны насыщаются электричеством (`Piece::spark`: удар расходится тем же уроном ×
   `Rule::SparkPercent` на чужие фигуры по диагонали от цели — `Strike::splash`, не больше трёх,
   `Strike::hits`), пешки — лавой (`Piece::lava`, `charge_lava`: `Rule::LavaPawns` случайных по
@@ -713,7 +968,7 @@ PATH (`C:\Program Files\Git\cmd`, `C:\Program Files\GitHub CLI`). В репоз�
   34 сессии по 5–7 минут: падений и зависаний нет; дважды в сборке с `debug_assert` сработала проверка
   egui `gamma_multiply` (множитель < 0 или NaN) — не повторилась ни в одном из следующих 26 прогонов,
   наши вызовы с проверкой множителя чисты; в обычной сборке проверки нет.
-- `src/ai.rs` — компьютер (альфа-бета: ход в переборе — `make_turn`, ход и удары в конце хода;
+- `src/ai.rs` — с 0.108 удалён (обычной партии против компьютера нет); был — компьютер (альфа-бета: ход в переборе — `make_turn`, ход и удары в конце хода;
   досчёта нет — ударов ходом нет; сила одна — `DEPTH` = 2, `THINK_TIME` 0,8 с, `NOISE` = 40,
   бывший уровень 2 «любитель»: с 0.31 уровней нет, просьба пользователя; `decided` —
   выигрыш/проигрыш, когда у стороны нет фигур; король стоит `KING_WORTH` = 850; нет ходов —
@@ -737,8 +992,8 @@ PATH (`C:\Program Files\Git\cmd`, `C:\Program Files\GitHub CLI`). В репоз�
   шрифтом (`pixel_text`), таблички — `paint_plate`. Над колодой под курсором
   (`deck_hover`, `deck_under`) — такая же табличка с числом карт (`paint_deck_count`
   в `table.rs`, значок `Glyph::Card`). `undo` отменяет ход целиком (до начала хода, против
-  компьютера — и его ход). `drive_computer`: думает, через `COMPUTER_DELAY` ходит, после хода —
-  `end_turn`; ждёт анимации, удары и карты соперника. `MoveAnim` — только скольжение. Удары в
+  компьютера — и его ход). `drive_computer` (с 0.108): компьютер — только волны rogue-like, сам не
+  ходит; ждёт анимации, удары и карты соперника и через `COMPUTER_DELAY` кончает ход. `MoveAnim` — только скольжение. Удары в
   конце хода (с 0.32): `queue_strikes` берёт новые записи истории (`shown_history`) и ставит
   `StrikeAnim` в очередь — после скольжения и прошлых ударов, через `STRIKE_GAP` (за ударами —
   взрывы лавы: `LavaAnim { blast }` с кадра `LAVA_IGNITE` и `Wave::new` с отложенным стартом в
@@ -746,9 +1001,7 @@ PATH (`C:\Program Files\Git\cmd`, `C:\Program Files\GitHub CLI`). В репоз�
   `Effect::hit` на задетых в момент касания); кадры фигур — `dressed` (`lava_frame`: насыщение
   до `LAVA_SPREAD`, ожидание `LAVA_HOLD`, взрыв; `spark_frame`: вступление с `spark_since`, повтор
   `ELECTRIC_LOOP`, во время удара — вспышка `ELECTRIC_FLASH`), рисует `paint_figures` (лёд —
-  важнее); с усиленным компьютером кадры идут всю партию. Переключатель — `Settings::boosted`:
-  кнопка «Компьютер: обычный/усиленный» в меню (`Choice::Boost`) и «Фигуры компьютера» в
-  «Новой партии»; `new_game` → `Game::boost` → `show_boost`. Выпад
+  важнее); усиленного компьютера (`Settings::boosted`, `show_boost`) с 0.108 нет. Выпад
   `LUNGE_*` (`strike_lunge`), цифры урона — `Effect::hit` в момент касания (в будущем), над ещё
   видными цифрами той же клетки (`Effect::stacked`); до касания цель прежняя, убитая стоит
   (`struck_piece`), убийца идёт на её клетку (`StrikeAnim::moving`/`killer_at`, на клетке
@@ -837,7 +1090,7 @@ PATH (`C:\Program Files\Git\cmd`, `C:\Program Files\GitHub CLI`). В репоз�
   стрелки `arrow` (треугольник ступеньками в пиксель арта, на крайней странице — тусклая),
   ←/→ листают, Esc — назад; карта под курсором — ×`COLLECTION_ZOOM` = 2, у карт без текста
   название на `paint_title`; текст лиц — `paint_card_text` из `table.rs`; плашки — `plate`.
-- `src/settings.rs` — громкость, частота кадров, FPS, выбранная колода, `boosted`;
+- `src/settings.rs` — громкость, частота кадров, FPS, выбранная колода, взятие, масштаб;
   `%APPDATA%\BattleChess\settings.ini`. VSync задаётся в `main.rs` при запуске. `data_dir()` (с
   0.39.1) — папка настроек и баланса по системе: Windows `%APPDATA%`, macOS `~/Library/Application
   Support`, Linux `~/.config`. Для macOS (просьба пользователя: отправить игру другу) браузер и

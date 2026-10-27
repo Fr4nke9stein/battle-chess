@@ -4,7 +4,6 @@
 // В релизной сборке не открываем консольное окно рядом с игрой.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod ai;
 mod app;
 mod assets;
 mod balance;
