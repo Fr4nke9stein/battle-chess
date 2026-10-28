@@ -264,6 +264,134 @@ SIXTEEN = [  # 12×10, число 16 (герб короля и шестнадц�
     "######.####.",
     "######......",
 ]
+NINE = [  # 9×13, цифра 9 (герб девятки, 0.128)
+    ".#######.",
+    "#########",
+    "###...###",
+    "###...###",
+    "###...###",
+    "#########",
+    ".########",
+    "......###",
+    "......###",
+    "......###",
+    "###...###",
+    "#########",
+    ".#######.",
+]
+TWO = [  # 7×12, цифра 2 (герб ферзя и двойки)
+    ".#####.",
+    "#######",
+    "##...##",
+    ".....##",
+    "....###",
+    "...###.",
+    "..###..",
+    ".###...",
+    "###....",
+    "##.....",
+    "#######",
+    "#######",
+]
+CARD_BIG = [  # 11×13, карта: # рамка, f поле, d ромб (герб карты)
+    "###########",
+    "#fffffffff#",
+    "#fffffffff#",
+    "#ffffdffff#",
+    "#fffdddfff#",
+    "#ffdddddff#",
+    "#fdddddddf#",
+    "#ffdddddff#",
+    "#fffdddfff#",
+    "#ffffdffff#",
+    "#fffffffff#",
+    "#fffffffff#",
+    "###########",
+]
+CARD_SMALL = [  # 9×11, малая карта
+    "#########",
+    "#fffffff#",
+    "#fffffff#",
+    "#fffdfff#",
+    "#ffdddff#",
+    "#fdddddf#",
+    "#ffdddff#",
+    "#fffdfff#",
+    "#fffffff#",
+    "#fffffff#",
+    "#########",
+]
+MEDAL_SMALL = [  # 9×12, медаль: r лента, o обод, O лицо
+    ".rr...rr.",
+    "..rr.rr..",
+    "...rrr...",
+    "..ooooo..",
+    ".ooOOOoo.",
+    "ooOOOOOoo",
+    "ooOOOOOoo",
+    "ooOOOOOoo",
+    "ooOOOOOoo",
+    ".ooOOOoo.",
+    "..ooooo..",
+    "...ooo...",
+]
+KNIFE = [  # 5×15, нож остриём вверх: b клинок (обух справа прямой), g гарда и навершие, l рукоять (0.129)
+    "...b.",
+    "..bb.",
+    ".bbb.",
+    ".bbb.",
+    "bbbb.",
+    "bbbb.",
+    "bbbb.",
+    "bbbb.",
+    ".bbb.",
+    "ggggg",
+    ".lll.",
+    ".lll.",
+    ".lll.",
+    ".lll.",
+    ".ggg.",
+]
+MINI_SHIELD = [  # 9×11, малый щит (герб ножа и герба): o обод, f поле
+    "ooooooooo",
+    "offfffffo",
+    "offfffffo",
+    "offfffffo",
+    "offfffffo",
+    "offfffffo",
+    ".offfffo.",
+    ".offfffo.",
+    "..offfo..",
+    "...ofo...",
+    "....o....",
+]
+DIE = [  # 10×10, игральная кость: b грань, p точки (пять)
+    ".bbbbbbbb.",
+    "bppbbbbppb",
+    "bppbbbbppb",
+    "bbbbbbbbbb",
+    "bbbbppbbbb",
+    "bbbbppbbbb",
+    "bbbbbbbbbb",
+    "bppbbbbppb",
+    "bppbbbbppb",
+    ".bbbbbbbb.",
+]
+QUESTION = [  # 7×12, вопросительный знак
+    ".#####.",
+    "#######",
+    "##...##",
+    ".....##",
+    "....###",
+    "...###.",
+    "..###..",
+    "..##...",
+    "..##...",
+    ".......",
+    "..##...",
+    "..##...",
+]
+LEAF = [hexc(c) for c in ["#d8f4a8", "#8ad058", "#4a9a30", "#2a6020", "#14340e"]]  # куст
 PLUS = [  # 11×11, толстый плюс
     "....###....",
     "....###....",
@@ -814,6 +942,96 @@ def crest(emblem="bolt", bare=False):
         gems.append((23, 11))
     # Гербы мульти 0.121 (просьба пользователя): вверху слева знак, справа «×» (или «16», «1»),
     # ниже — место под число, его пишет игра.
+    # Гербы 0.128: зеркало, девятка, карты, медали, ферзь и двойка.
+    def colored(rows, x0, y0, tones):
+        """Знак по пикселям в несколько цветов: tones — (буква, палитра), позже — поверх."""
+        for ch, pal in tones:
+            only = ["".join("#" if c == ch else "." for c in row) for row in rows]
+            marks.append((grid_mask(only, x0, y0, w, h) & field, pal))
+
+    if emblem == "mirror":  # ручное зеркало посередине: золотая рамка, голубое стекло, ручка
+        cx, cy = 23.5, 17.5
+        rim = np.hypot((xx + 0.5 - cx) / 7.6, (yy + 0.5 - cy) / 9.6) < 1.0
+        glass = np.hypot((xx + 0.5 - cx) / 5.6, (yy + 0.5 - cy) / 7.6) < 1.0
+        handle = (np.abs(xx + 0.5 - cx) < 1.6) & (yy + 0.5 > cy + 8.5) & (yy + 0.5 < cy + 18.5)
+        knob = np.hypot(xx + 0.5 - cx, yy + 0.5 - (cy + 19.0)) < 2.2
+        marks.append(((handle | knob) & field, GOLD))
+        marks.append((rim & field, GOLD))
+        marks.append((glass & field, ICE))
+    if emblem == "nine":  # большая девятка посередине
+        marks.append((grid_mask(NINE, 19, 15, w, h) & field, STEEL))
+    if emblem == "card":  # карта вверху посередине, ниже — число мульти (пишет игра)
+        colored(CARD_BIG, 18, 6, (("f", BONE), ("#", GOLD), ("d", RED)))
+    if emblem in ("pawn_card", "pawn_cards"):  # золотая пешка слева
+        marks.append((grid_mask(PAWN, 10, 15, w, h) & field, GOLD))
+    if emblem == "pawn_card":  # карта справа
+        colored(CARD_SMALL, 27, 16, (("f", BONE), ("#", GOLD), ("d", RED)))
+    if emblem == "pawn_cards":  # карта другого цвета: синяя в серебре, золотой ромб
+        colored(CARD_SMALL, 27, 16, (("f", HAT), ("#", STEEL), ("d", GOLD)))
+    if emblem in ("queen_skull", "queen_two"):  # малый золотой ферзь слева
+        marks.append((grid_mask(QUEEN_SMALL, 11, 16, w, h) & field, GOLD))
+    if emblem == "queen_skull":  # костяной череп справа
+        marks.append((grid_mask(SKULL, 26, 17, w, h) & field, BONE))
+    if emblem == "queen_two":  # цифра 2 справа
+        marks.append((grid_mask(TWO, 28, 16, w, h) & field, STEEL))
+    if emblem == "king_medal":  # малый король слева, медаль справа
+        marks.append((grid_mask(KING_SMALL, 11, 14, w, h) & field, GOLD))
+        gems.append((15, 19))
+        colored(MEDAL_SMALL, 27, 16, (("r", RED), ("o", GOLD), ("O", HAZARD)))
+    if emblem == "medals2":  # две медали
+        for x0 in (13, 26):
+            colored(MEDAL_SMALL, x0, 15, (("r", RED), ("o", GOLD), ("O", HAZARD)))
+    # Гербы 0.129: вверху — у тех, где игра пишет число мульти (нож, кубик, череп, куст, часы).
+    coins_at = []  # монеты coin_16 — поверх знаков (кайма знаков их не задевает)
+    after = []  # (маска, цвет) — поверх знаков: точки кубика, стрелки часов, ягоды куста
+    if emblem in ("knife_crest", "knife_king", "knife_coin"):  # нож слева
+        colored(KNIFE, 13, 6, (("l", LEATHER), ("b", STEEL), ("g", GOLD)))
+    if emblem == "knife_crest":  # малый щит справа: золотой обод, красное поле
+        colored(MINI_SHIELD, 27, 8, (("o", GOLD), ("f", RED)))
+    if emblem == "knife_king":  # малый король справа
+        marks.append((grid_mask(KING_SMALL, 27, 6, w, h) & field, GOLD))
+        gems.append((31, 11))
+    if emblem == "knife_coin":
+        coins_at.append((31.5, 13.5))
+    if emblem == "dice":  # кость слева, вопросительный знак справа
+        solid_die = ["".join("#" if c != "." else "." for c in row) for row in DIE]
+        marks.append((grid_mask(solid_die, 11, 8, w, h) & field, BONE))
+        pips = ["".join("#" if c == "p" else "." for c in row) for row in DIE]
+        after.append((grid_mask(pips, 11, 8, w, h) & field, RED[3]))
+        marks.append((grid_mask(QUESTION, 29, 7, w, h) & field, GOLD))
+    if emblem == "skull":  # череп вверху посередине
+        marks.append((grid_mask(SKULL, 18, 8, w, h) & field, BONE))
+    if emblem == "bush":  # куст вверху посередине: крона из кругов, ствол, ягоды
+        crown = np.zeros((h, w), bool)
+        for bx, by, br in ((18.0, 15.0, 4.6), (29.0, 15.0, 4.6), (23.5, 10.5, 5.4), (23.5, 15.5, 5.6)):
+            crown |= np.hypot(xx + 0.5 - bx, yy + 0.5 - by) < br
+        trunk = grid_mask(["##", "##", "##"], 23, 20, w, h) & ~crown
+        marks.append((trunk & field, WOOD))
+        marks.append((crown & field, LEAF))
+        for bx, by in ((20, 12), (27, 10), (25, 16), (17, 16), (30, 15)):
+            after.append(((xx == bx) & (yy == by) & field, RED[1]))
+    if emblem == "coin_clock":  # монета слева, часы справа
+        coins_at.append((15.5, 13.5))
+        ccx, ccy = 31.5, 13.5
+        rim_c = np.hypot(xx + 0.5 - ccx, yy + 0.5 - ccy) < 6.6
+        face = np.hypot(xx + 0.5 - ccx, yy + 0.5 - ccy) < 4.9
+        knob = grid_mask(["###", ".#."], 30, 5, w, h) & ~rim_c
+        marks.append(((rim_c | knob) & ~face & field, GOLD))
+        marks.append((face & field, BONE))
+        hands = (((xx == 31) & (yy >= 10) & (yy <= 13)) | ((yy == 13) & (xx >= 31) & (xx <= 34))) & field
+        after.append((hands, IRON[3]))
+        after.append(((xx == 31) & (yy == 13), IRON[4]))
+    if emblem == "flame_two":  # огонёк слева (рисуется с огоньками других гербов), цифра 2 справа
+        marks.append((grid_mask(TWO, 28, 16, w, h) & field, STEEL))
+    if emblem == "queen_coin":  # малый ферзь слева, монета справа
+        marks.append((grid_mask(QUEEN_SMALL, 11, 16, w, h) & field, GOLD))
+        coins_at.append((31.5, 22.5))
+    if emblem == "knight_coin":  # золотой конь слева, монета справа
+        marks.append((grid_mask(KNIGHT, 9, 15, w, h) & field, GOLD))
+        coins_at.append((31.5, 22.5))
+    if emblem == "silver_medals":  # две серебряные медали на синих лентах
+        for x0 in (13, 26):
+            colored(MEDAL_SMALL, x0, 15, (("r", HAT), ("o", STEEL), ("O", ICE)))
     if emblem in ("few", "gold_mult"):  # малый золотой король слева
         marks.append((grid_mask(KING_SMALL, 11, 6, w, h) & field, GOLD))
         gems.append((15, 11))
@@ -1011,7 +1229,7 @@ def crest(emblem="bolt", bare=False):
         guard = grid_mask(["#########", "#########"], 27, 26, w, h) | grid_mask(["###", "###"], 30, 32, w, h)
         grip = grid_mask(["#"] * 4, 31, 28, w, h)
         marks += [(sword_blade & field, STEEL), (grip & field, LEATHER), (guard & field, GOLD)]
-    if emblem in ("flame_pawn", "flame_skull", "flame_sword", "flame_coin"):  # огонёк слева
+    if emblem in ("flame_pawn", "flame_skull", "flame_sword", "flame_coin", "flame_two"):  # огонёк слева
         draw_flame(small_flame(16.0, 27.0))
     if emblem == "flame_mult":  # огонёк слева вверху (герб мульти)
         draw_flame(small_flame(15.5, 21.0, 0.6))
@@ -1158,6 +1376,18 @@ def crest(emblem="bolt", bare=False):
         lit = mark & ~(shifted(mark, 1, 0) & shifted(mark, 0, 1))
         put(lit, tones[1])
         put(lit & (yy < h * 0.5), tones[0])
+    for mask, col in after:
+        put(mask, col)
+    for cx, cy in coins_at:  # монета игры со своим контуром, тень на поле
+        coin = np.array(Image.open(os.path.join(OUT, "coin_16.png")).convert("RGBA"))
+        ys, xs = np.nonzero(coin[..., 3])
+        coin = coin[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1]
+        ch, cw = coin.shape[:2]
+        x0, y0 = round(cx - cw / 2), round(cy - ch / 2)
+        solid = np.zeros((h, w), bool)
+        solid[y0 : y0 + ch, x0 : x0 + cw] = coin[..., 3] > 0
+        put((shifted(solid, 1, 1) | shifted(solid, 2, 1)) & field & ~solid, WINE[4])
+        img[solid] = coin[coin[..., 3] > 0]
     if emblem == "crystal":  # снежинка внутри ледяного кристалла — шестигранник посередине щита
         C = CRYSTAL
         cx, top, sh, low, bot, hw = 23.5, 10.5, 16.5, 30.0, 37.0, 9.5
@@ -1298,12 +1528,27 @@ def main():
                  "flame_snow", "flame_bolt", "flame_wind", "flame_dark",
                  "snow_bolt", "snow_wind", "snow_dark", "bolt_wind", "bolt_dark", "wind_dark",
                  "mult", "king_mult", "few", "gold_mult", "pawn_mult", "knight_mult", "sword_mult",
-                 "first", "queen_mult", "flame_mult", "snow_mult", "bolt_mult", "wind_mult"):
+                 "first", "queen_mult", "flame_mult", "snow_mult", "bolt_mult", "wind_mult",
+                 "mirror", "nine", "card", "pawn_card", "pawn_cards", "queen_skull", "queen_two",
+                 "king_medal", "medals2", "knife_crest", "knife_king", "knife_coin", "flame_two", "dice",
+                 "blank", "queen_coin", "skull", "silver_medals", "bush", "knight_coin", "coin_clock"):
         icon = crest(name)
         Image.fromarray(icon, "RGBA").save(os.path.join(OUT, f"crest_{name}.png"))
         preview(icon, os.path.join(OUT, f"preview_crest_{name}.png"))
     mults = ("few", "gold_mult", "pawn_mult", "knight_mult", "sword_mult", "first", "queen_mult", "flame_mult",
              "snow_mult", "bolt_mult", "wind_mult")
+    news = ("bishops2", "mirror", "nine", "card", "pawn_card", "queen_skull", "pawn_cards", "king_medal", "medals2",
+            "queen_two")
+    sheet = Image.new("RGBA", (len(news) * (W + 8) + 8, H + 16), hexc("#151821") + (255,))
+    for i, name in enumerate(news):
+        sheet.alpha_composite(Image.open(os.path.join(OUT, f"crest_{name}.png")), (8 + i * (W + 8), 8))
+    sheet.resize((sheet.width * 4, sheet.height * 4), Image.NEAREST).save(os.path.join(OUT, "preview_crest_0128.png"))
+    news = ("knife_crest", "knife_king", "knife_coin", "flame_two", "dice", "blank", "queen_coin", "skull",
+            "silver_medals", "bush", "knight_coin", "coin_clock")
+    sheet = Image.new("RGBA", (len(news) * (W + 8) + 8, H + 16), hexc("#151821") + (255,))
+    for i, name in enumerate(news):
+        sheet.alpha_composite(Image.open(os.path.join(OUT, f"crest_{name}.png")), (8 + i * (W + 8), 8))
+    sheet.resize((sheet.width * 4, sheet.height * 4), Image.NEAREST).save(os.path.join(OUT, "preview_crest_0129.png"))
     sheet = Image.new("RGBA", (len(mults) * (W + 8) + 8, H + 16), hexc("#151821") + (255,))
     for i, name in enumerate(mults):
         sheet.alpha_composite(Image.open(os.path.join(OUT, f"crest_{name}.png")), (8 + i * (W + 8), 8))

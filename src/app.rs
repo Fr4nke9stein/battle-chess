@@ -34,8 +34,8 @@ use crate::sound::{Sfx, Sound};
 use crate::theme::{self, rgba};
 use menu::Screen;
 use table::{
-    Aiming, Bless, Burn, DRAW_DELAY, Draw, Freeze, Held, Portal, ROGUE_VIEW_MIN, Returning, Seat,
-    ShopSpot, VIEW_MAX, VIEW_MIN, Wave, ice_variant,
+    Aiming, Bless, Burn, CardMenu, DRAW_DELAY, Draw, Freeze, Held, Portal, ROGUE_VIEW_MIN,
+    Returning, Seat, ShopSpot, VIEW_MAX, VIEW_MIN, Wave, ice_variant,
 };
 
 /// Скольжение фигуры, как у lichess (секунды).
@@ -577,6 +577,16 @@ pub struct BattleChessApp {
     reserve_hover: Option<(Seat, Stock)>,
     /// Rogue-like: место магазина под курсором.
     shop_hover: Option<ShopSpot>,
+    /// Rogue-like (с 0.126): магазин свёрнут — доска и карты свободны, наверху кнопка «Магазин»;
+    /// свёрнут сам ради цели карты (развернётся, когда карту сыграют или отменят); курсор над
+    /// «Магазином».
+    shop_folded: bool,
+    fold_for_card: bool,
+    unfold_hover: bool,
+    /// Rogue-like (с 0.126): карта руки, у которой в магазине открыто меню «Сыграть» / «Продать»,
+    /// и плашка меню под курсором.
+    card_menu: Option<usize>,
+    card_menu_hover: Option<CardMenu>,
     /// Rogue-like: герб под курсором (в колонке слева или на прилавке) и его место на экране — для
     /// подсказки.
     crest_hover: Option<(game::Ware, Rect)>,
@@ -706,6 +716,11 @@ impl BattleChessApp {
 
             reserve_hover: None,
             shop_hover: None,
+            shop_folded: false,
+            fold_for_card: false,
+            unfold_hover: false,
+            card_menu: None,
+            card_menu_hover: None,
             crest_hover: None,
             power_pick: None,
             power_hover: None,
@@ -822,6 +837,7 @@ impl BattleChessApp {
         self.mirror_from = None;
         self.sell_drag = None;
         self.crest_sell = None;
+        self.card_menu = None;
         self.drag = None;
         self.promotion = None;
         self.anim = None;
@@ -971,6 +987,11 @@ impl BattleChessApp {
             && self.due_hits.is_empty()
             && self.marches.is_empty()
             && self.lavas.is_empty()
+    }
+
+    /// Rogue-like: панель магазина на экране — он готов и не свёрнут (с 0.126).
+    fn shop_shown(&self) -> bool {
+        self.shop_ready() && !self.shop_folded
     }
 
     /// Клетка-цель под курсором, когда ходит человек.
@@ -1145,8 +1166,19 @@ impl BattleChessApp {
             // Огненные фигуры разгораются и взрываются по очереди после ударов; огненная волна
             // начинается в кадре трещин `LAVA_WAVE_AT`.
             let mut blasts_end = start;
+            // Повторный взрыв той же фигуры (герб огня и двойки) — когда доиграл прежний.
+            let mut busy: Vec<(Square, f64)> = Vec::new();
             for blast in &turn.blasts {
-                let ignite = start + LUNGE_TIME;
+                let free = busy
+                    .iter()
+                    .filter(|b| b.0 == blast.center)
+                    .map(|b| b.1)
+                    .fold(0.0, f64::max);
+                let ignite = (start + LUNGE_TIME).max(free);
+                busy.push((
+                    blast.center,
+                    ignite + (LAVA_FRAMES - LAVA_IGNITE) as f64 * LAVA_FRAME_TIME,
+                ));
                 self.lavas.push(LavaAnim {
                     square: blast.center,
                     start: ignite,
@@ -1155,19 +1187,18 @@ impl BattleChessApp {
                 let wave_at = ignite + (LAVA_WAVE_AT - LAVA_IGNITE) as f64 * LAVA_FRAME_TIME;
                 self.waves
                     .push(Wave::new(blast.center, blast.hits.clone(), wave_at).wide(blast.wide));
-                blasts_end = ignite + (LAVA_FRAMES - LAVA_IGNITE) as f64 * LAVA_FRAME_TIME;
-                start += 2.0 * STRIKE_GAP;
+                blasts_end =
+                    blasts_end.max(ignite + (LAVA_FRAMES - LAVA_IGNITE) as f64 * LAVA_FRAME_TIME);
+                start = start.max(ignite - LUNGE_TIME) + 2.0 * STRIKE_GAP;
             }
-            // Огненные фигуры после взрыва снова насыщаются огнём.
-            for blast in &turn.blasts {
-                if self
-                    .game
-                    .position()
-                    .piece(blast.center)
-                    .is_some_and(|p| p.fire)
-                {
+            // Огненные фигуры после взрыва снова насыщаются огнём (повторно взорвавшаяся — раз).
+            let mut centers: Vec<Square> = turn.blasts.iter().map(|b| b.center).collect();
+            centers.sort_unstable();
+            centers.dedup();
+            for center in centers {
+                if self.game.position().piece(center).is_some_and(|p| p.fire) {
                     self.lavas.push(LavaAnim {
-                        square: blast.center,
+                        square: center,
                         start: blasts_end,
                         blast: false,
                     });
@@ -1657,8 +1688,21 @@ impl BattleChessApp {
             return;
         }
         // Rogue-like: пока открыт магазин, щелчки — только по нему; пока доигрывают удары,
-        // магазина ещё нет, и щелчки не нужны вовсе.
+        // магазина ещё нет, и щелчки не нужны вовсе. Свёрнутый магазин (с 0.126) щелчков не
+        // ловит, кроме кнопки «Магазин»: доска и карты — как в ходу.
         self.shop_hover = None;
+        self.unfold_hover = false;
+        self.card_menu_hover = None;
+        if !self.game.position().shop_open() {
+            self.shop_folded = false;
+            self.fold_for_card = false;
+            self.card_menu = None;
+        }
+        // Свёрнут ради цели карты — карту сыграли или отменили: магазин снова виден.
+        if self.fold_for_card && self.power_pick.is_none() {
+            self.shop_folded = false;
+            self.fold_for_card = false;
+        }
         if self.game.position().shop_open() && !self.shop_ready() {
             self.hovered = None;
             self.stats_for = None;
@@ -1667,10 +1711,24 @@ impl BattleChessApp {
             self.drag = None;
             return;
         }
-        if self.game.position().shop_open() && self.human_to_move() {
+        if self.game.position().shop_open() && self.human_to_move() && self.shop_folded {
+            self.unfold_hover = pointer
+                .is_some_and(|p| over_board && table::unfold_contains(board.to_art(p).to_pos2()));
+            if pressed && self.unfold_hover {
+                self.shop_folded = false;
+                self.fold_for_card = false;
+                self.power_pick = None;
+                self.mirror_from = None;
+                return;
+            }
+        }
+        if self.game.position().shop_open() && self.human_to_move() && !self.shop_folded {
             self.shop_hover = pointer
                 .filter(|_| over_board)
                 .and_then(|p| self.shop_under(board, p));
+            self.card_menu_hover = pointer
+                .filter(|_| over_board)
+                .and_then(|p| self.card_menu_under(board, p));
             // Фигуру своего запаса можно взять и перенести в зону продажи.
             self.reserve_hover = pointer
                 .filter(|_| over_board)
@@ -1707,6 +1765,29 @@ impl BattleChessApp {
                 self.crest_sell = None;
                 return;
             }
+            // Меню карты (с 0.126): «Сыграть» — как щелчок по карте в ходу (карте нужна цель —
+            // магазин сворачивается, чтобы была видна доска), «Продать» — за `card_sell_price`.
+            if pressed && let (Some(item), Some(slot)) = (self.card_menu_hover, self.card_menu) {
+                self.card_menu = None;
+                if !self.card_menu_usable(item) {
+                    return;
+                }
+                match item {
+                    CardMenu::Play => {
+                        self.click_card(slot);
+                        if self.power_pick.is_some() {
+                            self.shop_folded = true;
+                            self.fold_for_card = true;
+                        }
+                    }
+                    CardMenu::Sell => {
+                        if self.game.sell_card(slot) {
+                            self.sfx.play(Sound::Kill);
+                        }
+                    }
+                }
+                return;
+            }
             if pressed {
                 // Щелчок по своему гербу в колонке выбирает его на продажу, мимо — снимает выбор.
                 let crest = pointer.and_then(|p| self.column_crest_under(board, p));
@@ -1720,12 +1801,20 @@ impl BattleChessApp {
                 return;
             }
             if pressed && let Some(slot) = self.power_hover {
-                self.click_card(slot);
+                self.power_pick = None;
+                self.card_menu = (self.card_menu != Some(slot)).then_some(slot);
                 return;
+            }
+            if pressed {
+                self.card_menu = None;
             }
             if pressed && let Some(spot) = self.shop_hover.filter(|&s| self.shop_usable(s)) {
                 let done = match spot {
-                    ShopSpot::Offer(i) => self.game.buy(i),
+                    ShopSpot::Fold => {
+                        self.shop_folded = true;
+                        self.crest_sell = None;
+                        return;
+                    }
                     ShopSpot::Reroll => self.game.reroll(),
                     ShopSpot::Leave => self.game.leave_shop(),
                     ShopSpot::Chest(slot) => self.game.open_chest(slot),
@@ -3093,6 +3182,16 @@ impl BattleChessApp {
                 Pointer::Off
             };
         }
+        if let Some(item) = self.card_menu_hover {
+            return if self.card_menu_usable(item) {
+                Pointer::Hover
+            } else {
+                Pointer::Off
+            };
+        }
+        if self.unfold_hover {
+            return Pointer::Hover;
+        }
         if self.crest_sell_hover {
             return Pointer::Hover;
         }
@@ -3450,11 +3549,11 @@ impl BattleChessApp {
                 theme::GOLD,
             ),
             Status::Ongoing if pos.shop_open() => (
-                "Магазин: покупайте фигуры в запас и гербы — они усиливают фигуры до конца \
-                 забега; продавайте фигуры запаса (перетащите в «Продажу») и гербы (щёлкните по \
-                 гербу в колонке слева); сундук фигур, гербов или карт даёт выбрать одно из трёх; «Обновить» — другой \
-                 товар на прилавке (каждое следующее обновление дороже, сундуки не меняются), \
-                 «Уйти» — к расстановке"
+                "Магазин: сундуки фигур, гербов, карт и медалей — выберите одно из трёх (из \
+                 большого — два из пяти); «Обновить» — новые сундуки; продавайте фигуры запаса \
+                 (перетащите в «Продажу»), гербы (щёлкните по гербу слева) и карты (щёлкните по \
+                 карте — «Продать»; там же «Сыграть»); «свернуть» открывает доску; «Уйти» — к \
+                 расстановке"
                     .to_owned(),
                 theme::GOLD,
             ),
@@ -4219,12 +4318,15 @@ fn rules() -> Vec<String> {
             game::mult_text(game::hundredths(Rule::RogueLevelHpPercent))
         ),
         format!(
-            "Золото — за каждую побеждённую фигуру. В магазине на каждом месте фигура (в запас) \
-             или герб (усиливает до конца забега); фигура — с шансом {}%. «Обновить» стоит {}, \
-             каждое следующее — на {} дороже.",
-            rule(Rule::RogueShopPiecePercent),
-            rule(Rule::RogueRerollCost),
-            rule(Rule::RogueRerollStep)
+            "Золото — за каждую побеждённую фигуру. В магазине — только сундуки: фигур (в запас), \
+             гербов (до конца забега), карт (в руку) и медалей. «Обновить» ({}) кладёт новые \
+             сундуки. Магазин можно свернуть — «Магазин» наверху разворачивает его.",
+            rule(Rule::RogueRerollCost)
+        ),
+        format!(
+            "Сундук медалей: виды фигур на выбор; выбранный до конца забега получает мульти +{} — \
+             раньше всех гербов. Медали — в правом верхнем углу.",
+            game::mult_text(game::hundredths(Rule::RogueMedalMultPercent))
         ),
         format!(
             "Фигуру из запаса выставляют вместо хода — {} за ход, на две первые горизонтали \
@@ -4236,18 +4338,20 @@ fn rules() -> Vec<String> {
             rule(Rule::RogueMaxPieces)
         ),
         format!(
-            "Сундуки магазина: фигур, гербов и карт — одно из {} на выбор. Карта ложится в руку \
-             (до {}, слева вверху); щёлкните по ней — карты на фигуры (силы, ранг, зеркало) \
-             попросят щёлкнуть по своей фигуре, остальные сыграются сразу. Наведите курсор на \
-             карту — появится, что она делает.",
+            "Сундуки магазина: одно из {} на выбор. Карта ложится в руку (до {}, слева вверху); \
+             щёлкните по ней — карты на фигуры (силы, ранг, зеркало) попросят щёлкнуть по своей \
+             фигуре, остальные сыграются сразу. Карты играют в раунде, в расстановке и в \
+             магазине (там щелчок по карте — «Сыграть» или «Продать»). Наведите курсор на карту \
+             — появится, что она делает.",
             rule(Rule::RogueChestChoices),
             rule(Rule::RogueHandSize)
         ),
         format!(
             "Продажа в магазине: фигуру запаса перетащите в «Продажу» (за цену обычной такой же, \
              золотую — дороже), герб — щёлкните по нему в колонке гербов слева и нажмите «Продать» \
-             ({}).",
-            rule(Rule::RogueCrestSellPrice)
+             ({}), карту — щёлкните по ней и нажмите «Продать» ({}).",
+            rule(Rule::RogueCrestSellPrice),
+            rule(Rule::RogueCardSellPrice)
         ),
         "Расстановка: выжившие фигуры возвращаются на клетки начала уровня здоровыми; их можно \
          передвигать и менять местами на двух первых горизонталях."

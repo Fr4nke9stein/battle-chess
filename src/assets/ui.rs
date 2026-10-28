@@ -26,6 +26,8 @@ pub const CHEST: Vec2 = vec2(46.0, 40.0);
 pub const BIG_CHEST: Vec2 = vec2(55.0, 46.0);
 /// Карты сил rogue-like (`tools/breach_power_cards.py`, с 0.111), без тени.
 pub const POWER_CARD: Vec2 = vec2(51.0, 70.0);
+/// Медаль вида фигур (с 0.126) — с контуром, пиксели арта.
+pub const MEDAL: Vec2 = vec2(32.0, 44.0);
 /// Кадр огненной волны и центр верхней грани клетки фигуры в нём.
 pub const WAVE_FRAME: Vec2 = vec2(184.0, 168.0);
 pub const WAVE_CENTER: Vec2 = vec2(92.0, 98.0);
@@ -169,13 +171,24 @@ const BUTTON_STATES: usize = 5;
 /// Монеты: большая и маленькая.
 const COINS: [&[u8]; 2] = breach!("ui/coin_32.png", "ui/coin_16.png");
 /// Сундуки в порядке `Chest::ALL`.
-const CHESTS: [&[u8]; 6] = breach!(
+const CHESTS: [&[u8]; 8] = breach!(
     "ui/chest_pieces.png",
     "ui/chest_crests.png",
     "ui/chest_cards.png",
+    "ui/chest_medals.png",
     "ui/chest_pieces_big.png",
     "ui/chest_crests_big.png",
-    "ui/chest_cards_big.png"
+    "ui/chest_cards_big.png",
+    "ui/chest_medals_big.png"
+);
+/// Медали видов фигур (с 0.126, `tools/breach_medal.py`) в порядке `Kind as usize`.
+const MEDALS: [&[u8]; 6] = breach!(
+    "ui/medal_p.png",
+    "ui/medal_n.png",
+    "ui/medal_b.png",
+    "ui/medal_r.png",
+    "ui/medal_q.png",
+    "ui/medal_k.png"
 );
 /// Карты rogue-like в порядке `Card::ALL`: силы, потом маска, герб, две монеты, монета, зеркало,
 /// ранг, перо.
@@ -197,7 +210,7 @@ const POWER_CARDS: [&[u8]; 15] = breach!(
     "ui/card_feather.png"
 );
 /// Гербы в порядке `Crest::ALL`.
-const CRESTS: [&[u8]; 43] = breach!(
+const CRESTS: [&[u8]; 65] = breach!(
     "ui/crest_heart.png",
     "ui/crest_snow2.png",
     "ui/crest_crystal.png",
@@ -241,6 +254,28 @@ const CRESTS: [&[u8]; 43] = breach!(
     "ui/crest_snow_mult.png",
     "ui/crest_bolt_mult.png",
     "ui/crest_wind_mult.png",
+    "ui/crest_bishops2.png",
+    "ui/crest_mirror.png",
+    "ui/crest_nine.png",
+    "ui/crest_card.png",
+    "ui/crest_pawn_card.png",
+    "ui/crest_queen_skull.png",
+    "ui/crest_pawn_cards.png",
+    "ui/crest_king_medal.png",
+    "ui/crest_medals2.png",
+    "ui/crest_queen_two.png",
+    "ui/crest_knife_crest.png",
+    "ui/crest_knife_king.png",
+    "ui/crest_knife_coin.png",
+    "ui/crest_flame_two.png",
+    "ui/crest_dice.png",
+    "ui/crest_blank.png",
+    "ui/crest_queen_coin.png",
+    "ui/crest_skull.png",
+    "ui/crest_silver_medals.png",
+    "ui/crest_bush.png",
+    "ui/crest_knight_coin.png",
+    "ui/crest_coin_clock.png",
 );
 /// Звенья s, m, l и наконечник — по состояниям `Aim` (idle, enemy, ally).
 const ARROW: [&[u8]; 12] = breach!(
@@ -991,6 +1026,7 @@ pub struct UiArt {
     chests: Vec<Pixels>,
     power_cards: Vec<Pixels>,
     crests: Vec<Pixels>,
+    medals: Vec<Pixels>,
     arrow: Vec<Pixels>,
     targets: Vec<Pixels>,
     /// Кадры волны: [слой][кадр].
@@ -1153,6 +1189,7 @@ impl UiArt {
             chests: decode(&CHESTS),
             power_cards: decode(&POWER_CARDS),
             crests: decode(&CRESTS),
+            medals: decode(&MEDALS),
             arrow: decode(&ARROW),
             targets: decode(&TARGETS),
             wave: frames(&WAVE, WAVE_FRAME, WAVE_FRAMES),
@@ -1284,6 +1321,7 @@ impl UiArt {
             chests: all("chest", &self.chests),
             power_cards: all("power-card", &self.power_cards),
             crests: all("crest", &self.crests),
+            medals: all("medal", &self.medals),
             targets: all("target", &self.targets),
             wave: all("fire-wave", &self.wave),
             portal: all("portal", &self.portal),
@@ -1397,6 +1435,7 @@ pub struct UiTextures {
     chests: Vec<TextureHandle>,
     power_cards: Vec<TextureHandle>,
     crests: Vec<TextureHandle>,
+    medals: Vec<TextureHandle>,
     targets: Vec<TextureHandle>,
     wave: Vec<TextureHandle>,
     portal: Vec<TextureHandle>,
@@ -1439,6 +1478,11 @@ impl UiTextures {
     pub fn rogue_card(&self, card: Card) -> &TextureHandle {
         let i = Card::ALL.iter().position(|&c| c == card).unwrap_or(0);
         &self.power_cards[i]
+    }
+
+    /// Медаль вида фигур (`MEDAL`).
+    pub fn medal(&self, kind: Kind) -> &TextureHandle {
+        &self.medals[kind as usize]
     }
 
     /// Герб (`CREST`).

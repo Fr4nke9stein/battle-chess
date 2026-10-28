@@ -50,7 +50,6 @@ pub enum Rule {
     RogueGoldBishop,
     RogueGoldRook,
     RogueGoldQueen,
-    RogueShopSlots,
     RogueRerollCost,
     RogueShopPercent,
     RogueFirePercent,
@@ -63,7 +62,6 @@ pub enum Rule {
     RogueBossHp,
     RogueBossAttack,
     RogueBossGold,
-    RogueCrestPrice,
     RogueCrestHeartHp,
     RogueCrestFreezeTurns,
     RogueCrestCrystalHp,
@@ -111,7 +109,6 @@ pub enum Rule {
     RogueVenomZombieLevel,
     RogueVenomZombieWave,
     RogueVenomZombiePercent,
-    RogueShopPiecePercent,
     RogueRerollStep,
     RogueDropsPerTurn,
     RogueMaxPieces,
@@ -148,6 +145,26 @@ pub enum Rule {
     RogueLevelHpPercent,
     RogueCrestBoltAddPercent,
     RogueCrestWindAddPercent,
+    RogueChestMedalsPrice,
+    RogueCardSellPrice,
+    RogueMedalMultPercent,
+    RogueIceHp,
+    RogueCrestBishopAddPercent,
+    RogueCrestNineEvery,
+    RogueCrestNineMultPercent,
+    RogueCrestCardAddPercent,
+    RogueCrestPawnKills,
+    RogueCrestGoldKills,
+    RogueCrestKnifeCoinPercent,
+    RogueCrestDiceMax,
+    RogueCrestBlankAddPercent,
+    RogueCrestSkullAddPercent,
+    RogueCrestSkullChance,
+    RogueCrestMedalChance,
+    RogueCrestBushAddPercent,
+    RogueCrestKnightGold,
+    RogueCrestClockBasePercent,
+    RogueCrestClockStepPercent,
 }
 
 pub struct RuleDef {
@@ -162,7 +179,7 @@ pub struct RuleDef {
 /// `rogue_wave_turns` — с 0.52 волна rogue-like выходит каждый ход; `lava_pawns` — с 0.108 нет
 /// усиленного компьютера;
 /// `rogue_crest_slots`, `rogue_crest_reroll_cost` — с 0.108 гербы на общем прилавке.
-const RETIRED_RULES: [&str; 29] = [
+const RETIRED_RULES: [&str; 32] = [
     "rogue_wave_turns",
     "rogue_armor_skip_level",
     "lava_pawns",
@@ -194,10 +211,14 @@ const RETIRED_RULES: [&str; 29] = [
     "rogue_crest_meteor_damage",
     "rogue_crest_crater_damage",
     "rogue_crest_whirl_damage",
+    // прилавок магазина (убран в 0.126 — остались сундуки)
+    "rogue_shop_slots",
+    "rogue_shop_piece_percent",
+    "rogue_crest_price",
 ];
 
 /// В порядке `Rule`.
-pub const RULES: [RuleDef; 119] = [
+pub const RULES: [RuleDef; 136] = [
     RuleDef {
         key: "mana_per_turn",
         default: 2,
@@ -243,14 +264,14 @@ pub const RULES: [RuleDef; 119] = [
     },
     RuleDef {
         key: "rogue_wave_min",
-        default: 2,
+        default: 3,
         min: 1,
         max: 16,
         note: "rogue-like: меньше всего фигур в волне",
     },
     RuleDef {
         key: "rogue_wave_max",
-        default: 4,
+        default: 6,
         min: 1,
         max: 16,
         note: "rogue-like: больше всего фигур в волне (если меньше наименьшего — берётся наименьшее)",
@@ -347,18 +368,11 @@ pub const RULES: [RuleDef; 119] = [
         note: "rogue-like: золото за побеждённого ферзя",
     },
     RuleDef {
-        key: "rogue_shop_slots",
-        default: 3,
-        min: 1,
-        max: 8,
-        note: "rogue-like: сколько мест в магазине после уровня (на каждом — фигура или герб)",
-    },
-    RuleDef {
         key: "rogue_reroll_cost",
         default: 5,
         min: 0,
         max: 99,
-        note: "rogue-like: сколько золота стоит первое обновление магазина за посещение",
+        note: "rogue-like: сколько золота стоит обновление сундуков в магазине",
     },
     RuleDef {
         key: "rogue_shop_percent",
@@ -436,13 +450,6 @@ pub const RULES: [RuleDef; 119] = [
         min: 0,
         max: 999,
         note: "rogue-like: золото за победу над королём-толстосумом",
-    },
-    RuleDef {
-        key: "rogue_crest_price",
-        default: 10,
-        min: 0,
-        max: 999,
-        note: "rogue-like: цена герба в магазине",
     },
     RuleDef {
         key: "rogue_crest_heart_hp",
@@ -638,8 +645,7 @@ pub const RULES: [RuleDef; 119] = [
         default: 1,
         min: 0,
         max: 999,
-        note: "rogue-like, герб монеты и обновления: столько стоит первое обновление магазина \
-               за посещение",
+        note: "rogue-like, герб монеты и обновления: столько стоит обновление сундуков",
     },
     RuleDef {
         key: "rogue_crest_gold_king_bonus",
@@ -776,19 +782,11 @@ pub const RULES: [RuleDef; 119] = [
         note: "rogue-like: шанс фигуры волны выйти ядовитым зомби, %",
     },
     RuleDef {
-        key: "rogue_shop_piece_percent",
-        default: 25,
-        min: 0,
-        max: 100,
-        note: "rogue-like: шанс, что на месте в магазине фигура, а не герб, %",
-    },
-    RuleDef {
         key: "rogue_reroll_step",
-        default: 1,
+        default: 0,
         min: 0,
         max: 99,
-        note: "rogue-like: на сколько золота дорожает каждое следующее обновление магазина \
-               (до ухода из магазина)",
+        note: "rogue-like: на сколько золота дорожает каждое следующее обновление сундуков (до ухода из магазина; 0 — не дорожает)",
     },
     RuleDef {
         key: "rogue_drops_per_turn",
@@ -877,7 +875,7 @@ pub const RULES: [RuleDef; 119] = [
     },
     RuleDef {
         key: "rogue_chest_slots",
-        default: 2,
+        default: 3,
         min: 0,
         max: 3,
         note: "rogue-like: сколько сундуков в магазине (разных видов)",
@@ -940,10 +938,10 @@ pub const RULES: [RuleDef; 119] = [
     },
     RuleDef {
         key: "rogue_crest_knight_add_percent",
-        default: 100,
+        default: 200,
         min: 0,
         max: 10000,
-        note: "rogue-like, герб коня и умножения: мульти всех ваших фигур + это за каждый удар ваших коней в этом ходу, в сотых (100 — +1)",
+        note: "rogue-like, герб коня и умножения: мульти всех ваших фигур + это за каждый удар ваших коней в этом ходу, в сотых (200 — +2)",
     },
     RuleDef {
         key: "rogue_crest_sword_mult_percent",
@@ -971,14 +969,14 @@ pub const RULES: [RuleDef; 119] = [
         default: 150,
         min: 0,
         max: 1000,
-        note: "rogue-like, герб огня и умножения: каждый взрыв вашей огненной фигуры в этом ходу умножает мульти, в сотых (150 — ×1.5)",
+        note: "rogue-like, герб огня и умножения: каждый взрыв вашей огненной фигуры в этом раунде умножает мульти, в сотых (150 — ×1.5)",
     },
     RuleDef {
         key: "rogue_crest_snow_mult_percent",
-        default: 200,
+        default: 300,
         min: 0,
         max: 1000,
-        note: "rogue-like, герб снежинки и умножения: мульти × это за каждую замороженную фигуру на доске, в сотых (200 — ×2)",
+        note: "rogue-like, герб снежинки и умножения: мульти × это за каждую замороженную фигуру на доске, в сотых (300 — ×3)",
     },
     RuleDef {
         key: "rogue_crest_meteor_add_percent",
@@ -1003,10 +1001,10 @@ pub const RULES: [RuleDef; 119] = [
     },
     RuleDef {
         key: "rogue_crest_flame_sword_add_percent",
-        default: 200,
+        default: 500,
         min: 0,
         max: 10000,
-        note: "rogue-like, герб огня и меча: мульти взрыва огненной фигуры + это, в сотых (200 — +2)",
+        note: "rogue-like, герб огня и меча: мульти взрыва огненной фигуры + это, в сотых (500 — +5)",
     },
     RuleDef {
         key: "rogue_crest_axe_mult_percent",
@@ -1031,10 +1029,150 @@ pub const RULES: [RuleDef; 119] = [
     },
     RuleDef {
         key: "rogue_crest_wind_add_percent",
-        default: 500,
+        default: 800,
         min: 0,
         max: 10000,
-        note: "rogue-like, герб смерча и умножения: мульти воздушных фигур + это за каждый ход воздушных фигур в этом ходу, в сотых (500 — +5)",
+        note: "rogue-like, герб смерча и умножения: мульти воздушных фигур + это за каждый ход воздушных фигур в этом ходу, в сотых (800 — +8)",
+    },
+    RuleDef {
+        key: "rogue_chest_medals_price",
+        default: 10,
+        min: 0,
+        max: 999,
+        note: "rogue-like: цена сундука медалей в магазине",
+    },
+    RuleDef {
+        key: "rogue_card_sell_price",
+        default: 3,
+        min: 0,
+        max: 999,
+        note: "rogue-like: за сколько продаётся карта из руки в магазине",
+    },
+    RuleDef {
+        key: "rogue_medal_mult_percent",
+        default: 100,
+        min: 0,
+        max: 10000,
+        note: "rogue-like, медаль вида фигур: мульти этого вида + это, раньше гербов, в сотых (100 — +1)",
+    },
+    RuleDef {
+        key: "rogue_ice_hp",
+        default: 10,
+        min: 0,
+        max: 999,
+        note: "rogue-like: ледяные фигуры — с этим здоровьем сверху (и ставшие ледяными картой)",
+    },
+    RuleDef {
+        key: "rogue_crest_bishop_add_percent",
+        default: 400,
+        min: 0,
+        max: 10000,
+        note: "rogue-like, герб двух слонов: мульти + это до конца раунда каждый раз, когда ваш слон за ход ранит две разные фигуры (ударом, молнией, взрывом, метеоритом), в сотых (400 — +4)",
+    },
+    RuleDef {
+        key: "rogue_crest_nine_every",
+        default: 9,
+        min: 1,
+        max: 99,
+        note: "rogue-like, герб девятки: каждая такая по счёту ваша атакующая фигура за забег получает мульти × `rogue_crest_nine_mult_percent`",
+    },
+    RuleDef {
+        key: "rogue_crest_nine_mult_percent",
+        default: 900,
+        min: 0,
+        max: 100000,
+        note: "rogue-like, герб девятки: во сколько раз мульти этой фигуры, в сотых (900 — ×9)",
+    },
+    RuleDef {
+        key: "rogue_crest_card_add_percent",
+        default: 200,
+        min: 0,
+        max: 10000,
+        note: "rogue-like, герб карты: мульти + это за каждую карту, сыгранную в этом забеге, в сотых (200 — +2)",
+    },
+    RuleDef {
+        key: "rogue_crest_pawn_kills",
+        default: 4,
+        min: 1,
+        max: 99,
+        note: "rogue-like, герб пешки и синей карты: карта за каждые столько фигур, убитых вашими пешками за ход",
+    },
+    RuleDef {
+        key: "rogue_crest_gold_kills",
+        default: 2,
+        min: 1,
+        max: 99,
+        note: "rogue-like, герб короля и медали: медаль её вида, когда ваша золотая фигура убила столько фигур за ход",
+    },
+    RuleDef {
+        key: "rogue_crest_knife_coin_percent",
+        default: 50,
+        min: 0,
+        max: 10000,
+        note: "rogue-like, герб ножа и монеты: мульти + столько процентов золота, вырученного за продажу фигур (50 — половина)",
+    },
+    RuleDef {
+        key: "rogue_crest_dice_max",
+        default: 10,
+        min: 1,
+        max: 999,
+        note: "rogue-like, герб случайного числа: мульти + случайное от 1 до этого, новое каждый ход",
+    },
+    RuleDef {
+        key: "rogue_crest_blank_add_percent",
+        default: 1000,
+        min: 0,
+        max: 100000,
+        note: "rogue-like, пустой герб: мульти + это, если в запасе нет фигур, в сотых (1000 — +10)",
+    },
+    RuleDef {
+        key: "rogue_crest_skull_add_percent",
+        default: 1500,
+        min: 0,
+        max: 100000,
+        note: "rogue-like, герб черепа: мульти + это, в сотых (1500 — +15)",
+    },
+    RuleDef {
+        key: "rogue_crest_skull_chance",
+        default: 25,
+        min: 1,
+        max: 9999,
+        note: "rogue-like, герб черепа: шанс 1 к стольким, что он рассыплется в конце вашего хода",
+    },
+    RuleDef {
+        key: "rogue_crest_medal_chance",
+        default: 25,
+        min: 1,
+        max: 9999,
+        note: "rogue-like, герб двух серебряных медалей: шанс 1 к стольким получить медаль вида фигуры, убившей другую",
+    },
+    RuleDef {
+        key: "rogue_crest_bush_add_percent",
+        default: 200,
+        min: 0,
+        max: 10000,
+        note: "rogue-like, герб куста: мульти + это за каждый удар ваших фигур без убийства подряд, в сотых (200 — +2)",
+    },
+    RuleDef {
+        key: "rogue_crest_knight_gold",
+        default: 10,
+        min: 0,
+        max: 999,
+        note: "rogue-like, герб коня и монеты: столько золота, если первым в раунде убил ваш конь",
+    },
+    RuleDef {
+        key: "rogue_crest_clock_base_percent",
+        default: 200,
+        min: 0,
+        max: 100000,
+        note: "rogue-like, герб монеты и часов: мульти × (это + шаг × проданные фигуры), в сотых (200 — 2)",
+    },
+    RuleDef {
+        key: "rogue_crest_clock_step_percent",
+        default: 25,
+        min: 0,
+        max: 10000,
+        note: "rogue-like, герб монеты и часов: шаг за каждую проданную фигуру, в сотых (25 — 0.25)",
     },
 ];
 

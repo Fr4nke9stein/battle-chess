@@ -6,7 +6,9 @@ Breach, свет сверху слева, тёмный контур, как у �
 - `ui/chest_crests.png` — сундук гербов: крашеный в тёмное бордо, золотые полосы, на крышке — щит
   в золотой кайме;
 - `ui/chest_cards.png` (0.111) — сундук карт: синий, серебряные полосы, на крышке — карта в золотой
-  рамке с красным ромбом.
+  рамке с красным ромбом;
+- `ui/chest_medals.png` (0.126) — сундук медалей: тёмно-зелёный, золотые полосы, на крышке — золотая
+  медаль на красной ленте.
 
 Картинка 46×40 (сундук 44×38 и контур), тени нет. Большие (0.113) — `ui/chest_<вид>_big.png`, 55×46:
 шире и выше, золотые уголки, красные камни на полосах. Превью — `ui/preview_chests.png` (×6).
@@ -37,6 +39,7 @@ NAVY = [hexc(c) for c in ["#3a5c96", "#2a4474", "#1e3258", "#14223e", "#0a1224"]
 SILVER = [hexc(c) for c in ["#eef2f8", "#bcc4d2", "#8c95a8", "#5e6678", "#363c4a"]]
 CREAM = [hexc(c) for c in ["#fff8e6", "#e8dcc0", "#c2b494"]]
 RED = [hexc(c) for c in ["#ff8a7a", "#e8402e", "#b0201a", "#701010"]]
+FOREST = [hexc(c) for c in ["#4f8a52", "#3a6c3e", "#2a522e", "#1c3820", "#0e2012"]]
 
 W, H = 44, 38
 LID = 15  # нижний край крышки (строка обода)
@@ -62,6 +65,17 @@ CARD = [
     "#......#",
     "#......#",
     "########",
+]
+MEDAL = [  # медаль на ленте: r — лента, # — обод, o — лицо
+    ".rr...rr.",
+    "..rr.rr..",
+    "...rrr...",
+    "..#####..",
+    ".##ooo##.",
+    ".#ooooo#.",
+    ".#ooooo#.",
+    ".##ooo##.",
+    "..#####..",
 ]
 SHIELD = [
     "#########",
@@ -98,7 +112,8 @@ def chest(kind, big=False):
     """Сундук `kind`; `big` (0.113) — большой: шире и выше, золотые уголки, камни на полосах."""
     global W, H, LID
     W, H, LID = (53, 44, 18) if big else (44, 38, 15)
-    wood, metal = {"pieces": (WOOD, IRON), "crests": (PAINT, GOLD), "cards": (NAVY, SILVER)}[kind]
+    wood, metal = {"pieces": (WOOD, IRON), "crests": (PAINT, GOLD), "cards": (NAVY, SILVER),
+                   "medals": (FOREST, GOLD)}[kind]
     mask = shape()
     img = np.zeros((H, W, 4), np.uint8)
 
@@ -176,7 +191,7 @@ def chest(kind, big=False):
     put(lx + 5, ly + 5, OUTLINE)
     put(lx + 1, ly + 1, GOLD[0])
     # знак на крышке: пешка или щит
-    pattern = {"pieces": PAWN, "crests": SHIELD, "cards": CARD}[kind]
+    pattern = {"pieces": PAWN, "crests": SHIELD, "cards": CARD, "medals": MEDAL}[kind]
     ph, pw = len(pattern), len(pattern[0])
     ox, oy = W // 2 - pw // 2, max(1, (LID - 3 - ph) // 2)
     for j, line in enumerate(pattern):
@@ -185,6 +200,13 @@ def chest(kind, big=False):
             if kind == "pieces":
                 if ch == "#":
                     put(x, y, GOLD[3] if i >= pw - 2 or j == ph - 1 else GOLD[1])
+            elif kind == "medals":  # медаль: красная лента, золотой обод, светлое лицо
+                if ch == "r":
+                    put(x, y, RED[1] if i < pw // 2 else RED[2])
+                elif ch == "#":
+                    put(x, y, GOLD[2] if i < pw // 2 and j < 6 else GOLD[3])
+                elif ch == "o":
+                    put(x, y, GOLD[0] if i + j < 9 else GOLD[1])
             elif kind == "cards":  # карта: золотая рамка, светлое поле, красный ромб
                 if ch == "#":
                     put(x, y, GOLD[1] if i == 0 or j == 0 else GOLD[3])
@@ -208,7 +230,7 @@ def chest(kind, big=False):
     cells = set()
     for j, line in enumerate(pattern):
         for i in range(pw):
-            if line[i] == "#" or ("#" in line[:i] and "#" in line[i + 1:]):
+            if line[i] in "#r" or ("#" in line[:i] and "#" in line[i + 1:]):
                 cells.add((i, j))
     for i, j in cells:
         if (i + 1, j + 1) not in cells:
@@ -230,17 +252,17 @@ def main():
     os.makedirs(OUT, exist_ok=True)
     images = []
     for big in (False, True):
-        for kind in ("pieces", "crests", "cards"):
+        for kind in ("pieces", "crests", "cards", "medals"):
             img = chest(kind, big)
             name = f"chest_{kind}_big.png" if big else f"chest_{kind}.png"
             Image.fromarray(img, "RGBA").save(os.path.join(OUT, name))
             images.append(img)
     h = max(i.shape[0] for i in images)
     w = max(i.shape[1] for i in images)
-    sheet = Image.new("RGBA", (3 * (w + 4) + 4, 2 * (h + 4) + 4), (24, 28, 41, 255))
+    sheet = Image.new("RGBA", (4 * (w + 4) + 4, 2 * (h + 4) + 4), (24, 28, 41, 255))
     for k, img in enumerate(images):
         part = Image.fromarray(img, "RGBA")
-        sheet.alpha_composite(part, (4 + (k % 3) * (w + 4), 4 + (k // 3) * (h + 4) + h - img.shape[0]))
+        sheet.alpha_composite(part, (4 + (k % 4) * (w + 4), 4 + (k // 4) * (h + 4) + h - img.shape[0]))
     sheet.resize((sheet.width * 6, sheet.height * 6), Image.NEAREST).save(
         os.path.join(OUT, "preview_chests.png"))
 

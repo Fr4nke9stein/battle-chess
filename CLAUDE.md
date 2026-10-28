@@ -819,6 +819,76 @@ PATH (`C:\Program Files\Git\cmd`, `C:\Program Files\GitHub CLI`). В репоз�
   **0.125** (просьбы пользователя): герб коня и умножения — мульти всем фигурам (без проверки вида в
   `mult_for`); герб урона — +4 (`RogueCrestMultAddPercent` 400; в `balance.ini` пользователя 200 → 400,
   копия `balance.ini.before-0.125`).
+  **0.126** (просьбы пользователя): прилавка нет — в магазине только сундуки (`Rogue::wares`, `roll_shop`,
+  `buy`, `ware_price`, `crest_price`, `SHOP_MAX`, `RogueAction::{Buy, BuyCrest}`, `Game::buy`, `ShopSpot::Offer`
+  убраны; правила `rogue_shop_slots`, `rogue_shop_piece_percent`, `rogue_crest_price` — в `RETIRED_RULES`).
+  «Обновить» (`reroll`) — новые сундуки (`roll_chests`, случайность — `Rogue::rolls`), за 5: `RogueRerollStep`
+  = 0 (обновления не дорожают). Сундук медалей — `Chest::Medals` (`CHEST_SLOTS` = 4, `RogueChestMedalsPrice`
+  10, большой — ×200%): разные виды фигур (`Ware::Medal(Kind)`, из всех шести), выбранный — `Rogue::medals`
+  [`Kind`] +1; в `mult_for` начальное мульти фигуры игрока = 1 + `RogueMedalMultPercent` / 100 × медали её
+  вида — раньше гербов (общее `mult()` — без медалей); `medal_title`/`medal_description`, `Position::medals`.
+  Карты играют в раунде, в магазине и в расстановке (`cards_playable` — только «ходит игрок»; `card_ready`
+  — ещё не открыт сундук). Продажа карт — `sell_card(slot)` за `card_sell_price` (`RogueCardSellPrice` 3),
+  `RogueAction::SellCard`; `sell_total` (карта монеты) считает и карты в руке. Интерфейс: панель магазина
+  — только сундуки (не уже `SHOP_MIN_COLUMNS` = 3 мест), над её правым верхним углом «свернуть»
+  (`ShopSpot::Fold`); свёрнутый (`shop_folded`; `shop_shown` = `shop_ready` и не свёрнут) — доска не
+  притушена, ввод — как в ходу, наверху посреди поля кнопка «Магазин» (`unfold_rect`, `unfold_hover`). В
+  развёрнутом магазине щелчок по карте открывает меню (`card_menu`, `CardMenu::{Play, Sell}`,
+  `card_menu_spots`/`card_menu_under`/`card_menu_usable`/`paint_card_menu`: плашки под картой); «Сыграть»
+  карты с целью сворачивает магазин сам (`fold_for_card`), сыграли или отменили — он снова развёрнут.
+  Медали игрока — в правом верхнем углу поля (`medal_row`, `MEDALS_AT`, «×N» под каждой, подсказка — через
+  `crest_under`/`paint_crest_tip`). Арт: `tools/breach_medal.py` (наш: `ui/medal_<p|n|b|r|q|k>.png` 32×44 —
+  золотой диск на красной ленте с белой полосой, выбит золотой знак фигуры из `breach_crest`; `MEDAL`,
+  `UiTextures::medal`), сундук медалей в `tools/breach_chest.py` (`ui/chest_medals[_big].png`: тёмно-зелёный,
+  золотые полосы, на крышке медаль). В `balance.ini` пользователя строки прилавка удалены,
+  `rogue_reroll_step` 1 → 0, копия `balance.ini.before-0.126`.
+  **0.126.1** (просьба пользователя): в магазине три сундука (`RogueChestSlots` 3; в `balance.ini`
+  пользователя 2 → 3, копия `balance.ini.before-0.126.1`).
+  **0.127** (просьбы пользователя): ледяные фигуры — с `Rule::RogueIceHp` (10) здоровья сверху (в `crested`; ставшая
+  ледяной картой силы получает их сразу — `crested` прибавляет разницу); взрывы для герба огня и умножения
+  копятся до конца раунда (`end_turn_mult` сохраняет `TurnCounts::blasts`, сброс — `begin_planning`). Числа:
+  конь и «×» +2, снежинка и «×» ×3, смерч и «×» +8, огонь и меч +5 (в `balance.ini` пользователя заменены, копия
+  `balance.ini.before-0.127`).
+  **0.128** (просьба пользователя): десять гербов (`CRESTS` = 53; картинки из `tools/breach_crest.py`: `bishops2`
+  (прежний файл), `mirror`, `nine`, `card`, `pawn_card`, `queen_skull`, `pawn_cards`, `king_medal`, `medals2`,
+  `queen_two`, превью `preview_crest_0128.png`; знаки `NINE`, `TWO`, `CARD_BIG`/`CARD_SMALL`, `MEDAL_SMALL`,
+  многоцветные — `colored`). `BishopPair` — мульти + `RogueCrestBishopAddPercent` (400) × `TurnCounts::bishop_pairs`
+  (слон игрока ранил за ход две разные фигуры: `note_hit` из `strike_raw` — цель и молния, `explode`, `meteors`;
+  `bishop_first`/`bishop_done`; до конца раунда — `end_turn_mult` его сохраняет). `Mirror` — копия герба перед ним:
+  `Position::active_crests` (зеркало → последний уже разобранный; первым — ничего), им пользуются `has_crest`,
+  `crest_count`, свёртка `mult_for`; `crests()` — по покупке (колонка, продажа), `crest_available` — по купленным.
+  `Nine` — `Rogue::attackers` (первый удар фигуры за ход, за забег, в `note_blow`), каждая `RogueCrestNineEvery`-я
+  (9) — метка `TurnCounts::nine`, мульти × `RogueCrestNineMultPercent` (900). `CardMult` — + `RogueCrestCardAddPercent`
+  (200) × `Rogue::cards_used` (в `use_card`). Карты — `gift_card` (случайная, если есть место): `PawnCard` —
+  превращение пешки игрока не в ферзя (`make_move`), `QueenSkull` — гибель ферзя игрока (`fall`), `PawnCards` — каждые
+  `RogueCrestPawnKills` (4) убийств пешками за ход (`note_hit`). `KingMedal` — золотая фигура убила
+  `RogueCrestGoldKills` (2) за ход — медаль её вида; `Medals2` — в `receive` медали ещё одна случайного другого вида.
+  `QueenTwo` — в `strike_all` первая ударившая за ход фигура бьёт ещё раунд (`twice`; круговой удар — только у
+  варвара). Складываются: два слона, зеркало, девятка, карта, две медали, ферзь и двойка.
+  **0.129** (просьба пользователя): двенадцать гербов, все складываются (`CRESTS` = 65; картинки из
+  `tools/breach_crest.py`: `knife_crest`, `knife_king`, `knife_coin`, `flame_two`, `dice`, `blank` (пустой щит),
+  `queen_coin`, `skull`, `silver_medals`, `bush`, `knight_coin`, `coin_clock`, превью `preview_crest_0129.png`; знаки
+  `KNIFE`, `MINI_SHIELD`, `DIE`, `QUESTION`, `LEAF`; монеты — `coins_at`, точки и стрелки — `after`, поверх знаков).
+  Счёт забега в `Rogue`: `crest_sale_gold` (`sell_crest`), `piece_sale_gold` и `pieces_sold` (`sell`), `dice`, `bush`,
+  `round_kill`, `luck_rolls` (`Position::luck` — своя случайность: число, череп, серебряные медали). `KnifeCrest` /
+  `KnifeKing` — мульти + золото за проданные гербы / фигуры, `KnifeCoin` — + `RogueCrestKnifeCoinPercent` (50)% золота
+  за фигуры; `Dice` — + `Rogue::dice` (1…`RogueCrestDiceMax` 10, `roll_dice` в `rogue_start` и `end_turn_mult`);
+  `Blank` — + `RogueCrestBlankAddPercent` (1000), если `reserve(игрок)` пуст; `QueenCoin` — фигуре + её `sell_price`
+  (числа на гербе нет); `Skull` — + `RogueCrestSkullAddPercent` (1500), `crumble_skulls` в `end_turn` после
+  `end_turn_mult` (ход игрока, каждый с шансом 1 к `RogueCrestSkullChance` 25) → `TurnEnd::crumbled`, «Герб черепа
+  рассыпался»; `MedalChance` («двух серебряных медалей», герб двух медалей уже есть) — в `note_hit` убийство фигурой
+  игрока, каждый с шансом 1 к `RogueCrestMedalChance` (25) — медаль её вида; `Bush` — + `RogueCrestBushAddPercent`
+  (200) × `Rogue::bush` (удар фигуры игрока без убийства в `strike_raw` +1, любое убийство в `note_hit` — 0; через
+  конец хода не сбрасывается — пользователь назвал только сброс убийством); `KnightCoin` — первое убийство раунда
+  (`round_kill`, сброс в `begin_planning`) сделал конь игрока — `RogueCrestKnightGold` (10) за копию; `CoinClock` —
+  мульти × (`RogueCrestClockBasePercent` 200 + `RogueCrestClockStepPercent` 25 × `pieces_sold`) / 100; `FlameTwo` — в
+  `lava_blasts` первая взорвавшаяся по `strike_queue` огненная взрывается ещё раз за копию, пока жива и
+  `blast_reaches`; в приложении повторный взрыв той же клетки ждёт конца прежнего (`busy` в `queue_strikes`),
+  насыщение огнём — раз на клетку. Числа на гербах — в `crest_badge` (ножи, число, куст — сколько дают сейчас).
+  Исправлено: сундук, из которого нечего взять (гербам нет места из 64), не открывается (`chest_for_sale`,
+  `takeable`) и закрывается, если после взятого брать больше нечего (`take_from_chest`).
+  **0.130** (просьба пользователя): в волне от 3 до 6 фигур (`rogue_wave_min`/`rogue_wave_max` 3/6; в
+  `balance.ini` пользователя 2/4 → 3/6, копия `balance.ini.before-0.130`).
 - `src/net.rs` (с 0.45, просьба пользователя: «очень простой мультиплеер») — клиент ретранслятора
   `tools/mp_server.py` (Python 3, без библиотек, `python3 mp_server.py [порт]`, порт 47900):
   сервер сажает двух подключившихся за доску (первый — белые), шлёт `WAIT`/`START white|black`/
