@@ -6612,7 +6612,12 @@ fn rogue_like_explosions_and_meteors_hit_with_the_piece_damage() {
 
 #[test]
 fn rogue_like_wave_health_grows_two_and_a_half_times_a_level() {
-    // Волна уровня 3: здоровье в 2.5 × 2.5 = 6.25 раза больше, чем на первом (без урезания первого).
+    // С 0.137 рост по прямой: 200% на втором уровне, 250% на третьем, 300% на четвёртом…
+    assert_eq!(
+        (1..=6).map(level_hp_percent).collect::<Vec<_>>(),
+        vec![100, 200, 250, 300, 350, 400]
+    );
+    // Волна уровня 3: здоровье в 2.5 раза больше, чем на первом (без урезания первого).
     let mut pos = Position::rogue_start(3);
     for (sq, _) in army(&pos, Color::Black) {
         pos.board[sq as usize] = None;
@@ -6627,15 +6632,15 @@ fn rogue_like_wave_health_grows_two_and_a_half_times_a_level() {
         let piece = pos.piece(sq).unwrap();
         let plain = Piece { tough: 0, ..piece };
         assert_eq!(piece.tough, 2);
-        assert_eq!(piece.max_hp(), plain.max_hp() * 25 / 4);
+        assert_eq!(piece.max_hp(), plain.max_hp() * 5 / 2);
         assert_eq!(piece.hp, piece.max_hp());
     }
     // Огромное здоровье упирается в предел числа, не переполняется.
     let giant = Piece {
-        tough: 60,
+        tough: 250,
         ..Piece::new(Kind::Queen, Color::Black)
     };
-    assert_eq!(giant.max_hp(), i32::MAX);
+    assert_eq!(giant.scaled(i32::MAX / 2), i32::MAX);
 }
 
 /// Список зданий и усилений для пользователя (`Усиления.txt` в корне проекта; с 0.123 по 0.133 —

@@ -990,6 +990,10 @@ PATH (`C:\Program Files\Git\cmd`, `C:\Program Files\GitHub CLI`). В репоз�
   по редкости `Building::weight` (`Rule::RogueBuildingWeight*`: дом ополчения 15, конюшня и церковь 5, башня 3,
   дворец короля 2, дворец ферзя 1, здания сил по 3). Тесты `rogue_like_starts_with_two_special_pieces_on_the_board`,
   частоты — в `rogue_like_chests_offer_one_of_three`.
+  **0.137** (просьба пользователя): здоровье фигур волн растёт по прямой, а не степенью — 200% от первого
+  уровня на втором, 250% на третьем, 300% на четвёртом… (`game::level_hp_percent(level)`:
+  `Rule::RogueLevelHpPercent` 200 — второй уровень, + `Rule::RogueLevelHpStepPercent` 50 за каждый следующий;
+  `Piece::scaled` — через i64, насыщается на `i32::MAX`). Атака волн не растёт.
 - `src/net.rs` (с 0.45, просьба пользователя: «очень простой мультиплеер») — клиент ретранслятора
   `tools/mp_server.py` (Python 3, без библиотек, `python3 mp_server.py [порт]`, порт 47900):
   сервер сажает двух подключившихся за доску (первый — белые), шлёт `WAIT`/`START white|black`/

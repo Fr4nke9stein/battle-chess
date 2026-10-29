@@ -135,6 +135,7 @@ pub enum Rule {
     RogueCrestFlameSwordAddPercent,
     RogueCrestAxeMultPercent,
     RogueLevelHpPercent,
+    RogueLevelHpStepPercent,
     RogueCrestBoltAddPercent,
     RogueCrestWindAddPercent,
     RogueCardSellPrice,
@@ -183,7 +184,7 @@ pub struct RuleDef {
 }
 
 /// В порядке `Rule`.
-pub const RULES: [RuleDef; 148] = [
+pub const RULES: [RuleDef; 149] = [
     RuleDef {
         key: "mana_per_turn",
         default: 2,
@@ -734,8 +735,13 @@ pub const RULES: [RuleDef; 148] = [
     },
     RuleDef {
         key: "rogue_level_hp_percent",
-        default: 250,
-        note: "rogue-like: здоровье фигур волн на каждом следующем уровне, % от прошлого (250 — в 2.5 раза больше)",
+        default: 200,
+        note: "rogue-like: здоровье фигур волн на втором уровне, % от первого (200 — вдвое больше)",
+    },
+    RuleDef {
+        key: "rogue_level_hp_step_percent",
+        default: 50,
+        note: "rogue-like: на сколько % от первого уровня здоровье волн растёт с каждым уровнем после второго (50: 200%, 250%, 300%…)",
     },
     RuleDef {
         key: "rogue_crest_bolt_add_percent",

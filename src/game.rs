@@ -260,8 +260,8 @@ pub struct Piece {
     pub poison: u8,
     /// Сколько раз фигура уже возвращалась из запаса (не больше `MAX_REBIRTHS`).
     pub reborn: u8,
-    /// Фигура волны уровня N (rogue-like, с 0.122): здоровье × (`Rule::RogueLevelHpPercent` /
-    /// 100) в степени N − 1 (`Piece::scaled`).
+    /// Фигура волны уровня N (rogue-like, с 0.122): N − 1, здоровье растёт по уровню
+    /// (`Piece::scaled`).
     pub tough: u8,
 }
 
@@ -336,16 +336,15 @@ impl Piece {
         self.scaled(base + self.bonus_hp as i32)
     }
 
-    /// Здоровье `hp` фигуры волны своего уровня (`tough`): × `Rule::RogueLevelHpPercent` / 100 за
-    /// каждый уровень после первого; больше `i32::MAX` не бывает.
+    /// Здоровье `hp` фигуры волны своего уровня (`tough`), с 0.137 — по прямой: на втором уровне
+    /// `level_hp_percent(2)` (200%), дальше на `Rule::RogueLevelHpStepPercent` (50) больше за уровень;
+    /// больше `i32::MAX` не бывает.
     pub fn scaled(self, hp: i32) -> i32 {
         if self.tough == 0 {
             return hp;
         }
-        let step = f64::from(balance().rule(Rule::RogueLevelHpPercent)) / 100.0;
-        (f64::from(hp) * step.powi(i32::from(self.tough)))
-            .round()
-            .min(f64::from(i32::MAX)) as i32
+        let percent = level_hp_percent(u32::from(self.tough) + 1);
+        (i64::from(hp) * percent / 100).min(i64::from(i32::MAX)) as i32
     }
 
     pub fn attack(self) -> i32 {
@@ -2292,6 +2291,17 @@ fn damage_sum(hits: impl Iterator<Item = i32>) -> i32 {
 }
 
 /// Число правила в сотых (гербы мульти: 150 — 1.5).
+/// Здоровье фигур волн уровня `level` (rogue-like, с 0.137), % от первого: 100 на первом,
+/// `Rule::RogueLevelHpPercent` (200) на втором, дальше + `Rule::RogueLevelHpStepPercent` (50) за уровень.
+pub fn level_hp_percent(level: u32) -> i64 {
+    if level <= 1 {
+        return 100;
+    }
+    let start = i64::from(balance().rule(Rule::RogueLevelHpPercent).max(0));
+    let step = i64::from(balance().rule(Rule::RogueLevelHpStepPercent).max(0));
+    start + step * i64::from(level - 2)
+}
+
 pub fn hundredths(rule: Rule) -> f64 {
     f64::from(balance().rule(rule)) / 100.0
 }

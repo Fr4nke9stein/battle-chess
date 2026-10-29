@@ -4398,11 +4398,14 @@ fn rules() -> Vec<String> {
             .to_owned(),
         format!(
             "Уровень — несколько волн; отбили все — магазин и расстановка, потом следующий \
-             уровень. Всего уровней — {}. На первом у фигур волн здоровья на {} меньше, на \
-             каждом следующем — в {} раза больше, чем на прошлом.",
+             уровень. Всего уровней — {}. На первом у фигур волн здоровья на {} меньше; на \
+             втором их здоровье — {}% от первого, на каждом следующем — ещё +{}% ({}%, {}%, …).",
             rule(Rule::RogueLevels),
             rule(Rule::RogueFirstLevelHpCut),
-            game::mult_text(game::hundredths(Rule::RogueLevelHpPercent))
+            game::level_hp_percent(2),
+            rule(Rule::RogueLevelHpStepPercent),
+            game::level_hp_percent(3),
+            game::level_hp_percent(4)
         ),
         format!(
             "Золото — за каждую побеждённую фигуру. Отбили уровень — этап города: своё поле 8×8, \
