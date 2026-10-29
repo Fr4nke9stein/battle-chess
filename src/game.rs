@@ -336,15 +336,15 @@ impl Piece {
         self.scaled(base + self.bonus_hp as i32)
     }
 
-    /// Здоровье `hp` фигуры волны своего уровня (`tough`), с 0.137 — по прямой: на втором уровне
-    /// `level_hp_percent(2)` (200%), дальше на `Rule::RogueLevelHpStepPercent` (50) больше за уровень;
-    /// больше `i32::MAX` не бывает.
+    /// Здоровье `hp` фигуры волны своего уровня (`tough`), с 0.138 — × `level_hp_mult` (каждый уровень
+    /// умножает здоровье прошлого: ×2, ×2.5, ×3…); больше `i32::MAX` не бывает.
     pub fn scaled(self, hp: i32) -> i32 {
         if self.tough == 0 {
             return hp;
         }
-        let percent = level_hp_percent(u32::from(self.tough) + 1);
-        (i64::from(hp) * percent / 100).min(i64::from(i32::MAX)) as i32
+        (f64::from(hp) * level_hp_mult(u32::from(self.tough) + 1))
+            .round()
+            .min(f64::from(i32::MAX)) as i32
     }
 
     pub fn attack(self) -> i32 {
@@ -2291,15 +2291,22 @@ fn damage_sum(hits: impl Iterator<Item = i32>) -> i32 {
 }
 
 /// Число правила в сотых (гербы мульти: 150 — 1.5).
-/// Здоровье фигур волн уровня `level` (rogue-like, с 0.137), % от первого: 100 на первом,
-/// `Rule::RogueLevelHpPercent` (200) на втором, дальше + `Rule::RogueLevelHpStepPercent` (50) за уровень.
-pub fn level_hp_percent(level: u32) -> i64 {
+/// Во сколько раз здоровье фигур волн уровня `level` больше, чем на прошлом (rogue-like, с 0.138):
+/// на втором — `Rule::RogueLevelHpPercent` (200%), дальше на `Rule::RogueLevelHpStepPercent` (50)
+/// больше за уровень — ×2, ×2.5, ×3…; на первом — ×1.
+pub fn level_hp_step(level: u32) -> f64 {
     if level <= 1 {
-        return 100;
+        return 1.0;
     }
-    let start = i64::from(balance().rule(Rule::RogueLevelHpPercent).max(0));
-    let step = i64::from(balance().rule(Rule::RogueLevelHpStepPercent).max(0));
-    start + step * i64::from(level - 2)
+    let start = f64::from(balance().rule(Rule::RogueLevelHpPercent).max(0));
+    let step = f64::from(balance().rule(Rule::RogueLevelHpStepPercent).max(0));
+    (start + step * f64::from(level - 2)) / 100.0
+}
+
+/// Во сколько раз здоровье фигур волн уровня `level` больше, чем на первом: произведение
+/// `level_hp_step` всех уровней до него (2 × 2.5 × 3 × …).
+pub fn level_hp_mult(level: u32) -> f64 {
+    (2..=level).map(level_hp_step).product()
 }
 
 pub fn hundredths(rule: Rule) -> f64 {

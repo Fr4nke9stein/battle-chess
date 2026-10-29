@@ -741,7 +741,7 @@ pub const RULES: [RuleDef; 149] = [
     RuleDef {
         key: "rogue_level_hp_step_percent",
         default: 50,
-        note: "rogue-like: на сколько % от первого уровня здоровье волн растёт с каждым уровнем после второго (50: 200%, 250%, 300%…)",
+        note: "rogue-like: на сколько больше процент роста здоровья волн с каждым уровнем после второго; рост — от прошлого уровня (50: ×2, ×2.5, ×3…)",
     },
     RuleDef {
         key: "rogue_crest_bolt_add_percent",
