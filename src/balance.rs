@@ -163,6 +163,16 @@ pub enum Rule {
     RogueDecreeOwnPercent,
     RogueRecruitPrice,
     RogueChestCardsPrice,
+    RogueChestPiecesWeight,
+    RogueChestBuildingsWeight,
+    RogueChestCardsWeight,
+    RogueBuildingWeightPawn,
+    RogueBuildingWeightKnight,
+    RogueBuildingWeightBishop,
+    RogueBuildingWeightRook,
+    RogueBuildingWeightQueen,
+    RogueBuildingWeightKing,
+    RogueBuildingWeightPower,
 }
 
 #[cfg_attr(not(test), allow(dead_code))] // ключ и пояснение — для списка `Баланс.txt`
@@ -173,7 +183,7 @@ pub struct RuleDef {
 }
 
 /// В порядке `Rule`.
-pub const RULES: [RuleDef; 138] = [
+pub const RULES: [RuleDef; 148] = [
     RuleDef {
         key: "mana_per_turn",
         default: 2,
@@ -866,6 +876,56 @@ pub const RULES: [RuleDef; 138] = [
         key: "rogue_chest_cards_price",
         default: 10,
         note: "rogue-like: цена сундука карт в магазине (большой — rogue_big_chest_price_percent от неё)",
+    },
+    RuleDef {
+        key: "rogue_chest_pieces_weight",
+        default: 50,
+        note: "rogue-like: как часто в магазине сундук фигур (вес; 50 — вдвое реже остальных)",
+    },
+    RuleDef {
+        key: "rogue_chest_buildings_weight",
+        default: 100,
+        note: "rogue-like: как часто в магазине сундук зданий (вес)",
+    },
+    RuleDef {
+        key: "rogue_chest_cards_weight",
+        default: 100,
+        note: "rogue-like: как часто в магазине сундук карт (вес)",
+    },
+    RuleDef {
+        key: "rogue_building_weight_pawn",
+        default: 15,
+        note: "rogue-like: редкость дома ополчения (пешки) в сундуке зданий — вес, чем больше, тем чаще",
+    },
+    RuleDef {
+        key: "rogue_building_weight_knight",
+        default: 5,
+        note: "rogue-like: вес конюшни в сундуке зданий",
+    },
+    RuleDef {
+        key: "rogue_building_weight_bishop",
+        default: 5,
+        note: "rogue-like: вес церкви (слоны) в сундуке зданий",
+    },
+    RuleDef {
+        key: "rogue_building_weight_rook",
+        default: 3,
+        note: "rogue-like: вес башни (ладьи) в сундуке зданий",
+    },
+    RuleDef {
+        key: "rogue_building_weight_queen",
+        default: 1,
+        note: "rogue-like: вес дворца ферзя в сундуке зданий (реже всех)",
+    },
+    RuleDef {
+        key: "rogue_building_weight_king",
+        default: 2,
+        note: "rogue-like: вес дворца короля в сундуке зданий",
+    },
+    RuleDef {
+        key: "rogue_building_weight_power",
+        default: 3,
+        note: "rogue-like: вес каждого здания особой силы (кузня, мельница, казна…) в сундуке зданий",
     },
 ];
 

@@ -2332,58 +2332,40 @@ fn rogue_like_starts_with_the_first_wave_and_a_reserve() {
             (Building::Shop, sq("g1"))
         ]
     );
-    let special: Vec<(Stock, u8, u8)> = pos
-        .reserve(Color::White)
-        .into_iter()
-        .filter(|(stock, ..)| stock.power != Power::Plain)
+    // С 0.136 особых в запасе нет — две особые фигуры стоят в армии (не пешки).
+    let special: Vec<(Square, Piece)> = pos
+        .pieces()
+        .filter(|(_, p)| p.color == Color::White && Stock::of(*p).power != Power::Plain)
         .collect();
-    assert_eq!(special.len(), 1, "{special:?}");
-    let (stock, ready, _) = special[0];
-    assert_eq!(ready, 1);
-    assert_ne!(stock.kind, Kind::Pawn);
+    assert_eq!(special.len(), 2, "{special:?}");
+    assert!(special.iter().all(|(_, p)| p.kind != Kind::Pawn));
     assert_eq!(pos.moves_per_turn(), 4);
 }
 
 #[test]
-fn rogue_like_starting_special_piece_is_weighted_like_the_waves() {
+fn rogue_like_starts_with_two_special_pieces_on_the_board() {
     use std::collections::HashMap;
-    let mut kinds: HashMap<Kind, u32> = HashMap::new();
     let mut powers: HashMap<Power, u32> = HashMap::new();
-    for seed in 0..4000u64 {
-        let stock = Position::starting_special(seed * 7919 + 1);
-        assert_ne!(stock.kind, Kind::Pawn);
-        assert_ne!(stock.kind, Kind::King);
-        assert!(stock.power != Power::Plain && stock.with == Power::Plain);
-        *kinds.entry(stock.kind).or_default() += 1;
-        *powers.entry(stock.power).or_default() += 1;
-    }
-    // Веса волн: конь и слон 5, ладья 3, ферзь 1 — из 14.
-    let share = |kind: Kind| f64::from(kinds[&kind]) / 4000.0;
-    for (kind, weight) in [
-        (Kind::Knight, 5.0),
-        (Kind::Bishop, 5.0),
-        (Kind::Rook, 3.0),
-        (Kind::Queen, 1.0),
-    ] {
-        assert!(
-            (share(kind) - weight / 14.0).abs() < 0.03,
-            "{kind:?}: {}",
-            share(kind)
+    for seed in 0..2000u64 {
+        let specials = Position::starting_specials(seed * 7919 + 1);
+        assert_ne!(specials[0].0, specials[1].0, "две разные фигуры");
+        let pos = Position::rogue_start(seed * 7919 + 1);
+        for (sq, power) in specials {
+            assert!(sq < 8, "не пешка — первая горизонталь");
+            let piece = pos.piece(sq).unwrap();
+            assert!(piece.has_power(power), "{}", piece.title());
+            *powers.entry(power).or_default() += 1;
+        }
+        // Особых в запасе нет — только 2 пешки.
+        assert_eq!(
+            pos.reserve(Color::White),
+            vec![(Stock::new(Kind::Pawn, Power::Plain), 2, 0)]
         );
     }
-    // Все восемь сил — примерно поровну.
-    assert_eq!(powers.len(), 8);
+    assert_eq!(powers.len(), 8, "все восемь сил");
     for (power, n) in powers {
-        assert!(
-            (f64::from(n) / 4000.0 - 0.125).abs() < 0.03,
-            "{power:?}: {n}"
-        );
+        assert!((f64::from(n) / 4000.0 - 0.125).abs() < 0.03, "{power:?}: {n}");
     }
-    // У одного зерна — одна и та же фигура.
-    assert_eq!(
-        Position::starting_special(42),
-        Position::starting_special(42)
-    );
 }
 
 #[test]
@@ -5941,8 +5923,31 @@ fn rogue_like_chests_offer_one_of_three() {
         assert_eq!(offer.state, ChestState::Closed);
         assert!(offer.wares().iter().all(Option::is_some));
     }
-    // Видов два: оба — среди первых двух сундуков.
-    assert_ne!(pos.chest(0).unwrap().kind, pos.chest(1).unwrap().kind);
+    // С 0.136 виды — по весам: сундук фигур вдвое реже зданий и карт, пешек в нём нет; здания —
+    // по редкости: дом ополчения чаще всех, дворец ферзя реже всех.
+    let mut pos = pos.clone();
+    let (mut kinds, mut buildings) = ([0u32; 3], [0u32; 17]);
+    for _ in 0..3000 {
+        pos.roll_chests();
+        for offer in pos.chests().into_iter().flatten() {
+            kinds[Chest::ALL.iter().position(|&c| c == offer.kind).unwrap()] += 1;
+            for ware in offer.wares().into_iter().flatten() {
+                match ware {
+                    Ware::Piece(stock) => assert_ne!(stock.kind, Kind::Pawn),
+                    Ware::Building(b) => {
+                        buildings[Building::ALL.iter().position(|&x| x == b).unwrap()] += 1
+                    }
+                    Ware::Card(_) => {}
+                }
+            }
+        }
+    }
+    let share = f64::from(kinds[0]) / f64::from(kinds[1] + kinds[2]) * 2.0;
+    assert!((share - 0.5).abs() < 0.1, "{kinds:?}");
+    let count = |b: Building| buildings[Building::ALL.iter().position(|&x| x == b).unwrap()];
+    assert!(count(Building::Pawn) > count(Building::Knight), "{buildings:?}");
+    assert!(count(Building::Queen) < count(Building::King), "{buildings:?}");
+    assert!(count(Building::Queen) < count(Building::Forge), "{buildings:?}");
 }
 
 #[test]
@@ -6037,6 +6042,8 @@ fn rogue_like_power_cards_give_pieces_powers() {
             .contains(&sq("e2")),
         "магом пешка не бывает"
     );
+    // С 0.136 две фигуры армии особые с начала — конь на g1 для этой проверки обычный.
+    game.position.board[sq("g1") as usize] = Some(Piece::new(Kind::Knight, Color::White));
     assert!(game.use_card(0, &[sq("g1")]));
     let knight = game.position().piece(sq("g1")).unwrap();
     assert!(knight.fire && !knight.icy);

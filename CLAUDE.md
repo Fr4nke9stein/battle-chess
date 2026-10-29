@@ -981,6 +981,15 @@ PATH (`C:\Program Files\Git\cmd`, `C:\Program Files\GitHub CLI`). В репоз�
   `CHESTS`). «Уйти» в магазине больше не ведёт к расстановке — только закрывает магазин, игрок снова в городе
   (`ShopSpot::Leave` → `shop_folded`); из города — «Начать раунд». Тест
   `rogue_like_card_chest_is_back_and_leave_keeps_the_city`.
+  **0.136** (просьбы пользователя): в начале rogue-like особой фигуры в запасе нет (в запасе — 2 пешки), зато
+  две случайные фигуры армии (не пешки, разные клетки первой горизонтали) сразу особые —
+  `Position::starting_specials(seed)` → `[(Square, Power); 2]` (сила — одна из `SPECIAL_POWERS` поровну;
+  `with_power` в `rogue_start`; `starting_special` убрана). Сундуки: вид — по весам
+  `Rule::RogueChest{Pieces,Buildings,Cards}Weight` (50/100/100 — сундук фигур вдвое реже, виды могут
+  повторяться); в сундуке фигур пешек нет (`stock_weights` без `Kind::Pawn`, ферзь и так реже всех); здания —
+  по редкости `Building::weight` (`Rule::RogueBuildingWeight*`: дом ополчения 15, конюшня и церковь 5, башня 3,
+  дворец короля 2, дворец ферзя 1, здания сил по 3). Тесты `rogue_like_starts_with_two_special_pieces_on_the_board`,
+  частоты — в `rogue_like_chests_offer_one_of_three`.
 - `src/net.rs` (с 0.45, просьба пользователя: «очень простой мультиплеер») — клиент ретранслятора
   `tools/mp_server.py` (Python 3, без библиотек, `python3 mp_server.py [порт]`, порт 47900):
   сервер сажает двух подключившихся за доску (первый — белые), шлёт `WAIT`/`START white|black`/

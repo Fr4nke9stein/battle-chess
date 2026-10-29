@@ -142,6 +142,16 @@ rogue_decree_price = 10   ; rogue-like: цена королевского ука
 rogue_decree_own_percent = 50   ; rogue-like: шанс, что указ даст зданию усиление его вида фигур или силы, %; иначе — общее (урон, кубик, череп…)
 rogue_recruit_price = 5   ; rogue-like: цена пешки в наборе новобранцев (сколько угодно, пешка — в запас)
 rogue_chest_cards_price = 10   ; rogue-like: цена сундука карт в магазине (большой — rogue_big_chest_price_percent от неё)
+rogue_chest_pieces_weight = 50   ; rogue-like: как часто в магазине сундук фигур (вес; 50 — вдвое реже остальных)
+rogue_chest_buildings_weight = 100   ; rogue-like: как часто в магазине сундук зданий (вес)
+rogue_chest_cards_weight = 100   ; rogue-like: как часто в магазине сундук карт (вес)
+rogue_building_weight_pawn = 15   ; rogue-like: редкость дома ополчения (пешки) в сундуке зданий — вес, чем больше, тем чаще
+rogue_building_weight_knight = 5   ; rogue-like: вес конюшни в сундуке зданий
+rogue_building_weight_bishop = 5   ; rogue-like: вес церкви (слоны) в сундуке зданий
+rogue_building_weight_rook = 3   ; rogue-like: вес башни (ладьи) в сундуке зданий
+rogue_building_weight_queen = 1   ; rogue-like: вес дворца ферзя в сундуке зданий (реже всех)
+rogue_building_weight_king = 2   ; rogue-like: вес дворца короля в сундуке зданий
+rogue_building_weight_power = 3   ; rogue-like: вес каждого здания особой силы (кузня, мельница, казна…) в сундуке зданий
 
 [piece.King]   ; Король
 attack = 10   ; урон одного удара

@@ -1208,6 +1208,22 @@ impl Building {
         }
     }
 
+    /// Редкость в сундуке зданий (с 0.136): вес `Rule::RogueBuildingWeight*` — дом ополчения чаще
+    /// всех, дворец ферзя реже всех.
+    pub fn weight(self) -> u64 {
+        let rule = match self {
+            Building::Main | Building::Recruit | Building::Shop => return 0,
+            Building::Pawn => Rule::RogueBuildingWeightPawn,
+            Building::Knight => Rule::RogueBuildingWeightKnight,
+            Building::Bishop => Rule::RogueBuildingWeightBishop,
+            Building::Rook => Rule::RogueBuildingWeightRook,
+            Building::Queen => Rule::RogueBuildingWeightQueen,
+            Building::King => Rule::RogueBuildingWeightKing,
+            _ => Rule::RogueBuildingWeightPower,
+        };
+        balance().rule(rule).clamp(0, 1000) as u64
+    }
+
     /// Можно ли поставить развёрнутым (у здания есть отражённый спрайт `_m`).
     pub fn can_mirror(self) -> bool {
         matches!(
@@ -3701,15 +3717,21 @@ impl Position {
         })
     }
 
-    /// Начало rogue-like партии: у игрока (белые) обычная армия и в запасе две пешки, слон и
-    /// конь; у соперника фигур нет — сразу выходит первая волна. `seed` — случайность волн.
+    /// Начало rogue-like партии: у игрока (белые) армия (с 0.136 — две её фигуры особые) и в запасе
+    /// две пешки; у соперника фигур нет — сразу выходит первая волна. `seed` — случайность волн.
     pub fn rogue_start(seed: u64) -> Position {
         let mut pos = Position::from_fen("8/8/8/8/8/8/PPPPPPPP/RNBQKBNR w KQ - 0 1")
             .expect("начало rogue-like")
             .without_cards();
         let player = Color::White;
         pos.reserve[player as usize][Kind::Pawn as usize][0][0] = 2;
-        pos.give_stock(Position::starting_special(seed).piece(player));
+        // С 0.136 (просьба пользователя) особой фигуры в запасе нет: две случайные фигуры армии (не
+        // пешки) сразу особые.
+        for (sq, power) in Position::starting_specials(seed) {
+            if let Some(piece) = pos.board[sq as usize] {
+                pos.board[sq as usize] = Some(piece.with_power(power));
+            }
+        }
         // Город (с 0.133): набор новобранцев (a1), главное здание (d1) и с 0.134 магазин (g1).
         let mut city = [None; CITY_MAX];
         for (i, (building, at)) in [
@@ -3772,10 +3794,9 @@ impl Position {
         pos
     }
 
-    /// Rogue-like (с 0.104): особая фигура в запасе игрока в начале забега — вместо прежних слона и
-    /// коня. Вид — по весам волн (`shop_weights`, без пешки: ферзь реже всех), сила — любая из
-    /// восьми поровну; случайность — зерно партии.
-    fn starting_special(seed: u64) -> Stock {
+    /// Rogue-like (с 0.136): какие две фигуры армии игрока (не пешки — клетки первой горизонтали,
+    /// разные) с начала особые и какой силы — любая из восьми поровну; случайность — зерно партии.
+    pub(crate) fn starting_specials(seed: u64) -> [(Square, Power); 2] {
         let mut state = (seed ^ 0x5EED_0F5E_C1A1_F16E).wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
         let mut next = move |n: u64| {
             state ^= state << 13;
@@ -3783,31 +3804,10 @@ impl Position {
             state ^= state << 17;
             state % n.max(1)
         };
-        let kinds: Vec<(Kind, u64)> = shop_weights()
-            .into_iter()
-            .filter(|&(kind, w)| kind != Kind::Pawn && w > 0)
-            .collect();
-        let total: u64 = kinds.iter().map(|&(_, w)| w).sum();
-        let mut roll = next(total);
-        let kind = kinds
-            .iter()
-            .find(|&&(_, w)| {
-                let hit = roll < w;
-                roll = roll.saturating_sub(w);
-                hit
-            })
-            .map_or(Kind::Knight, |&(kind, _)| kind);
-        let powers = [
-            Power::Fire,
-            Power::Spark,
-            Power::Wind,
-            Power::Gold,
-            Power::Shade,
-            Power::Ice,
-            Power::Barbarian,
-            Power::Wizard,
-        ];
-        Stock::new(kind, powers[next(powers.len() as u64) as usize])
+        let first = next(8) as Square;
+        let second = (first + 1 + next(7) as Square) % 8;
+        let mut power = || SPECIAL_POWERS[next(SPECIAL_POWERS.len() as u64) as usize];
+        [(first, power()), (second, power())]
     }
 
     /// Следующая волна соперника выходит на его крайнюю горизонталь: от `Rule::RogueWaveMin`
@@ -4977,23 +4977,40 @@ impl Position {
                 ^ (u64::from(r.rolls) << 12 | u64::from(r.level) << 4 | 0xC)
                     .wrapping_mul(0x9E37_79B9_7F4A_7C15),
         );
-        let weights = self.stock_weights();
+        // В сундуке фигур пешек нет (с 0.136); остальные — по весам магазина (ферзь реже всех).
+        let weights: Vec<(Stock, u64)> = self
+            .stock_weights()
+            .into_iter()
+            .filter(|(stock, _)| stock.kind != Kind::Pawn)
+            .collect();
         let big_percent = balance().rule(Rule::RogueBigChestPercent).clamp(0, 100) as u64;
-        // Виды — сперва каждый по разу в случайном порядке, дальше — какие выпадут (с 0.133 видов
-        // два: фигуры и здания); каждый — большой с шансом `RogueBigChestPercent`.
-        let mut kinds = Chest::ALL.to_vec();
+        // Виды — по весам `Rule::RogueChest*Weight` (с 0.136: сундук фигур вдвое реже), каждый —
+        // большой с шансом `RogueBigChestPercent`.
+        let kind_weights = Chest::ALL.map(|c| {
+            let rule = match c {
+                Chest::Pieces => Rule::RogueChestPiecesWeight,
+                Chest::Buildings => Rule::RogueChestBuildingsWeight,
+                Chest::Cards => Rule::RogueChestCardsWeight,
+            };
+            balance().rule(rule).clamp(0, 10_000) as u64
+        });
         r.chests = [None; CHEST_SLOTS];
         let count = forced.map_or(chest_slots(), <[_]>::len);
         for slot in 0..count {
             let (kind, big) = match forced {
                 Some(list) => list[slot],
                 None => {
-                    let kind = if kinds.is_empty() {
-                        Chest::ALL[next(Chest::ALL.len() as u64) as usize]
-                    } else {
-                        kinds.remove(next(kinds.len() as u64) as usize)
-                    };
-                    (kind, next(100) < big_percent)
+                    let total: u64 = kind_weights.iter().sum();
+                    let mut roll = next(total.max(1));
+                    let pick = kind_weights
+                        .iter()
+                        .position(|&w| {
+                            let hit = roll < w;
+                            roll = roll.saturating_sub(w);
+                            hit
+                        })
+                        .unwrap_or(1);
+                    (Chest::ALL[pick], next(100) < big_percent)
                 }
             };
             let mut offer = ChestOffer {
@@ -5017,12 +5034,22 @@ impl Position {
                         }
                     }
                 }
-                // Здания — разные, поровну.
+                // Здания — разные, по редкости (`Building::weight`: пешки чаще всех, ферзь реже).
                 Chest::Buildings => {
-                    let mut left = Building::SHOP.to_vec();
-                    while items.len() < n && !left.is_empty() {
-                        let building = left.remove(next(left.len() as u64) as usize);
-                        items.push(Ware::Building(building));
+                    let mut left: Vec<(Building, u64)> =
+                        Building::SHOP.iter().map(|&b| (b, b.weight())).collect();
+                    while items.len() < n && left.iter().any(|&(_, w)| w > 0) {
+                        let total: u64 = left.iter().map(|&(_, w)| w).sum();
+                        let mut roll = next(total);
+                        let i = left
+                            .iter()
+                            .position(|&(_, w)| {
+                                let hit = roll < w;
+                                roll = roll.saturating_sub(w);
+                                hit
+                            })
+                            .unwrap_or(0);
+                        items.push(Ware::Building(left.remove(i).0));
                     }
                 }
                 // Карты — разные, поровну (зеркало — реже, `Rule::RogueRareCardPercent`).
