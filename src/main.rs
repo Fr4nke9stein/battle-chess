@@ -7,7 +7,6 @@
 mod app;
 mod assets;
 mod balance;
-mod editor;
 mod game;
 mod net;
 

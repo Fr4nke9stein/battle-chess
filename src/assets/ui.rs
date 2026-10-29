@@ -10,7 +10,7 @@ use eframe::egui::{self, TextureHandle, TextureOptions, Vec2, vec2};
 
 use super::Pixels;
 use super::cards::{Sprite, rotsprite, sprite};
-use crate::game::{Card, Chest, Color, Crest, Kind, Piece, Power};
+use crate::game::{Building, Card, Chest, Color, Kind, Piece, Power};
 
 /// Кнопка «Конец хода» без тени; тень лежит в картинке справа и снизу.
 pub const BUTTON: Vec2 = vec2(53.0, 35.0);
@@ -26,8 +26,6 @@ pub const CHEST: Vec2 = vec2(46.0, 40.0);
 pub const BIG_CHEST: Vec2 = vec2(55.0, 46.0);
 /// Карты сил rogue-like (`tools/breach_power_cards.py`, с 0.111), без тени.
 pub const POWER_CARD: Vec2 = vec2(51.0, 70.0);
-/// Медаль вида фигур (с 0.126) — с контуром, пиксели арта.
-pub const MEDAL: Vec2 = vec2(32.0, 44.0);
 /// Кадр огненной волны и центр верхней грани клетки фигуры в нём.
 pub const WAVE_FRAME: Vec2 = vec2(184.0, 168.0);
 pub const WAVE_CENTER: Vec2 = vec2(92.0, 98.0);
@@ -170,26 +168,83 @@ const BUTTONS: [&[u8]; 10] = breach!(
 const BUTTON_STATES: usize = 5;
 /// Монеты: большая и маленькая.
 const COINS: [&[u8]; 2] = breach!("ui/coin_32.png", "ui/coin_16.png");
-/// Сундуки в порядке `Chest::ALL`.
-const CHESTS: [&[u8]; 8] = breach!(
+/// Сундуки в порядке `Chest::ALL`, потом большие.
+const CHESTS: [&[u8]; 6] = breach!(
     "ui/chest_pieces.png",
-    "ui/chest_crests.png",
+    "ui/chest_buildings.png",
     "ui/chest_cards.png",
-    "ui/chest_medals.png",
     "ui/chest_pieces_big.png",
-    "ui/chest_crests_big.png",
-    "ui/chest_cards_big.png",
-    "ui/chest_medals_big.png"
+    "ui/chest_buildings_big.png",
+    "ui/chest_cards_big.png"
 );
-/// Медали видов фигур (с 0.126, `tools/breach_medal.py`) в порядке `Kind as usize`.
-const MEDALS: [&[u8]; 6] = breach!(
-    "ui/medal_p.png",
-    "ui/medal_n.png",
-    "ui/medal_b.png",
-    "ui/medal_r.png",
-    "ui/medal_q.png",
-    "ui/medal_k.png"
+/// Здания города (с 0.133, `tools/breach_city.py`): спрайт, тень и точка начала осей — в порядке
+/// `Building::ALL`, за ними развёрнутые (`_m`) в порядке `CITY_MIRRORED`.
+macro_rules! city {
+    ($($name:literal),* $(,)?) => {
+        [$((
+            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/breach/city/", $name, ".png")) as &[u8],
+            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/breach/city/", $name, "_shadow.png")) as &[u8],
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/breach/city/anchor_", $name, ".txt")),
+        )),*]
+    };
+}
+const CITY: [(&[u8], &[u8], &str); 24] = city!(
+    "main",
+    "recruit",
+    "shop",
+    "pawn",
+    "knight",
+    "bishop",
+    "rook",
+    "queen",
+    "king",
+    "forge",
+    "spark",
+    "wind",
+    "treasury",
+    "crypt",
+    "ice",
+    "longhouse",
+    "wizard",
+    "bishop_m",
+    "rook_m",
+    "queen_m",
+    "forge_m",
+    "treasury_m",
+    "ice_m",
+    "longhouse_m",
 );
+/// Здания, у которых есть развёрнутый спрайт.
+const CITY_MIRRORED: [Building; 7] = [
+    Building::Bishop,
+    Building::Rook,
+    Building::Queen,
+    Building::Forge,
+    Building::Treasury,
+    Building::Ice,
+    Building::Longhouse,
+];
+/// Значки зданий для колонки купленных (`tools/breach_city_icons.py`) в порядке `Building::ALL`.
+const CITY_ICONS: [&[u8]; 17] = breach!(
+    "city/icon_main.png",
+    "city/icon_recruit.png",
+    "city/icon_shop.png",
+    "city/icon_pawn.png",
+    "city/icon_knight.png",
+    "city/icon_bishop.png",
+    "city/icon_rook.png",
+    "city/icon_queen.png",
+    "city/icon_king.png",
+    "city/icon_forge.png",
+    "city/icon_spark.png",
+    "city/icon_wind.png",
+    "city/icon_treasury.png",
+    "city/icon_crypt.png",
+    "city/icon_ice.png",
+    "city/icon_longhouse.png",
+    "city/icon_wizard.png",
+);
+
 /// Карты rogue-like в порядке `Card::ALL`: силы, потом маска, герб, две монеты, монета, зеркало,
 /// ранг, перо.
 const POWER_CARDS: [&[u8]; 15] = breach!(
@@ -208,74 +263,6 @@ const POWER_CARDS: [&[u8]; 15] = breach!(
     "ui/card_mirror.png",
     "ui/card_rank.png",
     "ui/card_feather.png"
-);
-/// Гербы в порядке `Crest::ALL`.
-const CRESTS: [&[u8]; 65] = breach!(
-    "ui/crest_heart.png",
-    "ui/crest_snow2.png",
-    "ui/crest_crystal.png",
-    "ui/crest_axe_sword.png",
-    "ui/crest_axe_fangs.png",
-    "ui/crest_whirl.png",
-    "ui/crest_fire_axe.png",
-    "ui/crest_flames.png",
-    "ui/crest_flame_skull.png",
-    "ui/crest_flame_sword.png",
-    "ui/crest_bomb.png",
-    "ui/crest_dark_skull.png",
-    "ui/crest_dark_flames.png",
-    "ui/crest_dark_portal.png",
-    "ui/crest_dark_eye.png",
-    "ui/crest_winds.png",
-    "ui/crest_wind_sword.png",
-    "ui/crest_bolt_plus.png",
-    "ui/crest_bolts.png",
-    "ui/crest_red_bolt.png",
-    "ui/crest_bolt_one.png",
-    "ui/crest_reroll_coin.png",
-    "ui/crest_hats.png",
-    "ui/crest_meteor.png",
-    "ui/crest_hat_meteor.png",
-    "ui/crest_hat_plus.png",
-    "ui/crest_gold_king.png",
-    "ui/crest_king_queen.png",
-    "ui/crest_king_skull.png",
-    "ui/crest_piggy.png",
-    "ui/crest_mult.png",
-    "ui/crest_king_mult.png",
-    "ui/crest_few.png",
-    "ui/crest_gold_mult.png",
-    "ui/crest_pawn_mult.png",
-    "ui/crest_knight_mult.png",
-    "ui/crest_sword_mult.png",
-    "ui/crest_first.png",
-    "ui/crest_queen_mult.png",
-    "ui/crest_flame_mult.png",
-    "ui/crest_snow_mult.png",
-    "ui/crest_bolt_mult.png",
-    "ui/crest_wind_mult.png",
-    "ui/crest_bishops2.png",
-    "ui/crest_mirror.png",
-    "ui/crest_nine.png",
-    "ui/crest_card.png",
-    "ui/crest_pawn_card.png",
-    "ui/crest_queen_skull.png",
-    "ui/crest_pawn_cards.png",
-    "ui/crest_king_medal.png",
-    "ui/crest_medals2.png",
-    "ui/crest_queen_two.png",
-    "ui/crest_knife_crest.png",
-    "ui/crest_knife_king.png",
-    "ui/crest_knife_coin.png",
-    "ui/crest_flame_two.png",
-    "ui/crest_dice.png",
-    "ui/crest_blank.png",
-    "ui/crest_queen_coin.png",
-    "ui/crest_skull.png",
-    "ui/crest_silver_medals.png",
-    "ui/crest_bush.png",
-    "ui/crest_knight_coin.png",
-    "ui/crest_coin_clock.png",
 );
 /// Звенья s, m, l и наконечник — по состояниям `Aim` (idle, enemy, ally).
 const ARROW: [&[u8]; 12] = breach!(
@@ -1025,8 +1012,11 @@ pub struct UiArt {
     coins: Vec<Pixels>,
     chests: Vec<Pixels>,
     power_cards: Vec<Pixels>,
-    crests: Vec<Pixels>,
-    medals: Vec<Pixels>,
+    /// Здания города: тела, тени, точки начала осей (пиксели спрайта), значки.
+    city: Vec<Pixels>,
+    city_shadows: Vec<Pixels>,
+    city_anchors: Vec<Vec2>,
+    city_icons: Vec<Pixels>,
     arrow: Vec<Pixels>,
     targets: Vec<Pixels>,
     /// Кадры волны: [слой][кадр].
@@ -1188,8 +1178,22 @@ impl UiArt {
             coins: decode(&COINS),
             chests: decode(&CHESTS),
             power_cards: decode(&POWER_CARDS),
-            crests: decode(&CRESTS),
-            medals: decode(&MEDALS),
+            city: CITY.iter().map(|(png, ..)| Pixels::decode(png)).collect(),
+            city_shadows: CITY.iter().map(|(_, png, _)| Pixels::decode(png)).collect(),
+            city_anchors: CITY
+                .iter()
+                .map(|(.., anchor)| {
+                    let mut parts = anchor.split_whitespace().skip(1);
+                    let mut next = || {
+                        parts
+                            .next()
+                            .and_then(|n| n.parse::<f32>().ok())
+                            .unwrap_or(0.0)
+                    };
+                    vec2(next(), next())
+                })
+                .collect(),
+            city_icons: decode(&CITY_ICONS),
             arrow: decode(&ARROW),
             targets: decode(&TARGETS),
             wave: frames(&WAVE, WAVE_FRAME, WAVE_FRAMES),
@@ -1320,8 +1324,20 @@ impl UiArt {
             coins: all("coin", &self.coins),
             chests: all("chest", &self.chests),
             power_cards: all("power-card", &self.power_cards),
-            crests: all("crest", &self.crests),
-            medals: all("medal", &self.medals),
+            city: all("city", &self.city),
+            city_shadows: all("city-shadow", &self.city_shadows),
+            city_sizes: self
+                .city
+                .iter()
+                .map(|p| vec2(p.width as f32, p.height as f32))
+                .collect(),
+            city_anchors: self.city_anchors.clone(),
+            city_icons: all("city-icon", &self.city_icons),
+            city_icon_sizes: self
+                .city_icons
+                .iter()
+                .map(|p| vec2(p.width as f32, p.height as f32))
+                .collect(),
             targets: all("target", &self.targets),
             wave: all("fire-wave", &self.wave),
             portal: all("portal", &self.portal),
@@ -1434,8 +1450,12 @@ pub struct UiTextures {
     coins: Vec<TextureHandle>,
     chests: Vec<TextureHandle>,
     power_cards: Vec<TextureHandle>,
-    crests: Vec<TextureHandle>,
-    medals: Vec<TextureHandle>,
+    city: Vec<TextureHandle>,
+    city_shadows: Vec<TextureHandle>,
+    city_sizes: Vec<Vec2>,
+    city_anchors: Vec<Vec2>,
+    city_icons: Vec<TextureHandle>,
+    city_icon_sizes: Vec<Vec2>,
     targets: Vec<TextureHandle>,
     wave: Vec<TextureHandle>,
     portal: Vec<TextureHandle>,
@@ -1480,14 +1500,38 @@ impl UiTextures {
         &self.power_cards[i]
     }
 
-    /// Медаль вида фигур (`MEDAL`).
-    pub fn medal(&self, kind: Kind) -> &TextureHandle {
-        &self.medals[kind as usize]
+    /// Здание города (развёрнутое — если есть такой спрайт): тело, тень, размер и точка начала
+    /// осей в пикселях арта (её ставят на левый угол клетки здания у вертикали a и 1-й
+    /// горизонтали).
+    pub fn building(
+        &self,
+        building: Building,
+        mirrored: bool,
+    ) -> (&TextureHandle, &TextureHandle, Vec2, Vec2) {
+        let base = Building::ALL
+            .iter()
+            .position(|&b| b == building)
+            .unwrap_or(0);
+        let i = CITY_MIRRORED
+            .iter()
+            .position(|&b| b == building)
+            .filter(|_| mirrored)
+            .map_or(base, |m| Building::ALL.len() + m);
+        (
+            &self.city[i],
+            &self.city_shadows[i],
+            self.city_sizes[i],
+            self.city_anchors[i],
+        )
     }
 
-    /// Герб (`CREST`).
-    pub fn crest(&self, crest: Crest) -> &TextureHandle {
-        &self.crests[crest as usize]
+    /// Значок здания для колонки купленных и его размер в пикселях арта.
+    pub fn building_icon(&self, building: Building) -> (&TextureHandle, Vec2) {
+        let i = Building::ALL
+            .iter()
+            .position(|&b| b == building)
+            .unwrap_or(0);
+        (&self.city_icons[i], self.city_icon_sizes[i])
     }
 
     pub fn target(&self, aim: Aim) -> &TextureHandle {
@@ -1604,13 +1648,8 @@ mod tests {
                 [size.x as usize, size.y as usize]
             );
         }
-        assert_eq!(art.crests.len(), Crest::ALL.len());
-        for image in &art.crests {
-            assert_eq!(
-                [image.width, image.height],
-                [CREST.x as usize, CREST.y as usize]
-            );
-        }
+        assert_eq!(art.city.len(), art.city_anchors.len());
+        assert_eq!(art.city_icons.len(), Building::ALL.len());
         assert_eq!(art.power_cards.len(), Card::ALL.len());
         for image in &art.power_cards {
             assert_eq!(

@@ -40,6 +40,7 @@ SILVER = [hexc(c) for c in ["#eef2f8", "#bcc4d2", "#8c95a8", "#5e6678", "#363c4a
 CREAM = [hexc(c) for c in ["#fff8e6", "#e8dcc0", "#c2b494"]]
 RED = [hexc(c) for c in ["#ff8a7a", "#e8402e", "#b0201a", "#701010"]]
 FOREST = [hexc(c) for c in ["#4f8a52", "#3a6c3e", "#2a522e", "#1c3820", "#0e2012"]]
+STONE = [hexc(c) for c in ["#b8ab8a", "#8f8468", "#6c624c", "#4a4334", "#2a261c"]]  # сундук зданий (0.133)
 
 W, H = 44, 38
 LID = 15  # нижний край крышки (строка обода)
@@ -77,6 +78,17 @@ MEDAL = [  # медаль на ленте: r — лента, # — обод, o �
     ".##ooo##.",
     "..#####..",
 ]
+HOUSE = [  # домик: крыша, стены, дверь (сундук зданий, 0.133)
+    "....#....",
+    "...###...",
+    "..#####..",
+    ".#######.",
+    "#########",
+    ".#ooooo#.",
+    ".#o#o#o#.",
+    ".#o#o#o#.",
+    ".#######.",
+]
 SHIELD = [
     "#########",
     "#.......#",
@@ -113,7 +125,7 @@ def chest(kind, big=False):
     global W, H, LID
     W, H, LID = (53, 44, 18) if big else (44, 38, 15)
     wood, metal = {"pieces": (WOOD, IRON), "crests": (PAINT, GOLD), "cards": (NAVY, SILVER),
-                   "medals": (FOREST, GOLD)}[kind]
+                   "medals": (FOREST, GOLD), "buildings": (STONE, GOLD)}[kind]
     mask = shape()
     img = np.zeros((H, W, 4), np.uint8)
 
@@ -191,7 +203,7 @@ def chest(kind, big=False):
     put(lx + 5, ly + 5, OUTLINE)
     put(lx + 1, ly + 1, GOLD[0])
     # знак на крышке: пешка или щит
-    pattern = {"pieces": PAWN, "crests": SHIELD, "cards": CARD, "medals": MEDAL}[kind]
+    pattern = {"pieces": PAWN, "crests": SHIELD, "cards": CARD, "medals": MEDAL, "buildings": HOUSE}[kind]
     ph, pw = len(pattern), len(pattern[0])
     ox, oy = W // 2 - pw // 2, max(1, (LID - 3 - ph) // 2)
     for j, line in enumerate(pattern):
@@ -207,6 +219,11 @@ def chest(kind, big=False):
                     put(x, y, GOLD[2] if i < pw // 2 and j < 6 else GOLD[3])
                 elif ch == "o":
                     put(x, y, GOLD[0] if i + j < 9 else GOLD[1])
+            elif kind == "buildings":  # домик: золотая крыша и стены, красная кладка между ними
+                if ch == "#":
+                    put(x, y, GOLD[1] if j < 5 and i < pw // 2 else GOLD[2] if j < 5 else GOLD[3])
+                elif ch == "o":
+                    put(x, y, RED[1] if i < pw // 2 else RED[2])
             elif kind == "cards":  # карта: золотая рамка, светлое поле, красный ромб
                 if ch == "#":
                     put(x, y, GOLD[1] if i == 0 or j == 0 else GOLD[3])
@@ -252,17 +269,18 @@ def main():
     os.makedirs(OUT, exist_ok=True)
     images = []
     for big in (False, True):
-        for kind in ("pieces", "crests", "cards", "medals"):
+        for kind in ("pieces", "crests", "cards", "medals", "buildings"):
             img = chest(kind, big)
             name = f"chest_{kind}_big.png" if big else f"chest_{kind}.png"
             Image.fromarray(img, "RGBA").save(os.path.join(OUT, name))
             images.append(img)
     h = max(i.shape[0] for i in images)
     w = max(i.shape[1] for i in images)
-    sheet = Image.new("RGBA", (4 * (w + 4) + 4, 2 * (h + 4) + 4), (24, 28, 41, 255))
+    n = len(images) // 2
+    sheet = Image.new("RGBA", (n * (w + 4) + 4, 2 * (h + 4) + 4), (24, 28, 41, 255))
     for k, img in enumerate(images):
         part = Image.fromarray(img, "RGBA")
-        sheet.alpha_composite(part, (4 + (k % 4) * (w + 4), 4 + (k // 4) * (h + 4) + h - img.shape[0]))
+        sheet.alpha_composite(part, (4 + (k % n) * (w + 4), 4 + (k // n) * (h + 4) + h - img.shape[0]))
     sheet.resize((sheet.width * 6, sheet.height * 6), Image.NEAREST).save(
         os.path.join(OUT, "preview_chests.png"))
 

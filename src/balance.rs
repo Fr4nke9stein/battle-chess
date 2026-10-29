@@ -1,21 +1,17 @@
-//! Баланс игры — числа, которые пользователь правит сам, без программиста: характеристики
-//! фигур, цены и числа карт, правила хода и составы пяти колод. Лежат в текстовом файле
-//! `%APPDATA%\BattleChess\balance.ini` (формат как у `settings.ini`, но с разделами).
+//! Баланс игры — все числа правил: характеристики фигур, цены и числа карт, правила хода и
+//! rogue-like, составы пяти колод. С 0.133 (просьба пользователя) файла `balance.ini` нет: числа —
+//! здесь, в таблицах `RULES`, `PARAMS`, `DEFAULT_PIECES`; их список для пользователя — `Баланс.txt`
+//! в корне проекта (пишет `Balance::text`, тест `refresh_balance_list`).
 //!
-//! Если файла нет, игра создаёт его со стандартными значениями и комментариями; если в нём
-//! не хватает строк (после обновления игры) — дописывает их, сохранив чужие значения.
-//! Читается при запуске и при каждой новой партии: правки подхватываются без перезапуска.
-//! Неверная строка (не число, вне допустимых пределов, неизвестное имя) не ломает игру: для
-//! неё берётся стандартное значение, а предупреждение показывает главное меню.
-//!
-//! Правила читают числа через [`balance`]; в тестах файл не читается — там стандартные.
+//! Правила читают числа через [`balance`].
 
-use std::collections::HashSet;
+#[cfg(test)]
 use std::fmt::Write as _;
-use std::path::PathBuf;
-use std::sync::{OnceLock, RwLock};
+use std::sync::OnceLock;
 
-use crate::game::{CardKind, DECK_COUNT, DECK_NAMES, DEFAULT_RECIPES, Family, Kind, MAX_DECK};
+use crate::game::{CardKind, DECK_COUNT, DEFAULT_RECIPES, Kind};
+#[cfg(test)]
+use crate::game::{DECK_NAMES, Family};
 
 /// Числа одной фигуры.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,7 +85,6 @@ pub enum Rule {
     RogueVampireHeal,
     RogueCrestRedBoltStep,
     RogueCrestRedBoltMax,
-    RogueCrestRerollCoinCost,
     RogueCrestGoldKingBonus,
     RogueCrestKingQueenBonus,
     RogueCrestPiggyStep,
@@ -115,12 +110,9 @@ pub enum Rule {
     RogueFirstLevelHpCut,
     RogueWizardEvery,
     RogueChestPiecesPrice,
-    RogueChestCrestsPrice,
     RogueChestChoices,
-    RogueChestCardsPrice,
     RogueHandSize,
     RogueGoldSellPercent,
-    RogueCrestSellPrice,
     RogueRareCardPercent,
     RogueChestSlots,
     RogueBigChestPercent,
@@ -145,1034 +137,735 @@ pub enum Rule {
     RogueLevelHpPercent,
     RogueCrestBoltAddPercent,
     RogueCrestWindAddPercent,
-    RogueChestMedalsPrice,
     RogueCardSellPrice,
-    RogueMedalMultPercent,
+    RogueBuildingMultPercent,
     RogueIceHp,
     RogueCrestBishopAddPercent,
     RogueCrestNineEvery,
     RogueCrestNineMultPercent,
     RogueCrestCardAddPercent,
     RogueCrestPawnKills,
-    RogueCrestGoldKills,
     RogueCrestKnifeCoinPercent,
     RogueCrestDiceMax,
     RogueCrestBlankAddPercent,
     RogueCrestSkullAddPercent,
     RogueCrestSkullChance,
-    RogueCrestMedalChance,
     RogueCrestBushAddPercent,
     RogueCrestKnightGold,
     RogueCrestClockBasePercent,
     RogueCrestClockStepPercent,
+    RogueBuildingAttack,
+    RogueKillGoldBonus,
+    RogueChestBuildingsPrice,
+    RogueBuildingPrice,
+    RogueBuildingSellPercent,
+    RogueDecreePrice,
+    RogueDecreeOwnPercent,
+    RogueRecruitPrice,
+    RogueChestCardsPrice,
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // ключ и пояснение — для списка `Баланс.txt`
 pub struct RuleDef {
     pub key: &'static str,
     pub default: i32,
-    pub min: i32,
-    pub max: i32,
     pub note: &'static str,
 }
 
-/// Строки `[rules]` прежних версий, которых больше нет: в старом файле они не предупреждение.
-/// `rogue_wave_turns` — с 0.52 волна rogue-like выходит каждый ход; `lava_pawns` — с 0.108 нет
-/// усиленного компьютера;
-/// `rogue_crest_slots`, `rogue_crest_reroll_cost` — с 0.108 гербы на общем прилавке.
-const RETIRED_RULES: [&str; 32] = [
-    "rogue_wave_turns",
-    "rogue_armor_skip_level",
-    "lava_pawns",
-    "rogue_crest_slots",
-    "rogue_crest_reroll_cost",
-    // гербы скидок и частоты фигур (убраны в 0.118)
-    "rogue_crest_coin_percent",
-    "rogue_crest_queen_discount",
-    "rogue_crest_axes_percent",
-    "rogue_crest_flame_pawn_discount",
-    "rogue_crest_flame_coin_percent",
-    "rogue_crest_dark_rook_discount",
-    "rogue_crest_dark_coin_percent",
-    "rogue_crest_wind_coin_percent",
-    "rogue_crest_wind_knight_discount",
-    "rogue_crest_bolt_bishop_discount",
-    "rogue_crest_bolt_coin_percent",
-    "rogue_crest_pair_percent",
-    "rogue_crest_hat_coin_percent",
-    "rogue_crest_hat_bishop_discount",
-    "rogue_crest_kings2_percent",
-    // урон взрывов, метеоритов, кратеров, шипов и топора (с 0.121 — мульти)
-    "lava_damage",
-    "rogue_crest_spikes_percent",
-    "rogue_crest_axe_attack",
-    "rogue_wizard_damage",
-    "rogue_crest_flame_sword_damage",
-    "rogue_crest_bomb_damage",
-    "rogue_crest_meteor_damage",
-    "rogue_crest_crater_damage",
-    "rogue_crest_whirl_damage",
-    // прилавок магазина (убран в 0.126 — остались сундуки)
-    "rogue_shop_slots",
-    "rogue_shop_piece_percent",
-    "rogue_crest_price",
-];
-
 /// В порядке `Rule`.
-pub const RULES: [RuleDef; 136] = [
+pub const RULES: [RuleDef; 138] = [
     RuleDef {
         key: "mana_per_turn",
         default: 2,
-        min: 0,
-        max: 20,
         note: "сколько маны сторона получает в начале каждого своего хода (мана копится)",
     },
     RuleDef {
         key: "cards_per_turn",
         default: 3,
-        min: 0,
-        max: 10,
         note: "сколько карт можно сыграть за ход — до хода фигурой и после него вместе",
     },
     RuleDef {
         key: "start_hand",
         default: 3,
-        min: 0,
-        max: 10,
         note: "сколько карт сдаётся в руку перед первым ходом",
     },
     RuleDef {
         key: "max_hand",
         default: 7,
-        min: 1,
-        max: 10,
         note: "больше карт в руке не бывает: с полной рукой карта остаётся в колоде",
     },
     RuleDef {
         key: "spark_percent",
         default: 100,
-        min: 0,
-        max: 1000,
         note: "rogue-like: сколько процентов атаки электрической фигуры достаётся каждой \
                чужой фигуре, задетой её молнией",
     },
     RuleDef {
         key: "rogue_waves",
-        default: 10,
-        min: 1,
-        max: 99,
+        default: 8,
         note: "rogue-like: сколько волн на первом уровне (на каждом следующем — на одну больше)",
     },
     RuleDef {
         key: "rogue_wave_min",
         default: 3,
-        min: 1,
-        max: 16,
         note: "rogue-like: меньше всего фигур в волне",
     },
     RuleDef {
         key: "rogue_wave_max",
         default: 6,
-        min: 1,
-        max: 16,
         note: "rogue-like: больше всего фигур в волне (если меньше наименьшего — берётся наименьшее)",
     },
     RuleDef {
         key: "rogue_moves",
         default: 4,
-        min: 1,
-        max: 16,
         note: "rogue-like: сколько ходов подряд делает игрок за свой ход — каждый другой фигурой",
     },
     RuleDef {
         key: "rogue_weight_pawn",
         default: 15,
-        min: 0,
-        max: 100,
         note: "rogue-like: вес пешки при выборе фигур волны — чем больше, тем чаще",
     },
     RuleDef {
         key: "rogue_weight_knight",
         default: 5,
-        min: 0,
-        max: 100,
         note: "rogue-like: вес коня в волне",
     },
     RuleDef {
         key: "rogue_weight_bishop",
         default: 5,
-        min: 0,
-        max: 100,
         note: "rogue-like: вес слона в волне",
     },
     RuleDef {
         key: "rogue_weight_rook",
         default: 3,
-        min: 0,
-        max: 100,
         note: "rogue-like: вес ладьи в волне",
     },
     RuleDef {
         key: "rogue_weight_queen",
         default: 1,
-        min: 0,
-        max: 100,
         note: "rogue-like: вес ферзя в волне",
     },
     RuleDef {
         key: "rogue_levels",
         default: 10,
-        min: 1,
-        max: 99,
         note: "rogue-like: сколько уровней; на каждом следующем на одну волну больше (на первом — rogue_waves)",
     },
     RuleDef {
         key: "rogue_pawn_drop",
         default: 2,
-        min: 0,
-        max: 100,
         note: "rogue-like: на сколько вес пешки в волнах меньше с каждым следующим уровнем (не ниже 0)",
     },
     RuleDef {
         key: "rogue_gold_pawn",
         default: 1,
-        min: 0,
-        max: 99,
-        note: "rogue-like: золото за побеждённую пешку (цена в магазине — rogue_shop_percent от него)",
+        note: "rogue-like: золото за побеждённую пешку, кроме rogue_kill_gold_bonus (цена в магазине — rogue_shop_percent от него)",
     },
     RuleDef {
         key: "rogue_gold_knight",
         default: 2,
-        min: 0,
-        max: 99,
         note: "rogue-like: золото за побеждённого коня",
     },
     RuleDef {
         key: "rogue_gold_bishop",
         default: 2,
-        min: 0,
-        max: 99,
         note: "rogue-like: золото за побеждённого слона",
     },
     RuleDef {
         key: "rogue_gold_rook",
         default: 3,
-        min: 0,
-        max: 99,
         note: "rogue-like: золото за побеждённую ладью",
     },
     RuleDef {
         key: "rogue_gold_queen",
         default: 4,
-        min: 0,
-        max: 99,
         note: "rogue-like: золото за побеждённого ферзя",
     },
     RuleDef {
         key: "rogue_reroll_cost",
         default: 5,
-        min: 0,
-        max: 99,
         note: "rogue-like: сколько золота стоит обновление сундуков в магазине",
     },
     RuleDef {
         key: "rogue_shop_percent",
         default: 200,
-        min: 0,
-        max: 1000,
         note: "rogue-like: цена фигуры в магазине, % от золота за её победу (200 — вдвое дороже)",
     },
     RuleDef {
         key: "rogue_fire_percent",
         default: 200,
-        min: 0,
-        max: 1000,
         note: "rogue-like: огненная фигура в магазине — % от цены обычной такой же",
     },
     RuleDef {
         key: "rogue_spark_percent",
         default: 200,
-        min: 0,
-        max: 1000,
         note: "rogue-like: электрическая фигура в магазине — % от цены обычной такой же",
     },
     RuleDef {
         key: "rogue_wind_percent",
         default: 200,
-        min: 0,
-        max: 1000,
         note: "rogue-like: воздушная фигура в магазине — % от цены обычной такой же",
     },
     RuleDef {
         key: "rogue_gold_piece_percent",
         default: 200,
-        min: 0,
-        max: 2000,
         note: "rogue-like: золотая фигура в магазине — % от цены обычной такой же",
     },
     RuleDef {
         key: "rogue_gold_bonus",
         default: 2,
-        min: 0,
-        max: 99,
         note: "rogue-like: сколько золота сверху даёт победа, одержанная золотой фигурой",
     },
     RuleDef {
         key: "rogue_shade_percent",
         default: 200,
-        min: 0,
-        max: 1000,
         note: "rogue-like: теневая фигура в магазине — % от цены обычной такой же",
     },
     RuleDef {
         key: "rogue_ice_percent",
         default: 200,
-        min: 0,
-        max: 1000,
         note: "rogue-like: ледяная фигура в магазине — % от цены обычной такой же",
     },
     RuleDef {
         key: "rogue_boss_hp",
-        default: 100,
-        min: 10,
-        max: 990,
+        default: 80,
         note: "rogue-like: здоровье короля-толстосума (босс последней волны первого уровня), в единицах",
     },
     RuleDef {
         key: "rogue_boss_attack",
         default: 10,
-        min: 0,
-        max: 990,
         note: "rogue-like: атака короля-толстосума, в единицах",
     },
     RuleDef {
         key: "rogue_boss_gold",
         default: 10,
-        min: 0,
-        max: 999,
         note: "rogue-like: золото за победу над королём-толстосумом",
     },
     RuleDef {
         key: "rogue_crest_heart_hp",
         default: 20,
-        min: 0,
-        max: 990,
         note: "rogue-like, герб снежинки и сердца: прибавка к здоровью ледяных фигур, в единицах",
     },
     RuleDef {
         key: "rogue_crest_freeze_turns",
         default: 2,
-        min: 1,
-        max: 9,
         note: "rogue-like, герб двойной снежинки: на сколько ходов ледяные фигуры замораживают ударившего",
     },
     RuleDef {
         key: "rogue_crest_crystal_hp",
         default: 10,
-        min: 10,
-        max: 990,
         note: "rogue-like, герб замороженной снежинки: с таким здоровьем (в единицах) ледяная фигура вмерзает в лёд",
     },
     RuleDef {
         key: "rogue_knight_hp",
         default: 30,
-        min: 10,
-        max: 990,
         note: "rogue-like: здоровье коня (обеих сторон), в единицах; в обычной партии — из [piece.Knight]",
     },
     RuleDef {
         key: "rogue_poison_level",
         default: 2,
-        min: 1,
-        max: 255,
         note: "rogue-like: на каком уровне фигуры волн бывают ядовитыми",
     },
     RuleDef {
         key: "rogue_poison_percent",
         default: 100,
-        min: 0,
-        max: 100,
         note: "rogue-like: шанс фигуры волны на этом уровне выйти ядовитой, %",
     },
     RuleDef {
         key: "rogue_poison_damage",
         default: 10,
-        min: 0,
-        max: 990,
         note: "rogue-like: урон яда в конце следующего хода отравленной фигуры, в единицах",
     },
     RuleDef {
         key: "rogue_barbarian_percent",
         default: 200,
-        min: 0,
-        max: 1000,
         note: "rogue-like: фигура-варвар в магазине — % от цены обычной такой же",
     },
     RuleDef {
         key: "rogue_barbarian_repeats",
         default: 1,
-        min: 0,
-        max: 15,
         note: "rogue-like: сколько раз подряд варвар бьёт ещё раз после убийства",
     },
     RuleDef {
         key: "rogue_crest_axe_hp",
         default: 10,
-        min: 0,
-        max: 990,
         note: "rogue-like, герб топора и меча: на столько меньше здоровья у варваров, в единицах",
     },
     RuleDef {
         key: "rogue_crest_fangs_heal",
         default: 10,
-        min: 0,
-        max: 990,
         note: "rogue-like, герб топора и клыков: лечение варвара за убийство (раз за ход), в единицах",
     },
     RuleDef {
         key: "rogue_crest_whirl_radius",
         default: 2,
-        min: 1,
-        max: 7,
         note: "rogue-like, герб топора и красного круга: радиус кругового удара варвара, клеток",
     },
     RuleDef {
         key: "rogue_wizard_percent",
         default: 200,
-        min: 0,
-        max: 1000,
         note: "rogue-like: фигура-маг в магазине — % от цены обычной такой же",
     },
     RuleDef {
         key: "rogue_crest_flames_reach",
         default: 2,
-        min: 1,
-        max: 7,
         note: "rogue-like, герб двух огоньков: взрыв огненной фигуры достаёт крестом на столько клеток",
     },
     RuleDef {
         key: "rogue_crest_dark_portal_hp",
         default: 10,
-        min: 10,
-        max: 990,
         note: "rogue-like, герб теневого огня и портала: с таким здоровьем (в единицах) и меньше теневая фигура уходит порталом от смертельного удара",
     },
     RuleDef {
         key: "rogue_crest_dark_dodge_every",
         default: 3,
-        min: 2,
-        max: 20,
         note: "rogue-like, герб двух теневых огней: теневая фигура не получает каждый N-й удар по ней",
     },
     RuleDef {
         key: "rogue_armor_level",
         default: 3,
-        min: 1,
-        max: 255,
         note: "rogue-like: на каком уровне в волнах бывают бронированные (только на нём)",
     },
     RuleDef {
         key: "rogue_armor_wave",
         default: 1,
-        min: 1,
-        max: 255,
         note: "rogue-like: с какой волны уровня бывают бронированные фигуры",
     },
     RuleDef {
         key: "rogue_armor_percent",
         default: 100,
-        min: 0,
-        max: 100,
         note: "rogue-like: шанс фигуры волны выйти бронированной, %",
     },
     RuleDef {
         key: "rogue_armor_hp",
         default: 30,
-        min: 0,
-        max: 990,
         note: "rogue-like: прибавка к здоровью бронированной фигуры, в единицах",
     },
     RuleDef {
         key: "rogue_vampire_level",
         default: 4,
-        min: 1,
-        max: 255,
         note: "rogue-like: на каком уровне в волнах бывают фигуры-вампиры (только на нём)",
     },
     RuleDef {
         key: "rogue_vampire_wave",
         default: 1,
-        min: 1,
-        max: 255,
         note: "rogue-like: с какой волны уровня бывают фигуры-вампиры",
     },
     RuleDef {
         key: "rogue_vampire_percent",
         default: 100,
-        min: 0,
-        max: 100,
         note: "rogue-like: шанс фигуры волны выйти вампиром, %",
     },
     RuleDef {
         key: "rogue_vampire_hp",
         default: 10,
-        min: 0,
-        max: 990,
         note: "rogue-like: прибавка к здоровью фигуры-вампира, в единицах",
     },
     RuleDef {
         key: "rogue_vampire_heal",
         default: 10,
-        min: 0,
-        max: 990,
         note: "rogue-like: сколько здоровья вампир восстанавливает за каждый удар по чужой фигуре, в единицах",
     },
     RuleDef {
         key: "rogue_crest_red_bolt_step",
         default: 10,
-        min: 1,
-        max: 999,
         note: "rogue-like, герб красной молнии: за столько убийств электрической фигуры молния летит на клетку дальше",
     },
     RuleDef {
         key: "rogue_crest_red_bolt_max",
         default: 3,
-        min: 0,
-        max: 7,
         note: "rogue-like, герб красной молнии: на сколько клеток самое большее удлиняется молния",
-    },
-    RuleDef {
-        key: "rogue_crest_reroll_coin_cost",
-        default: 1,
-        min: 0,
-        max: 999,
-        note: "rogue-like, герб монеты и обновления: столько стоит обновление сундуков",
     },
     RuleDef {
         key: "rogue_crest_gold_king_bonus",
         default: 1,
-        min: 0,
-        max: 999,
         note: "rogue-like, герб короля: ещё столько золота за победу золотой фигурой",
     },
     RuleDef {
         key: "rogue_crest_king_queen_bonus",
         default: 2,
-        min: 0,
-        max: 999,
         note: "rogue-like, герб короля и ферзя: ещё столько золота за победу золотым ферзём",
     },
     RuleDef {
         key: "rogue_crest_piggy_step",
         default: 10,
-        min: 1,
-        max: 999,
         note: "rogue-like, герб свиньи-копилки: за каждые столько золота каждая золотая фигура приносит монету в конце уровня",
     },
     RuleDef {
         key: "rogue_combo_percent",
         default: 200,
-        min: 0,
-        max: 2000,
         note: "rogue-like: объединённая фигура (варвар с другой силой) в магазине — % от цены обычной такой же",
     },
     RuleDef {
         key: "rogue_combo_weight_percent",
         default: 25,
-        min: 0,
-        max: 1000,
         note: "rogue-like: все объединённые фигуры вместе выпадают в магазине и сундуке фигур с таким % \
                от шанса всех одиночных особых (25 — в 4 раза реже)",
     },
     RuleDef {
         key: "rogue_crest_fire_axe_hp",
         default: 10,
-        min: 10,
-        max: 990,
         note: "rogue-like, герб огненного топора: с таким здоровьем (в единицах) и меньше варвар бьёт после убийства лишний раз",
     },
     RuleDef {
         key: "rogue_crest_fire_axe_repeats",
         default: 1,
-        min: 0,
-        max: 15,
         note: "rogue-like, герб огненного топора: сколько лишних повторов удара",
     },
     RuleDef {
         key: "rogue_zombie_level",
         default: 5,
-        min: 1,
-        max: 255,
         note: "rogue-like: на каком уровне в волнах бывают фигуры-зомби (только на нём)",
     },
     RuleDef {
         key: "rogue_zombie_wave",
         default: 1,
-        min: 1,
-        max: 255,
         note: "rogue-like: с какой волны уровня бывают фигуры-зомби",
     },
     RuleDef {
         key: "rogue_zombie_percent",
         default: 100,
-        min: 0,
-        max: 100,
         note: "rogue-like: шанс фигуры волны выйти зомби, %",
     },
     RuleDef {
         key: "rogue_zombie_hp",
         default: 10,
-        min: 0,
-        max: 990,
         note: "rogue-like: прибавка к здоровью фигуры-зомби, в единицах",
     },
     RuleDef {
         key: "rogue_zombie_rise_hp",
         default: 10,
-        min: 10,
-        max: 990,
         note: "rogue-like: с каким здоровьем зомби восстаёт через ход после гибели (один раз), в единицах",
     },
     RuleDef {
         key: "rogue_armored_vampire_level",
         default: 6,
-        min: 1,
-        max: 255,
         note: "rogue-like: на каком уровне в волнах бывают вампиры в броне (только на нём)",
     },
     RuleDef {
         key: "rogue_armored_vampire_wave",
         default: 1,
-        min: 1,
-        max: 255,
         note: "rogue-like: с какой волны уровня бывают вампиры в броне",
     },
     RuleDef {
         key: "rogue_armored_vampire_percent",
         default: 100,
-        min: 0,
-        max: 100,
         note: "rogue-like: шанс фигуры волны выйти вампиром в броне, %",
     },
     RuleDef {
         key: "rogue_armored_vampire_hp",
         default: 30,
-        min: 0,
-        max: 990,
         note: "rogue-like: прибавка к здоровью вампира в броне, в единицах (лечится ударом раз за ход)",
     },
     RuleDef {
         key: "rogue_venom_zombie_level",
         default: 7,
-        min: 1,
-        max: 255,
         note: "rogue-like: на каком уровне в волнах бывают ядовитые зомби (только на нём)",
     },
     RuleDef {
         key: "rogue_venom_zombie_wave",
         default: 1,
-        min: 1,
-        max: 255,
         note: "rogue-like: с какой волны уровня бывают ядовитые зомби",
     },
     RuleDef {
         key: "rogue_venom_zombie_percent",
         default: 100,
-        min: 0,
-        max: 100,
         note: "rogue-like: шанс фигуры волны выйти ядовитым зомби, %",
     },
     RuleDef {
         key: "rogue_reroll_step",
         default: 0,
-        min: 0,
-        max: 99,
         note: "rogue-like: на сколько золота дорожает каждое следующее обновление сундуков (до ухода из магазина; 0 — не дорожает)",
     },
     RuleDef {
         key: "rogue_drops_per_turn",
         default: 1,
-        min: 0,
-        max: 64,
         note: "rogue-like: сколько фигур можно выставить из запаса за ход",
     },
     RuleDef {
         key: "rogue_max_pieces",
         default: 16,
-        min: 1,
-        max: 64,
         note: "rogue-like: больше стольких ваших фигур на доске не бывает (из запаса не выставить)",
     },
     RuleDef {
         key: "rogue_first_level_hp_cut",
         default: 10,
-        min: 0,
-        max: 990,
         note: "rogue-like: на первом уровне у фигур волн здоровья меньше на столько единиц (не \
                меньше одной)",
     },
     RuleDef {
         key: "rogue_wizard_every",
         default: 2,
-        min: 1,
-        max: 99,
         note: "rogue-like: маг запускает метеорит раз в столько своих ходов",
     },
     RuleDef {
         key: "rogue_chest_pieces_price",
         default: 10,
-        min: 0,
-        max: 999,
         note: "rogue-like: цена сундука фигур в магазине",
-    },
-    RuleDef {
-        key: "rogue_chest_crests_price",
-        default: 10,
-        min: 0,
-        max: 999,
-        note: "rogue-like: цена сундука гербов в магазине",
     },
     RuleDef {
         key: "rogue_chest_choices",
         default: 3,
-        min: 1,
-        max: 5,
         note: "rogue-like: из скольких вещей в сундуке выбирают одну",
-    },
-    RuleDef {
-        key: "rogue_chest_cards_price",
-        default: 10,
-        min: 0,
-        max: 999,
-        note: "rogue-like: цена сундука карт в магазине",
     },
     RuleDef {
         key: "rogue_hand_size",
         default: 3,
-        min: 1,
-        max: 5,
         note: "rogue-like: сколько карт помещается в руку",
     },
     RuleDef {
         key: "rogue_gold_sell_percent",
         default: 200,
-        min: 0,
-        max: 1000,
         note: "rogue-like: золотая фигура продаётся за столько % от продажи обычной такой же",
-    },
-    RuleDef {
-        key: "rogue_crest_sell_price",
-        default: 5,
-        min: 0,
-        max: 999,
-        note: "rogue-like: за сколько продаётся герб в магазине",
     },
     RuleDef {
         key: "rogue_rare_card_percent",
         default: 30,
-        min: 0,
-        max: 100,
         note: "rogue-like: шанс редкой карты (зеркала) в сундуке карт, % от шанса обычной",
     },
     RuleDef {
         key: "rogue_chest_slots",
         default: 3,
-        min: 0,
-        max: 3,
         note: "rogue-like: сколько сундуков в магазине (разных видов)",
     },
     RuleDef {
         key: "rogue_big_chest_percent",
         default: 30,
-        min: 0,
-        max: 100,
         note: "rogue-like: шанс, что сундук в магазине большой, %",
     },
     RuleDef {
         key: "rogue_big_chest_choices",
         default: 5,
-        min: 1,
-        max: 5,
         note: "rogue-like: из скольких вещей выбирают в большом сундуке",
     },
     RuleDef {
         key: "rogue_big_chest_picks",
         default: 2,
-        min: 1,
-        max: 5,
         note: "rogue-like: сколько вещей берут из большого сундука",
     },
     RuleDef {
         key: "rogue_big_chest_price_percent",
         default: 200,
-        min: 0,
-        max: 1000,
         note: "rogue-like: цена большого сундука, % от обычного такого же",
     },
     RuleDef {
         key: "rogue_crest_mult_add_percent",
         default: 400,
-        min: 0,
-        max: 10000,
         note: "rogue-like, герб урона: прибавка к мульти, в сотых (400 — мульти +4)",
     },
     RuleDef {
         key: "rogue_crest_king_mult_percent",
         default: 150,
-        min: 0,
-        max: 1000,
         note: "rogue-like, герб урона короля: каждый удар вашего короля умножает мульти, в сотых (150 — ×1.5)",
     },
     RuleDef {
         key: "rogue_crest_few_base",
         default: 16,
-        min: 0,
-        max: 64,
         note: "rogue-like, герб короля и шестнадцати: мульти × (это число − ваших фигур на доске), не меньше ×1",
     },
     RuleDef {
         key: "rogue_crest_pawn_mult_percent",
         default: 150,
-        min: 0,
-        max: 1000,
         note: "rogue-like, герб пешки и умножения: каждый удар вашей пешки в этом ходу умножает мульти, в сотых (150 — ×1.5)",
     },
     RuleDef {
         key: "rogue_crest_knight_add_percent",
         default: 200,
-        min: 0,
-        max: 10000,
         note: "rogue-like, герб коня и умножения: мульти всех ваших фигур + это за каждый удар ваших коней в этом ходу, в сотых (200 — +2)",
     },
     RuleDef {
         key: "rogue_crest_sword_mult_percent",
         default: 120,
-        min: 0,
-        max: 1000,
         note: "rogue-like, герб меча и умножения: мульти × это за каждую вашу фигуру, ударившую в этом ходу раньше, в сотых (120 — ×1.2)",
     },
     RuleDef {
         key: "rogue_crest_first_add_percent",
         default: 1000,
-        min: 0,
-        max: 100000,
         note: "rogue-like, герб пешки и единицы: мульти первой бьющей в этом ходу фигуры + это, в сотых (1000 — +10)",
     },
     RuleDef {
         key: "rogue_crest_queen_add_percent",
         default: 300,
-        min: 0,
-        max: 10000,
         note: "rogue-like, герб ферзя и умножения: мульти + это за каждый удар вашего ферзя в этом ходу, в сотых (300 — +3)",
     },
     RuleDef {
         key: "rogue_crest_flame_mult_percent",
         default: 150,
-        min: 0,
-        max: 1000,
         note: "rogue-like, герб огня и умножения: каждый взрыв вашей огненной фигуры в этом раунде умножает мульти, в сотых (150 — ×1.5)",
     },
     RuleDef {
         key: "rogue_crest_snow_mult_percent",
         default: 300,
-        min: 0,
-        max: 1000,
         note: "rogue-like, герб снежинки и умножения: мульти × это за каждую замороженную фигуру на доске, в сотых (300 — ×3)",
     },
     RuleDef {
         key: "rogue_crest_meteor_add_percent",
         default: 1000,
-        min: 0,
-        max: 100000,
         note: "rogue-like, герб метеорита: мульти первого метеорита в этом ходу + это, в сотых (1000 — +10)",
     },
     RuleDef {
         key: "rogue_crest_jump_add_percent",
         default: 300,
-        min: 0,
-        max: 10000,
         note: "rogue-like, герб теневого огня и черепа: мульти + это за каждую фигуру, через которую прошли ваши теневые в этом ходу, в сотых (300 — +3)",
     },
     RuleDef {
         key: "rogue_crest_bomb_mult_percent",
         default: 200,
-        min: 0,
-        max: 1000,
         note: "rogue-like, герб падающей бомбы: мульти взрыва огненной фигуры × это, в сотых (200 — ×2)",
     },
     RuleDef {
         key: "rogue_crest_flame_sword_add_percent",
         default: 500,
-        min: 0,
-        max: 10000,
         note: "rogue-like, герб огня и меча: мульти взрыва огненной фигуры + это, в сотых (500 — +5)",
     },
     RuleDef {
         key: "rogue_crest_axe_mult_percent",
         default: 200,
-        min: 0,
-        max: 1000,
         note: "rogue-like, герб топора и меча: мульти варваров × это, в сотых (200 — ×2)",
     },
     RuleDef {
         key: "rogue_level_hp_percent",
-        default: 400,
-        min: 100,
-        max: 10000,
-        note: "rogue-like: здоровье фигур волн на каждом следующем уровне, % от прошлого (400 — в 4 раза больше)",
+        default: 250,
+        note: "rogue-like: здоровье фигур волн на каждом следующем уровне, % от прошлого (250 — в 2.5 раза больше)",
     },
     RuleDef {
         key: "rogue_crest_bolt_add_percent",
         default: 500,
-        min: 0,
-        max: 10000,
         note: "rogue-like, герб молнии и умножения: мульти молнии + это за каждую фигуру перед задетой в цепочке, в сотых (500 — +5)",
     },
     RuleDef {
         key: "rogue_crest_wind_add_percent",
         default: 800,
-        min: 0,
-        max: 10000,
         note: "rogue-like, герб смерча и умножения: мульти воздушных фигур + это за каждый ход воздушных фигур в этом ходу, в сотых (800 — +8)",
-    },
-    RuleDef {
-        key: "rogue_chest_medals_price",
-        default: 10,
-        min: 0,
-        max: 999,
-        note: "rogue-like: цена сундука медалей в магазине",
     },
     RuleDef {
         key: "rogue_card_sell_price",
         default: 3,
-        min: 0,
-        max: 999,
         note: "rogue-like: за сколько продаётся карта из руки в магазине",
     },
     RuleDef {
-        key: "rogue_medal_mult_percent",
+        key: "rogue_building_mult_percent",
         default: 100,
-        min: 0,
-        max: 10000,
-        note: "rogue-like, медаль вида фигур: мульти этого вида + это, раньше гербов, в сотых (100 — +1)",
+        note: "rogue-like, здание вида фигур или силы в городе: мульти его фигур + это, раньше усилений, в сотых (100 — +1)",
     },
     RuleDef {
         key: "rogue_ice_hp",
         default: 10,
-        min: 0,
-        max: 999,
         note: "rogue-like: ледяные фигуры — с этим здоровьем сверху (и ставшие ледяными картой)",
     },
     RuleDef {
         key: "rogue_crest_bishop_add_percent",
         default: 400,
-        min: 0,
-        max: 10000,
         note: "rogue-like, герб двух слонов: мульти + это до конца раунда каждый раз, когда ваш слон за ход ранит две разные фигуры (ударом, молнией, взрывом, метеоритом), в сотых (400 — +4)",
     },
     RuleDef {
         key: "rogue_crest_nine_every",
         default: 9,
-        min: 1,
-        max: 99,
         note: "rogue-like, герб девятки: каждая такая по счёту ваша атакующая фигура за забег получает мульти × `rogue_crest_nine_mult_percent`",
     },
     RuleDef {
         key: "rogue_crest_nine_mult_percent",
         default: 900,
-        min: 0,
-        max: 100000,
         note: "rogue-like, герб девятки: во сколько раз мульти этой фигуры, в сотых (900 — ×9)",
     },
     RuleDef {
         key: "rogue_crest_card_add_percent",
         default: 200,
-        min: 0,
-        max: 10000,
         note: "rogue-like, герб карты: мульти + это за каждую карту, сыгранную в этом забеге, в сотых (200 — +2)",
     },
     RuleDef {
         key: "rogue_crest_pawn_kills",
         default: 4,
-        min: 1,
-        max: 99,
         note: "rogue-like, герб пешки и синей карты: карта за каждые столько фигур, убитых вашими пешками за ход",
-    },
-    RuleDef {
-        key: "rogue_crest_gold_kills",
-        default: 2,
-        min: 1,
-        max: 99,
-        note: "rogue-like, герб короля и медали: медаль её вида, когда ваша золотая фигура убила столько фигур за ход",
     },
     RuleDef {
         key: "rogue_crest_knife_coin_percent",
         default: 50,
-        min: 0,
-        max: 10000,
         note: "rogue-like, герб ножа и монеты: мульти + столько процентов золота, вырученного за продажу фигур (50 — половина)",
     },
     RuleDef {
         key: "rogue_crest_dice_max",
         default: 10,
-        min: 1,
-        max: 999,
         note: "rogue-like, герб случайного числа: мульти + случайное от 1 до этого, новое каждый ход",
     },
     RuleDef {
         key: "rogue_crest_blank_add_percent",
         default: 1000,
-        min: 0,
-        max: 100000,
         note: "rogue-like, пустой герб: мульти + это, если в запасе нет фигур, в сотых (1000 — +10)",
     },
     RuleDef {
         key: "rogue_crest_skull_add_percent",
         default: 1500,
-        min: 0,
-        max: 100000,
         note: "rogue-like, герб черепа: мульти + это, в сотых (1500 — +15)",
     },
     RuleDef {
         key: "rogue_crest_skull_chance",
         default: 25,
-        min: 1,
-        max: 9999,
         note: "rogue-like, герб черепа: шанс 1 к стольким, что он рассыплется в конце вашего хода",
-    },
-    RuleDef {
-        key: "rogue_crest_medal_chance",
-        default: 25,
-        min: 1,
-        max: 9999,
-        note: "rogue-like, герб двух серебряных медалей: шанс 1 к стольким получить медаль вида фигуры, убившей другую",
     },
     RuleDef {
         key: "rogue_crest_bush_add_percent",
         default: 200,
-        min: 0,
-        max: 10000,
         note: "rogue-like, герб куста: мульти + это за каждый удар ваших фигур без убийства подряд, в сотых (200 — +2)",
     },
     RuleDef {
         key: "rogue_crest_knight_gold",
         default: 10,
-        min: 0,
-        max: 999,
         note: "rogue-like, герб коня и монеты: столько золота, если первым в раунде убил ваш конь",
     },
     RuleDef {
         key: "rogue_crest_clock_base_percent",
         default: 200,
-        min: 0,
-        max: 100000,
         note: "rogue-like, герб монеты и часов: мульти × (это + шаг × проданные фигуры), в сотых (200 — 2)",
     },
     RuleDef {
         key: "rogue_crest_clock_step_percent",
         default: 25,
-        min: 0,
-        max: 10000,
         note: "rogue-like, герб монеты и часов: шаг за каждую проданную фигуру, в сотых (25 — 0.25)",
+    },
+    RuleDef {
+        key: "rogue_building_attack",
+        default: 5,
+        note: "rogue-like, здание вида фигур или силы в городе: базовый урон его фигур + это, в единицах",
+    },
+    RuleDef {
+        key: "rogue_kill_gold_bonus",
+        default: 1,
+        note: "rogue-like: сколько золота сверху даёт победа над любой фигурой волн (и над толстосумом)",
+    },
+    RuleDef {
+        key: "rogue_chest_buildings_price",
+        default: 10,
+        note: "rogue-like: цена сундука зданий в городе (большой — rogue_big_chest_price_percent от неё)",
+    },
+    RuleDef {
+        key: "rogue_building_price",
+        default: 10,
+        note: "rogue-like: цена здания — от неё считается продажа",
+    },
+    RuleDef {
+        key: "rogue_building_sell_percent",
+        default: 50,
+        note: "rogue-like: здание продаётся за столько % своей цены (50 — за половину)",
+    },
+    RuleDef {
+        key: "rogue_decree_price",
+        default: 10,
+        note: "rogue-like: цена королевского указа в главном здании",
+    },
+    RuleDef {
+        key: "rogue_decree_own_percent",
+        default: 50,
+        note: "rogue-like: шанс, что указ даст зданию усиление его вида фигур или силы, %; иначе — общее (урон, кубик, череп…)",
+    },
+    RuleDef {
+        key: "rogue_recruit_price",
+        default: 5,
+        note: "rogue-like: цена пешки в наборе новобранцев (сколько угодно, пешка — в запас)",
+    },
+    RuleDef {
+        key: "rogue_chest_cards_price",
+        default: 10,
+        note: "rogue-like: цена сундука карт в магазине (большой — rogue_big_chest_price_percent от неё)",
     },
 ];
 
@@ -1197,13 +890,12 @@ pub enum Param {
     AbsoluteZeroPercent,
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // ключ и пояснение — для списка `Баланс.txt`
 pub struct ParamDef {
     pub param: Param,
     pub card: CardKind,
     pub key: &'static str,
     pub default: i32,
-    pub min: i32,
-    pub max: i32,
     pub note: &'static str,
 }
 
@@ -1212,7 +904,7 @@ const fn def(
     card: CardKind,
     key: &'static str,
     default: i32,
-    (min, max): (i32, i32),
+    _limits: (i32, i32),
     note: &'static str,
 ) -> ParamDef {
     ParamDef {
@@ -1220,8 +912,6 @@ const fn def(
         card,
         key,
         default,
-        min,
-        max,
         note,
     }
 }
@@ -1360,10 +1050,10 @@ pub const PARAMS: [ParamDef; 16] = [
 
 /// Единица здоровья и урона (с 0.44, просьба пользователя): правила считают в прежних числах
 /// (так не теряются доли — оборона, «воин», проценты карт), а игрок видит их делёнными на
-/// `UNIT` — на экране и в `balance.ini`.
+/// `UNIT` — на экране и в списке баланса.
 pub const UNIT: i32 = 300;
 
-/// Одно очко на экране и в `balance.ini` (с 0.112.1, просьба пользователя: десятичная база —
+/// Одно очко на экране и в списке баланса (с 0.112.1, просьба пользователя: десятичная база —
 /// атака 10, здоровье 30): `UNIT` / 10.
 pub const POINT: i32 = UNIT / 10;
 
@@ -1373,14 +1063,10 @@ pub fn shown(value: i32) -> i32 {
     (value.max(0) + POINT - 1) / POINT
 }
 
-/// Атака, здоровье и урон лавы в `balance.ini` — в очках `POINT` (с 0.112.1; раньше — в `UNIT`).
+#[cfg(test)]
+/// Атака и здоровье в списке баланса — в очках `POINT` (с 0.112.1; раньше — в `UNIT`).
 pub fn to_file(value: i32) -> i32 {
     (value + POINT / 2).div_euclid(POINT)
-}
-
-/// Число из `balance.ini` во внутреннее (очки `POINT`).
-pub fn from_file(n: i32) -> i32 {
-    n * POINT
 }
 
 /// Стандартные характеристики фигур по `Kind as usize`: пешка, конь, слон, ладья, ферзь, король.
@@ -1434,9 +1120,6 @@ fn default_cost(kind: CardKind) -> u8 {
     }
 }
 
-const MAX_COST: i32 = 99;
-const MAX_COPIES: i32 = 99;
-
 /// Все числа баланса.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Balance {
@@ -1464,15 +1147,6 @@ fn standard_deck(index: usize) -> Vec<(CardKind, u8)> {
     let mut deck = DEFAULT_RECIPES[index].to_vec();
     deck.sort_by_key(|&(kind, _)| kind as usize);
     deck
-}
-
-/// Что нашлось при разборе файла.
-#[derive(Debug, Default)]
-pub struct Report {
-    /// Строки, которые не удалось прочесть; для них взяты стандартные значения.
-    pub warnings: Vec<String>,
-    /// В файле нет каких-то известных строк (новая версия игры).
-    pub missing: bool,
 }
 
 impl Balance {
@@ -1514,186 +1188,15 @@ impl Balance {
         &self.decks[index % DECK_COUNT]
     }
 
-    /// Цены всех карт по `CardKind as usize` — по ним понятно, надо ли перерисовать лица карт.
-    pub fn costs(&self) -> &[u8; CardKind::COUNT] {
-        &self.costs
-    }
-
-    /// Разбирает текст файла: незнакомое и испорченное пропускается (с предупреждением).
-    pub fn parse(text: &str) -> (Balance, Report) {
-        let mut balance = Balance::default();
-        let mut report = Report::default();
-        let mut seen: HashSet<String> = HashSet::new();
-        let mut deck_started = [false; DECK_COUNT];
-        let mut section = String::new();
-        for (index, raw) in text.trim_start_matches('\u{feff}').lines().enumerate() {
-            let number = index + 1;
-            let line = raw.split([';', '#']).next().unwrap_or("").trim();
-            if line.is_empty() {
-                continue;
-            }
-            if let Some(name) = line.strip_prefix('[') {
-                section = name.trim_end_matches(']').trim().to_owned();
-                continue;
-            }
-            let Some((key, value)) = line.split_once('=') else {
-                report
-                    .warnings
-                    .push(format!("строка {number}: нет знака «=»: {line}"));
-                continue;
-            };
-            let (key, value) = (key.trim(), value.trim());
-            let Ok(n) = value.parse::<i32>() else {
-                report.warnings.push(format!(
-                    "строка {number}: «{key} = {value}» — нужно целое число"
-                ));
-                continue;
-            };
-            let spot = Spot {
-                number,
-                section: &section,
-                key,
-            };
-            balance.apply(&spot, n, &mut seen, &mut deck_started, &mut report.warnings);
-        }
-        balance.check(&deck_started, &mut report.warnings);
-        report.missing = expected_keys().any(|key| !seen.contains(&key));
-        (balance, report)
-    }
-
-    fn apply(
-        &mut self,
-        spot: &Spot,
-        n: i32,
-        seen: &mut HashSet<String>,
-        deck_started: &mut [bool; DECK_COUNT],
-        warnings: &mut Vec<String>,
-    ) {
-        let (group, name) = spot.section.split_once('.').unwrap_or((spot.section, ""));
-        let key = spot.key;
-        let fits = |min: i32, max: i32, warnings: &mut Vec<String>| {
-            let ok = (min..=max).contains(&n);
-            if !ok {
-                warnings.push(format!(
-                    "строка {}: «{key} = {n}» — допустимо от {min} до {max}",
-                    spot.number
-                ));
-            }
-            ok
-        };
-        match group {
-            "rules" => match RULES.iter().position(|r| r.key == key) {
-                Some(i) if fits(RULES[i].min, RULES[i].max, warnings) => {
-                    self.rules[i] = n;
-                    seen.insert(format!("rules.{key}"));
-                }
-                Some(_) => {}
-                // Числа прежних версий, которых больше нет, — молча пропускаются.
-                None if RETIRED_RULES.contains(&key) => {}
-                None => spot.unknown(warnings),
-            },
-            "piece" => {
-                let Some(kind) = Kind::ALL.into_iter().find(|k| format!("{k:?}") == name) else {
-                    return spot.unknown(warnings);
-                };
-                let piece = &mut self.pieces[kind as usize];
-                let ok = match key {
-                    "attack" if fits(1, 9999, warnings) => {
-                        piece.attack = from_file(n);
-                        true
-                    }
-                    "hp" if fits(1, 99999, warnings) => {
-                        piece.hp = from_file(n);
-                        true
-                    }
-                    "points" if fits(0, 99, warnings) => {
-                        piece.points = n as u8;
-                        true
-                    }
-                    "attack" | "hp" | "points" => return,
-                    _ => return spot.unknown(warnings),
-                };
-                if ok {
-                    seen.insert(format!("piece.{name}.{key}"));
-                }
-            }
-            "card" => {
-                let Some(kind) = CardKind::ALL.into_iter().find(|k| format!("{k:?}") == name)
-                else {
-                    return spot.unknown(warnings);
-                };
-                if key == "cost" {
-                    if fits(0, MAX_COST, warnings) {
-                        self.costs[kind as usize] = n as u8;
-                        seen.insert(format!("card.{name}.cost"));
-                    }
-                } else if let Some(def) = PARAMS.iter().find(|p| p.card == kind && p.key == key) {
-                    if fits(def.min, def.max, warnings) {
-                        self.params[def.param as usize] = n;
-                        seen.insert(format!("card.{name}.{key}"));
-                    }
-                } else {
-                    spot.unknown(warnings);
-                }
-            }
-            "deck" => {
-                let Some(deck) = DECK_NAMES.iter().position(|d| *d == name) else {
-                    return spot.unknown(warnings);
-                };
-                let Some(kind) = CardKind::ALL.into_iter().find(|k| format!("{k:?}") == key) else {
-                    return spot.unknown(warnings);
-                };
-                if !fits(0, MAX_COPIES, warnings) {
-                    return;
-                }
-                // Первая строка раздела вытесняет стандартный состав колоды.
-                if !std::mem::replace(&mut deck_started[deck], true) {
-                    self.decks[deck].clear();
-                }
-                self.decks[deck].retain(|&(k, _)| k != kind);
-                if n > 0 {
-                    self.decks[deck].push((kind, n as u8));
-                }
-                seen.insert(format!("deck.{name}"));
-            }
-            _ => spot.unknown(warnings),
-        }
-    }
-
-    /// Проверки, которые видны только по всему файлу: колоды и руки.
-    fn check(&mut self, deck_started: &[bool; DECK_COUNT], warnings: &mut Vec<String>) {
-        for (i, started) in deck_started.iter().enumerate() {
-            let total: usize = self.decks[i].iter().map(|&(_, n)| n as usize).sum();
-            if *started && (total == 0 || total > MAX_DECK) {
-                warnings.push(format!(
-                    "колода «{}»: {total} карт — нужно от 1 до {MAX_DECK}; взят стандартный состав",
-                    DECK_NAMES[i]
-                ));
-                self.decks[i] = standard_deck(i);
-            }
-            // Порядок карт в составе ни на что не влияет — приводим к одному виду.
-            self.decks[i].sort_by_key(|&(kind, _)| kind as usize);
-        }
-        if self.start_hand() > self.max_hand() {
-            warnings.push(format!(
-                "start_hand ({}) больше max_hand ({}); взяты стандартные значения",
-                self.start_hand(),
-                self.max_hand()
-            ));
-            self.rules[Rule::StartHand as usize] = RULES[Rule::StartHand as usize].default;
-            self.rules[Rule::MaxHand as usize] = RULES[Rule::MaxHand as usize].default;
-        }
-    }
-
-    /// Текст файла: все числа с комментариями.
-    pub fn to_ini(&self) -> String {
+    /// Список всех чисел для пользователя (`Баланс.txt`): правила, фигуры, карты, колоды.
+    #[cfg(test)]
+    pub fn text(&self) -> String {
         let mut out = String::new();
         out.push_str(
-            "; Баланс «Боевых шахмат»: правьте числа и сохраняйте файл — новые значения\n\
-             ; подхватятся при следующем нажатии «Начать играть» (перезапускать игру не нужно).\n\
-             ; Всё после «;» — комментарий. Неверная строка (не число, вне пределов) заменяется\n\
-             ; стандартным значением, а главное меню покажет предупреждение.\n\
-             ; Удобнее править всё кнопками: меню игры → «Править баланс» (откроется страница в браузере).\n\n",
+            "Баланс «Боевых шахмат» — все числа игры.\n\
+             С 0.133 файла balance.ini нет: числа зашиты в игру, а этот список — только для чтения.\n\
+             Что поменять — скажите Claude. После «;» — что число значит. Атака и здоровье — в очках\n\
+             (атака пешки — 10).\n\n",
         );
         out.push_str("[rules]\n");
         for (rule, value) in RULES.iter().zip(self.rules) {
@@ -1747,40 +1250,7 @@ impl Balance {
     }
 }
 
-/// Где в файле строка — для предупреждений.
-struct Spot<'a> {
-    number: usize,
-    section: &'a str,
-    key: &'a str,
-}
-
-impl Spot<'_> {
-    fn unknown(&self, warnings: &mut Vec<String>) {
-        warnings.push(format!(
-            "строка {}: неизвестный параметр «{}» в разделе [{}]",
-            self.number, self.key, self.section
-        ));
-    }
-}
-
-/// Все строки, которые должны быть в файле, — чтобы заметить недостающие.
-fn expected_keys() -> impl Iterator<Item = String> {
-    let rules = RULES.iter().map(|r| format!("rules.{}", r.key));
-    let pieces = Kind::ALL
-        .into_iter()
-        .flat_map(|k| ["attack", "hp", "points"].map(|key| format!("piece.{k:?}.{key}")));
-    let cards = CardKind::ALL.into_iter().flat_map(|kind| {
-        std::iter::once(format!("card.{kind:?}.cost")).chain(
-            PARAMS
-                .iter()
-                .filter(move |p| p.card == kind)
-                .map(move |p| format!("card.{kind:?}.{}", p.key)),
-        )
-    });
-    let decks = DECK_NAMES.iter().map(|name| format!("deck.{name}"));
-    rules.chain(pieces).chain(cards).chain(decks)
-}
-
+#[cfg(test)]
 /// Карты в порядке файла и конструктора: по типу (обычные, жертвы, победы), от дешёвых к
 /// дорогим по стандартным ценам.
 pub fn ordered_kinds() -> Vec<CardKind> {
@@ -1789,6 +1259,7 @@ pub fn ordered_kinds() -> Vec<CardKind> {
     kinds
 }
 
+#[cfg(test)]
 fn family_name(family: Family) -> &'static str {
     match family {
         Family::Normal => "обычная карта",
@@ -1797,6 +1268,7 @@ fn family_name(family: Family) -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn payment(family: Family) -> &'static str {
     match family {
         Family::Normal => "мана",
@@ -1807,207 +1279,11 @@ fn payment(family: Family) -> &'static str {
 
 // ---------- Общий доступ ----------
 
-static CURRENT: RwLock<Option<&'static Balance>> = RwLock::new(None);
 static DEFAULT: OnceLock<Balance> = OnceLock::new();
 
-/// Действующий баланс: из последнего чтения файла, а до него (и в тестах) — стандартный.
+/// Баланс игры — стандартный, из таблиц этого файла (с 0.133 файла `balance.ini` нет).
 pub fn balance() -> &'static Balance {
-    let current = *CURRENT.read().unwrap_or_else(|e| e.into_inner());
-    current.unwrap_or_else(|| DEFAULT.get_or_init(Balance::default))
-}
-
-/// Делает `new` действующим балансом. Старый остаётся в памяти (несколько килобайт на каждую
-/// перемену) — зато правила держат на него ссылку без блокировок.
-fn install(new: Balance) {
-    if *balance() == new {
-        return;
-    }
-    let leaked: &'static Balance = Box::leak(Box::new(new));
-    *CURRENT.write().unwrap_or_else(|e| e.into_inner()) = Some(leaked);
-}
-
-/// Стандартный баланс — действующий (сетевая партия: у обоих игроков одни числа).
-pub fn use_default() {
-    install(Balance::default());
-}
-
-/// `%APPDATA%\BattleChess\balance.ini` (на macOS — в `~/Library/Application Support`).
-pub fn path() -> Option<PathBuf> {
-    crate::settings::data_dir().map(|dir| dir.join("balance.ini"))
-}
-
-/// Читает файл баланса и делает его действующим; возвращает предупреждения. Нет файла — его
-/// создают со стандартными значениями; не хватает строк — файл переписывается с ними (значения
-/// пользователя сохраняются), но только если в нём нет ошибок: правки с опечатками не трогаем.
-pub fn reload() -> Vec<String> {
-    let Some(path) = path() else {
-        return Vec::new();
-    };
-    match std::fs::read(&path) {
-        Ok(bytes) => {
-            let (balance, report) = Balance::parse(&String::from_utf8_lossy(&bytes));
-            if report.missing && report.warnings.is_empty() {
-                write_file(&path, &balance);
-            }
-            install(balance);
-            report.warnings
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let balance = Balance::default();
-            write_file(&path, &balance);
-            install(balance);
-            Vec::new()
-        }
-        Err(e) => {
-            install(Balance::default());
-            vec![format!("не удалось прочитать balance.ini: {e}")]
-        }
-    }
-}
-
-fn write_file(path: &std::path::Path, balance: &Balance) {
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let _ = std::fs::write(path, balance.to_ini());
-}
-
-/// Заменяет в тексте файла раздел `[deck.<name>]` строками `body` (остальной текст не трогает);
-/// нет такого раздела — дописывает его в конец.
-fn replace_deck_section(text: &str, name: &str, body: &[String]) -> String {
-    let header = format!("[deck.{name}]");
-    let lines: Vec<&str> = text.lines().collect();
-    let is_header = |line: &str| line.trim_start_matches('\u{feff}').trim().starts_with('[');
-    let start = lines.iter().position(|line| {
-        let line = line.trim_start_matches('\u{feff}');
-        line.split(';').next().unwrap_or("").trim() == header
-    });
-    let mut out: Vec<String> = Vec::new();
-    match start {
-        Some(start) => {
-            let end = lines[start + 1..]
-                .iter()
-                .position(|line| is_header(line))
-                .map_or(lines.len(), |n| start + 1 + n);
-            out.extend(lines[..=start].iter().map(|l| (*l).to_owned()));
-            out.extend(body.iter().cloned());
-            // Пустая строка между разделами — как в файле, который пишет игра.
-            if end < lines.len() {
-                out.push(String::new());
-            }
-            out.extend(lines[end..].iter().map(|l| (*l).to_owned()));
-        }
-        None => {
-            out.extend(lines.iter().map(|l| (*l).to_owned()));
-            out.push(String::new());
-            out.push(format!(
-                "{header}   ; сколько копий каждой карты в колоде (0 — нет в колоде)"
-            ));
-            out.extend(body.iter().cloned());
-        }
-    }
-    out.join("\n") + "\n"
-}
-
-/// Строки раздела колоды: все виды карт по порядку файла, с числом копий (0 — нет).
-fn deck_section_body(recipe: &[(CardKind, u8)]) -> Vec<String> {
-    ordered_kinds()
-        .into_iter()
-        .map(|kind| {
-            let copies = recipe
-                .iter()
-                .find(|&&(k, _)| k == kind)
-                .map_or(0, |&(_, n)| n);
-            format!("{kind:?} = {copies}   ; {}", kind.title())
-        })
-        .collect()
-}
-
-/// Записывает состав в раздел колоды `index` файла `balance.ini`: прежний файл остаётся рядом
-/// как `balance.ini.bak`, остальные строки и комментарии не меняются. Файл должен быть без
-/// ошибок в разделе колод — иначе игра на следующем чтении взяла бы стандартный состав.
-pub fn set_deck_in_file(index: usize, recipe: &[(CardKind, u8)]) -> Result<(), String> {
-    let path = path().ok_or("не найдена папка настроек (APPDATA)")?;
-    // Нет файла — создаём стандартный, чтобы было что править.
-    if !path.exists() {
-        reload();
-    }
-    set_deck_in(&path, index, recipe)
-}
-
-fn set_deck_in(
-    path: &std::path::Path,
-    index: usize,
-    recipe: &[(CardKind, u8)],
-) -> Result<(), String> {
-    let old = std::fs::read(path).map_err(|e| format!("не удалось прочитать balance.ini: {e}"))?;
-    let text = String::from_utf8_lossy(&old);
-    let name = DECK_NAMES[index % DECK_COUNT];
-    let new = replace_deck_section(&text, name, &deck_section_body(recipe));
-    let (check, _) = Balance::parse(&new);
-    let mut wanted = recipe.to_vec();
-    wanted.sort_by_key(|&(kind, _)| kind as usize);
-    if check.deck(index) != wanted.as_slice() {
-        return Err(
-            "файл balance.ini нельзя править автоматически — исправьте в нём ошибки".to_owned(),
-        );
-    }
-    let _ = std::fs::write(path.with_extension("ini.bak"), &old);
-    std::fs::write(path, new).map_err(|e| format!("не удалось записать balance.ini: {e}"))
-}
-
-/// Текст файла баланса (нет файла — сначала создаётся стандартный): для редактора в браузере.
-pub fn file_text() -> Result<String, String> {
-    let path = path().ok_or("не найдена папка настроек (APPDATA)")?;
-    if !path.exists() {
-        reload();
-    }
-    std::fs::read(&path)
-        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-        .map_err(|e| format!("не удалось прочитать balance.ini: {e}"))
-}
-
-/// Записывает присланный редактором текст в `balance.ini` (прежний файл — `balance.ini.bak`);
-/// возвращает предупреждения разбора — их же покажет меню.
-pub fn save_text(text: &str) -> Result<Vec<String>, String> {
-    let path = path().ok_or("не найдена папка настроек (APPDATA)")?;
-    save_text_to(&path, text)
-}
-
-fn save_text_to(path: &std::path::Path, text: &str) -> Result<Vec<String>, String> {
-    let (_, report) = Balance::parse(text);
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Ok(old) = std::fs::read(path)
-        && old != text.as_bytes()
-    {
-        let _ = std::fs::write(path.with_extension("ini.bak"), old);
-    }
-    // Через временный файл: игра никогда не прочтёт файл записанным наполовину.
-    let temp = path.with_extension("ini.tmp");
-    std::fs::write(&temp, text)
-        .and_then(|()| std::fs::rename(&temp, path))
-        .map_err(|e| format!("не удалось записать balance.ini: {e}"))?;
-    Ok(report.warnings)
-}
-
-/// Открывает `balance.ini` в Блокноте (создав файл, если его ещё нет) — если редактор в браузере
-/// не запустился.
-pub fn open_in_editor() {
-    reload();
-    if let Some(path) = path() {
-        let _ = if cfg!(windows) {
-            std::process::Command::new("notepad.exe").arg(path).spawn()
-        } else if cfg!(target_os = "macos") {
-            std::process::Command::new("open")
-                .arg("-t")
-                .arg(path)
-                .spawn()
-        } else {
-            std::process::Command::new("xdg-open").arg(path).spawn()
-        };
-    }
+    DEFAULT.get_or_init(Balance::default)
 }
 
 /// Слово по числу: `plural(2, ["карта", "карты", "карт"])` — «карты».
@@ -2023,6 +1299,7 @@ pub fn plural(n: i32, [one, few, many]: [&'static str; 3]) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::MAX_DECK;
 
     #[test]
     fn tables_follow_the_enums() {
@@ -2039,7 +1316,6 @@ mod tests {
         }
         for (i, def) in PARAMS.iter().enumerate() {
             assert_eq!(def.param as usize, i, "{}", def.key);
-            assert!((def.min..=def.max).contains(&def.default), "{}", def.key);
         }
         for (i, kind) in CardKind::ALL.into_iter().enumerate() {
             assert_eq!(kind as usize, i);
@@ -2060,176 +1336,23 @@ mod tests {
         assert_eq!(MAX_DECK, 64);
     }
 
+    /// `Баланс.txt` в корне проекта — список всех чисел для пользователя (с 0.133, вместо
+    /// `balance.ini`). После правки чисел: `cargo test --release refresh_balance_list -- --ignored`.
     #[test]
-    fn attack_and_health_are_written_in_points() {
-        // С 0.112.1 — десятичная база: атака 10, здоровье 30 (очки `POINT`).
-        let text = Balance::default().to_ini();
-        assert!(text.contains("[piece.Knight]   ; Конь\nattack = 10   ;"));
-        assert!(text.contains("hp = 30   ; здоровье"));
-        let (balance, _) = Balance::parse("[piece.Knight]\nhp = 30\n");
-        assert_eq!(balance.piece(Kind::Knight).hp, 900);
-        assert_eq!(shown(900), 30);
-        assert_eq!(shown(100), 4, "доля — вверх");
+    #[ignore]
+    fn refresh_balance_list() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/Баланс.txt");
+        std::fs::write(path, Balance::default().text()).expect("Баланс.txt");
     }
 
     #[test]
-    fn the_file_written_by_the_game_reads_back_as_the_same_balance() {
-        let balance = Balance::default();
-        let (read, report) = Balance::parse(&balance.to_ini());
-        assert_eq!(read, balance);
-        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
-        assert!(!report.missing);
-        // Файл со своими числами тоже переживает запись и чтение.
-        let (edited, _) =
-            Balance::parse("[card.FireWave]\ncost = 5\ndamage = 450\n[rules]\nmax_hand = 9");
-        let (again, report) = Balance::parse(&edited.to_ini());
-        assert_eq!(again, edited);
-        assert!(report.warnings.is_empty() && !report.missing);
-    }
-
-    #[test]
-    fn edited_numbers_replace_the_defaults_and_the_rest_stays() {
-        let text = "\u{feff}; свои правки\r\n[card.FireWave]\r\ncost = 5   ; дороже\r\ndamage = 450\r\n\
-                    [piece.Pawn]\r\nattack=500\r\nhp = 1000\r\n[rules]\r\nmana_per_turn = 4\r\n";
-        let (balance, report) = Balance::parse(text);
-        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
-        assert!(report.missing, "остальных строк в файле нет");
-        assert_eq!(balance.cost(CardKind::FireWave), 5);
-        assert_eq!(balance.param(Param::WaveDamage), 450);
-        assert_eq!(balance.piece(Kind::Pawn).attack, 500 * POINT);
-        assert_eq!(balance.piece(Kind::Pawn).hp, 1000 * POINT);
-        assert_eq!(balance.piece(Kind::Pawn).points, 1);
-        assert_eq!(balance.mana_per_turn(), 4);
-        assert_eq!(balance.cost(CardKind::Storm), 10);
-        assert_eq!(balance.piece(Kind::King).hp, 1500);
-        assert_eq!(balance.deck(0), Balance::default().deck(0));
-    }
-
-    #[test]
-    fn broken_lines_keep_the_defaults_and_warn() {
-        let text = "[card.FireWave]\ncost = много\ndamage = 100000\nweight = 3\n\
-                    [card.Nope]\ncost = 1\n[piece.Pawn]\nhp = 0\nмусор\n[magic]\nx = 1\n\
-                    [rules]\nmana_per_turn = -1\n";
-        let (balance, report) = Balance::parse(text);
-        assert_eq!(report.warnings.len(), 8, "{:?}", report.warnings);
-        let defaults = Balance::default();
-        assert_eq!(
-            balance.cost(CardKind::FireWave),
-            defaults.cost(CardKind::FireWave)
-        );
-        assert_eq!(balance.param(Param::WaveDamage), 300);
-        assert_eq!(balance.piece(Kind::Pawn), defaults.piece(Kind::Pawn));
-        assert_eq!(balance.mana_per_turn(), 2);
-        assert!(report.warnings.iter().any(|w| w.contains("строка 2")));
-    }
-
-    #[test]
-    fn decks_come_from_their_sections() {
-        let text = "[deck.Лазурная]\nFireWave = 3\nStorm = 1\nNormal = 0\n[deck.Золотая]\nFireWave = 0\n\
-                    [deck.Неизвестная]\nStorm = 1\n";
-        let (balance, report) = Balance::parse(text);
-        assert_eq!(
-            balance.deck(0),
-            [(CardKind::FireWave, 3), (CardKind::Storm, 1)]
-        );
-        // Пустая колода — стандартная, и об этом предупреждают.
-        assert_eq!(balance.deck(3), Balance::default().deck(3));
-        assert_eq!(report.warnings.len(), 2, "{:?}", report.warnings);
-        // Слишком большая колода тоже заменяется.
-        let (big, report) = Balance::parse("[deck.Багровая]\nFireWave = 99\nStorm = 99\n");
-        assert_eq!(big.deck(1), Balance::default().deck(1));
-        assert_eq!(report.warnings.len(), 1);
-    }
-
-    #[test]
-    fn a_deck_section_is_replaced_in_place_and_the_rest_stays() {
-        let text = "[rules]\nmax_hand = 9   ; рука\n\n[deck.Лазурная]   ; моя\nFireWave = 2\nStorm = 1\n\n\
-                    [deck.Багровая]\nFireWave = 4\n";
-        let body = deck_section_body(&[(CardKind::Storm, 3)]);
-        let new = replace_deck_section(text, "Лазурная", &body);
-        assert!(new.starts_with("[rules]\nmax_hand = 9   ; рука\n\n[deck.Лазурная]   ; моя\n"));
-        assert!(new.contains("Storm = 3   ; Буря\n") && new.contains("FireWave = 0   ; "));
+    fn balance_list_is_up_to_date() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/Баланс.txt");
+        let file = std::fs::read_to_string(path).unwrap_or_default();
         assert!(
-            new.ends_with("\n\n[deck.Багровая]\nFireWave = 4\n"),
-            "{new}"
+            file == Balance::default().text(),
+            "Баланс.txt устарел: cargo test --release refresh_balance_list -- --ignored"
         );
-        let (read, report) = Balance::parse(&new);
-        assert_eq!(read.deck(0), [(CardKind::Storm, 3)]);
-        assert_eq!(read.deck(1), [(CardKind::FireWave, 4)]);
-        assert_eq!(read.max_hand(), 9);
-        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
-        // Повторная запись того же состава ничего не меняет.
-        assert_eq!(replace_deck_section(&new, "Лазурная", &body), new);
-        // Нет раздела — он дописывается в конец.
-        let appended = replace_deck_section("[rules]\nmax_hand = 9\n", "Золотая", &body);
-        assert!(appended.contains("\n\n[deck.Золотая]   ; "));
-        assert_eq!(Balance::parse(&appended).0.deck(3), [(CardKind::Storm, 3)]);
-    }
-
-    #[test]
-    fn a_deck_goes_into_the_file_and_the_old_file_is_kept() {
-        let dir = std::env::temp_dir().join(format!("battle-chess-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("balance.ini");
-        let old = Balance::default()
-            .to_ini()
-            .replace("max_hand = 7", "max_hand = 9");
-        std::fs::write(&path, &old).unwrap();
-        let recipe = [(CardKind::Storm, 3), (CardKind::FireWave, 5)];
-        set_deck_in(&path, 2, &recipe).unwrap();
-        let new = std::fs::read_to_string(&path).unwrap();
-        let (read, report) = Balance::parse(&new);
-        assert_eq!(
-            read.deck(2),
-            [(CardKind::FireWave, 5), (CardKind::Storm, 3)]
-        );
-        assert_eq!(
-            read.deck(1),
-            Balance::default().deck(1),
-            "другие колоды не тронуты"
-        );
-        assert_eq!(read.max_hand(), 9, "чужие правки сохранились");
-        assert!(report.warnings.is_empty() && !report.missing);
-        assert_eq!(
-            std::fs::read_to_string(dir.join("balance.ini.bak")).unwrap(),
-            old
-        );
-        // Нет файла — нечего править.
-        assert!(set_deck_in(&dir.join("нет.ini"), 0, &recipe).is_err());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn the_editor_saves_the_whole_file_and_keeps_the_old_one() {
-        let dir = std::env::temp_dir().join(format!("battle-chess-save-{}", std::process::id()));
-        let path = dir.join("BattleChess").join("balance.ini");
-        let first = Balance::default().to_ini();
-        assert!(
-            save_text_to(&path, &first).unwrap().is_empty(),
-            "папка создаётся сама"
-        );
-        let second = first.replace("max_hand = 7", "max_hand = 9");
-        assert!(save_text_to(&path, &second).unwrap().is_empty());
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), second);
-        assert_eq!(
-            std::fs::read_to_string(path.with_extension("ini.bak")).unwrap(),
-            first
-        );
-        assert!(!path.with_extension("ini.tmp").exists());
-        let broken = second.replace("max_hand = 9", "max_hand = много");
-        assert_eq!(
-            save_text_to(&path, &broken).unwrap().len(),
-            1,
-            "ошибки возвращаются"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn the_starting_hand_must_fit_into_the_hand() {
-        let (balance, report) = Balance::parse("[rules]\nstart_hand = 9\nmax_hand = 5\n");
-        assert_eq!((balance.start_hand(), balance.max_hand()), (3, 7));
-        assert_eq!(report.warnings.len(), 1);
     }
 
     #[test]

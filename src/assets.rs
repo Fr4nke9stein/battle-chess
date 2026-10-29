@@ -611,7 +611,7 @@ pub use ui::{
     COIN_SMALL, CRATER_CENTER, CRATER_FRAME_TIME, CRATER_FRAMES, CREST, DARK_LOOP, ELECTRIC_ANCHOR,
     ELECTRIC_FLASH, ELECTRIC_FRAME_TIME, ELECTRIC_LOOP, ELECTRIC_SLOW, FREEZE_CENTER, FREEZE_CLINK,
     FREEZE_DELAY, FREEZE_FRAME_TIME, FREEZE_FRAMES, FREEZE_FROST, FrameSprite, LAVA_FRAME_TIME,
-    LAVA_FRAMES, LAVA_HOLD, LAVA_IGNITE, LAVA_SPREAD, LAVA_WAVE_AT, MEDAL, METEOR_CENTER,
+    LAVA_FRAMES, LAVA_HOLD, LAVA_IGNITE, LAVA_SPREAD, LAVA_WAVE_AT, METEOR_CENTER,
     METEOR_FRAME_TIME, METEOR_FRAMES, METEOR_IMPACT, METEOR_WAVE_FRAMES, POISON_LOOP,
     POISON_TRAIL_CENTER, POISON_TRAIL_FRAMES, PORTAL_CENTER, PORTAL_CUT, PORTAL_FRAME,
     PORTAL_FRAME_TIME, PORTAL_FRAMES, PORTAL_RADII, PORTAL_SCALE, PORTAL_SINK, POWER_CARD,
@@ -1573,13 +1573,6 @@ impl Art {
     /// Высота макушки фигуры над точкой, стоящей в центре клетки, в пикселях арта.
     pub fn height(&self, color: Color, kind: Kind) -> f32 {
         ANCHOR.y - self.tops[index(color, kind)] as f32
-    }
-
-    /// Цены карт в балансе изменились: перерисовывает лица карт (и сбрасывает текстуры).
-    pub fn sync_costs(&mut self) {
-        if self.cards.sync_costs() {
-            *self.textures.borrow_mut() = None;
-        }
     }
 
     /// Картинка карты, повёрнутая на `degrees` по часовой стрелке.

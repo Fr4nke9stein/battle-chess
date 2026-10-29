@@ -12,7 +12,6 @@ use std::collections::HashMap;
 use eframe::egui::{self, TextureHandle, TextureOptions, Vec2, vec2};
 
 use super::{Pixels, glyph, rgb};
-use crate::balance::balance;
 use crate::game::{CardKind, Color, Family, Points};
 
 /// Карта, пиксели арта.
@@ -238,8 +237,6 @@ pub struct CardArt {
     burns: Vec<Pixels>,
     /// Венок победы и череп жертвы для счётчиков очков (1x).
     emblems: Vec<Pixels>,
-    /// Цены карт, впечатанные в лица (`CardKind as usize`): изменились — лица нужно перерисовать.
-    costs: [u8; CardKind::COUNT],
 }
 
 /// Лица всех видов карт (по четыре на вид: стороны и выбранная) с картинкой в окне и ценой на
@@ -298,21 +295,7 @@ impl CardArt {
             decks,
             burns,
             emblems: EMBLEMS.iter().map(|png| Pixels::decode(png)).collect(),
-            costs: *balance().costs(),
         }
-    }
-
-    /// Цены в балансе изменились — перерисовывает лица карт с новыми ценами; `true`, если так.
-    pub fn sync_costs(&mut self) -> bool {
-        let costs = *balance().costs();
-        if costs == self.costs {
-            return false;
-        }
-        let backs = self.faces.split_off(KINDS.len() * 4);
-        self.faces = card_faces();
-        self.faces.extend(backs);
-        self.costs = costs;
-        true
     }
 
     pub fn textures(&self, ctx: &egui::Context, k: usize) -> CardTextures {

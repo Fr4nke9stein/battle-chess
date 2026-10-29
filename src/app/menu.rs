@@ -13,9 +13,9 @@ use eframe::egui::{
 use super::table::{paint_card_text, paint_title};
 use super::{BattleChessApp, UV, paint_backdrop, rules_section};
 use crate::assets::{CARD, CardPic, DECK_SKINS, Pointer, SHADOW_SHIFT};
-use crate::balance::{self, balance, plural};
+use crate::balance::{balance, plural};
 use crate::game::{CardKind, Color, collection};
-use crate::game::{DECK_COUNT, DECK_NAMES, decode_deck_code, encode_deck_code};
+use crate::game::{DECK_COUNT, DECK_NAMES, encode_deck_code};
 use crate::theme;
 
 /// Названия колод в порядке `DECK_SKINS` (оттенки — в assets/cards.rs).
@@ -68,7 +68,6 @@ enum Choice {
     Rules,
     Decks,
     Collection,
-    Balance,
     Quit,
     Back,
     Deck(usize),
@@ -152,21 +151,10 @@ impl BattleChessApp {
                 }
             });
         }
-        // Выбор колоды: Ctrl+V вставляет код колоды в выбранную, Ctrl+C копирует её код.
+        // Выбор колоды: Ctrl+C копирует код выбранной (с 0.133 вставки нет — колоды в коде).
         if self.screen == Screen::Decks && choice.is_none() {
-            let (paste, copy) = ctx.input(|i| {
-                let paste = i.events.iter().find_map(|e| match e {
-                    egui::Event::Paste(text) => Some(text.clone()),
-                    _ => None,
-                });
-                (
-                    paste,
-                    i.events.iter().any(|e| matches!(e, egui::Event::Copy)),
-                )
-            });
-            if let Some(text) = paste {
-                self.import_deck_code(&text);
-            } else if copy {
+            let copy = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy)));
+            if copy {
                 let deck = self.settings.deck as usize % DECK_COUNT;
                 ctx.copy_text(encode_deck_code(balance().deck(deck)));
                 self.deck_message = Some((
@@ -195,19 +183,9 @@ impl BattleChessApp {
             }
             Some(Choice::Decks) => self.screen = Screen::Decks,
             Some(Choice::Settings) => self.screen = Screen::Settings,
-            Some(Choice::Rules) => {
-                self.reload_balance();
-                self.screen = Screen::Rules;
-            }
+            Some(Choice::Rules) => self.screen = Screen::Rules,
             Some(Choice::Advance) => self.settings.advance = !self.settings.advance,
-            Some(Choice::Balance) => {
-                if let Err(e) = crate::editor::open(ctx) {
-                    self.balance_warnings.insert(0, e);
-                    balance::open_in_editor();
-                }
-            }
             Some(Choice::Collection) => {
-                self.reload_balance();
                 self.collection_page = 0;
                 self.screen = Screen::Collection;
             }
@@ -219,7 +197,6 @@ impl BattleChessApp {
                 if self.screen == Screen::Lobby {
                     self.leave_network();
                 }
-                self.reload_balance();
                 self.deck_message = None;
                 self.screen = Screen::Menu;
             }
@@ -356,7 +333,7 @@ impl BattleChessApp {
             .then_some(Choice::Back)
     }
 
-    /// Заглавный экран: название, кнопки и предупреждения о `balance.ini`, если они есть.
+    /// Заглавный экран: название и кнопки.
     fn title_screen(
         &mut self,
         painter: &Painter,
@@ -377,7 +354,6 @@ impl BattleChessApp {
             (advance_label(self.settings.advance), Choice::Advance),
             ("Настройки", Choice::Settings),
             ("Правила", Choice::Rules),
-            ("Править баланс", Choice::Balance),
             ("Выйти", Choice::Quit),
         ];
         // С 0.40 карт в игре нет: выбор колоды и коллекция скрыты.
@@ -388,50 +364,7 @@ impl BattleChessApp {
                 picked = Some(choice);
             }
         }
-        // Что не так в balance.ini: первые две строки и сколько ещё.
-        let lines: Vec<String> = self
-            .balance_warnings
-            .iter()
-            .take(2)
-            .map(|w| format!("balance.ini, {w}"))
-            .chain(
-                (self.balance_warnings.len() > 2)
-                    .then(|| format!("…и ещё предупреждений: {}", self.balance_warnings.len() - 2)),
-            )
-            .collect();
-        for (k, line) in lines.iter().enumerate() {
-            painter.text(
-                field.at(vec2(FIELD.x / 2.0, 228.0 + k as f32 * 7.0)),
-                Align2::CENTER_CENTER,
-                line,
-                FontId::proportional(5.5 * field.scale),
-                theme::ORANGE,
-            );
-        }
         picked
-    }
-
-    /// Вставленный код колоды становится составом выбранной колоды: пишется в `balance.ini`
-    /// (прежний файл остаётся как `balance.ini.bak`), результат — в строке под колодами.
-    fn import_deck_code(&mut self, text: &str) {
-        let deck = self.settings.deck as usize % DECK_COUNT;
-        let result = decode_deck_code(text)
-            .and_then(|recipe| balance::set_deck_in_file(deck, &recipe).map(|()| recipe));
-        self.deck_message = Some(match result {
-            Ok(recipe) => {
-                self.reload_balance();
-                let total: u32 = recipe.iter().map(|&(_, n)| u32::from(n)).sum();
-                (
-                    format!(
-                        "Колода «{}» заменена: {total} {} из кода (прежний файл — balance.ini.bak)",
-                        DECK_NAMES[deck],
-                        plural(total as i32, ["карта", "карты", "карт"])
-                    ),
-                    true,
-                )
-            }
-            Err(e) => (format!("Код не принят: {e}"), false),
-        });
     }
 
     /// Выбор колоды: пять стопок в ряд, под каждой — название и число карт; внизу кнопка
@@ -515,7 +448,7 @@ impl BattleChessApp {
         painter.text(
             field.at(vec2(FIELD.x / 2.0, 231.0)),
             Align2::CENTER_CENTER,
-            "Ctrl+V — вставить код колоды в выбранную · Ctrl+C — скопировать её код",
+            "Ctrl+C — скопировать код выбранной колоды",
             FontId::proportional(5.5 * field.scale),
             theme::TEXT_DIM,
         );

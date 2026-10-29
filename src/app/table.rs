@@ -18,7 +18,7 @@ use eframe::egui::{
 
 use super::{
     BattleChessApp, BoardGeom, Effect, Figure, Mark, PIXEL_WHITE, STATS_TIME, Sink, UV,
-    ease_in_out, ease_out, ease_out_back, paint,
+    ease_in_out, ease_out, ease_out_back, hex, paint,
 };
 use crate::assets::{
     ANCHOR, ARROW_HEAD, ARROW_SPACING, Aim, ArrowPart, BIG_CHEST, BIG_WAVE_CENTER, BIG_WAVE_FRAMES,
@@ -26,17 +26,17 @@ use crate::assets::{
     Button, CARD, CHEST, COIN, COIN_SMALL, COST_TINT, CREST, CardPic, DARK_LOOP, ELECTRIC_ANCHOR,
     ELECTRIC_FRAME_TIME, ELECTRIC_LOOP, EMBLEM_ZOOM, FREEZE_CENTER, FREEZE_CLINK, FREEZE_DELAY,
     FREEZE_FRAME_TIME, FREEZE_FRAMES, FrameSprite, GLYPH_HEIGHT, Glyph, LAVA_FRAME_TIME, LAVA_HOLD,
-    MEDAL, POINTS_TINT, PORTAL_CENTER, PORTAL_FRAME, PORTAL_FRAME_TIME, PORTAL_FRAMES,
+    Marker, POINTS_TINT, PORTAL_CENTER, PORTAL_FRAME, PORTAL_FRAME_TIME, PORTAL_FRAMES,
     PORTAL_SCALE, PORTAL_SINK, POWER_CARD, SHADOW_SHIFT, SPRITE, Sprite, TARGET_PAD, TILE,
     Textures, WAVE_CENTER, WAVE_FRAME, WAVE_FRAME_TIME, WAVE_FRAMES, WIND_LOOP, cost_corner,
 };
 use crate::game::{
-    Area, Card, CardKind, CardPlay, ChestState, Color, Crest, Event, Family, Heal, Kind, Piece,
-    Points, Power, Square, Status, Stock, Ware, WaveHit, card_sell_price, crest_sell_price,
-    file_of, medal_description, medal_title, mult_text, rank_of,
+    Area, Building, Card, CardKind, CardPlay, ChestState, Color, Event, Family, Heal, Piece,
+    Placed, Points, Power, Square, Status, Stock, Ware, WaveHit, building_sell_price,
+    card_sell_price, decree_price, file_of, mult_text, rank_of, recruit_price,
 };
 use crate::sound::Sound;
-use crate::theme;
+use crate::theme::{self, rgba};
 
 /// Центр верхней грани доски, её левый и правый углы (правый — низ бока), пиксели арта.
 const MID: Vec2 = vec2(224.0, 168.0);
@@ -85,7 +85,6 @@ const POINTS_RAISE: f32 = 4.0;
 /// пиксели арта.
 const MULT_RED: Color32 = Color32::from_rgb(0xff, 0x5a, 0x4a);
 const MULT_GAP: f32 = 6.0;
-const BADGE_TOP: f32 = 26.0;
 /// Взятая карта догоняет курсор: за 1/`FOLLOW` секунды проходит две трети пути —
 /// середина карты за доли секунды «прилипает» к курсору и дальше идёт за ним с
 /// лёгкой задержкой.
@@ -436,16 +435,15 @@ const SHOP_BUTTON: f32 = 22.0;
 const SHOP_ROW: usize = 6;
 /// Магазин не уже стольких мест (с 0.126 в нём только сундуки).
 const SHOP_MIN_COLUMNS: f32 = 3.0;
-/// Кнопка «свернуть» — над правым верхним углом магазина, «Магазин» (развернуть) — наверху
-/// посреди поля (с 0.126), пиксели арта.
+/// Кнопка «закрыть» — над правым верхним углом магазина (с 0.126), пиксели арта.
 const SHOP_FOLD: Vec2 = vec2(52.0, 14.0);
-const SHOP_UNFOLD: Vec2 = vec2(84.0, 20.0);
-const SHOP_UNFOLD_TOP: f32 = -31.0;
 /// Меню карты в магазине (с 0.126): плашки «Сыграть» и «Продать» под картой, пиксели арта.
 const CARD_MENU: Vec2 = vec2(74.0, 18.0);
-/// Медали игрока (с 0.126) — в ряд в правом верхнем углу поля: правый верхний край, промежуток.
-const MEDALS_AT: Vec2 = vec2(530.0, -32.0);
-const MEDAL_GAP: f32 = 4.0;
+/// Плашки меню здания в городе (с 0.134 шире — «Купить пешку» с ценой), пиксели арта.
+const BUILDING_MENU: Vec2 = vec2(96.0, 18.0);
+/// Город (с 0.133): «призрак» ставимого здания и шаг плашек меню здания, пиксели арта.
+const CITY_GHOST: f32 = 0.6;
+const CITY_MENU_GAP: f32 = 2.0;
 /// Фигура на прилавке — в долю обычного размера; основание — так низко в ячейке.
 const SHOP_PIECE: f32 = 0.75;
 const SHOP_GROUND: f32 = 50.0;
@@ -478,17 +476,34 @@ pub(super) enum CardMenu {
     Sell,
 }
 
-/// Точка (пиксели арта) на кнопке «Магазин».
-pub(super) fn unfold_contains(at: Pos2) -> bool {
-    unfold_rect().contains(at)
+/// Меню здания в городе (с 0.133): купить указ (главное здание), применить указ, продать.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum BuildingMenu {
+    BuyDecree,
+    Decree,
+    Sell,
+    /// Купить пешку в наборе новобранцев (с 0.134).
+    BuyRecruit,
 }
 
-/// Кнопка «Магазин» — развернуть свёрнутый магазин, пиксели арта.
-fn unfold_rect() -> Rect {
-    Rect::from_min_size(
-        Pos2::new(MID.x - SHOP_UNFOLD.x / 2.0, SHOP_UNFOLD_TOP),
-        SHOP_UNFOLD,
-    )
+/// Что показывает подсказка под курсором: карта, купленное здание (в колонке или в сундуке),
+/// здание в городе.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Tip {
+    Card(Card),
+    Building(Building),
+    Placed(Placed),
+}
+
+/// Точка (пиксели арта) на кнопке «Магазин».
+/// «5 монет», «1 монету» — для подсказок.
+fn coins_text(n: u16) -> String {
+    let word = match (n % 10, n % 100) {
+        (1, r) if r != 11 => "монету",
+        (2..=4, r) if !(12..=14).contains(&r) => "монеты",
+        _ => "монет",
+    };
+    format!("{n} {word}")
 }
 
 /// Зона продажи — шириной в место прилавка с полями, пиксели арта.
@@ -505,7 +520,6 @@ const POWER_HAND_GAP: f32 = 4.0;
 const POWER_HAND_LIFT: f32 = 5.0;
 
 /// Гербы (rogue-like, с 0.77): отступ картинки герба от верха места на прилавке, пиксели арта.
-const CREST_TOP: f32 = 4.0;
 /// Купленные гербы (с 0.114) — колонкой слева от руки и запаса, где была левая панель: левый
 /// верхний угол первого герба, промежуток и гербов в ряду, пиксели арта; ряды идут вниз.
 const CRESTS_AT: Vec2 = vec2(-174.0, -32.0);
@@ -1766,113 +1780,107 @@ impl BattleChessApp {
         }
     }
 
-    /// Купленные гербы колонкой слева (пиксели экрана), по порядку покупки — по
-    /// `CREST_COLUMNS` в ряд сверху вниз. Не помещаются до низа поля — ряды сходятся и
-    /// наползают друг на друга (следующий рисуется поверх).
-    fn crest_column(&self, board: &BoardGeom) -> Vec<(Crest, Rect)> {
-        let crests = self.game.position().crests();
-        let rows = crests.len().div_ceil(CREST_COLUMNS);
+    /// Купленные и ещё не поставленные здания колонкой слева (с 0.133 — на месте прежних гербов),
+    /// пиксели арта: по порядку покупки, по `CREST_COLUMNS` в ряд сверху вниз. Не помещаются до
+    /// низа поля — ряды сходятся и наползают друг на друга.
+    fn stash_column(&self) -> Vec<(Building, Rect)> {
+        let stash = self.game.position().stash();
+        let rows = stash.len().div_ceil(CREST_COLUMNS);
         let room = VIEW_MAX.y - CRESTS_AT.y - CREST.y;
         let step = (CREST.y + CREST_GAP).min(room / rows.saturating_sub(1).max(1) as f32);
-        crests
+        stash
             .into_iter()
             .enumerate()
-            .map(|(i, crest)| {
+            .map(|(i, building)| {
                 let (row, col) = ((i / CREST_COLUMNS) as f32, (i % CREST_COLUMNS) as f32);
                 let min = CRESTS_AT + vec2(col * (CREST.x + CREST_GAP), row * step);
-                let at = board.snap(board.art_to_screen(min));
-                (crest, Rect::from_min_size(at, CREST * board.scale))
+                (building, Rect::from_min_size(min.to_pos2(), CREST))
             })
             .collect()
     }
 
-    /// Герб или карта силы под курсором и место на экране — для подсказки: купленный герб в
-    /// колонке, карта в руке, герб или карта на прилавке и в сундуке.
-    pub(super) fn crest_under(&self, board: &BoardGeom, pointer: Pos2) -> Option<(Ware, Rect)> {
-        if let Some((crest, rect)) = self
-            .crest_column(board)
+    /// Что под курсором для подсказки и где оно на экране: здание в колонке, карта в руке, вещь в
+    /// открытом сундуке, здание в городе.
+    pub(super) fn tip_under(&self, board: &BoardGeom, pointer: Pos2) -> Option<(Tip, Rect)> {
+        let at = board.to_art(pointer).to_pos2();
+        let screen = |rect: Rect| {
+            Rect::from_min_max(
+                board.art_to_screen(rect.min.to_vec2()),
+                board.art_to_screen(rect.max.to_vec2()),
+            )
+        };
+        if let Some((building, rect)) = self
+            .stash_column()
             .into_iter()
             .rev()
-            .find(|(_, rect)| rect.contains(pointer))
+            .find(|(_, rect)| rect.contains(at))
         {
-            return Some((Ware::Crest(crest), rect));
+            return Some((Tip::Building(building), screen(rect)));
         }
-        let at = board.to_art(pointer).to_pos2();
         if let Some((_, card, rect)) = self
             .hand_slots()
             .into_iter()
             .find(|(.., rect)| rect.contains(at))
         {
-            return Some((
-                Ware::Card(card),
-                Rect::from_min_max(
-                    board.art_to_screen(rect.min.to_vec2()),
-                    board.art_to_screen(rect.max.to_vec2()),
-                ),
-            ));
-        }
-        if let Some((kind, _, rect)) = self
-            .medal_row()
-            .into_iter()
-            .find(|(.., rect)| rect.contains(at))
-        {
-            return Some((
-                Ware::Medal(kind),
-                Rect::from_min_max(
-                    board.art_to_screen(rect.min.to_vec2()),
-                    board.art_to_screen(rect.max.to_vec2()),
-                ),
-            ));
-        }
-        if !self.shop_shown() {
-            return None;
+            return Some((Tip::Card(card), screen(rect)));
         }
         let pos = self.game.position();
-        let chest = pos
-            .chest_open()
-            .map(|c| pos.chest_wares(c))
-            .unwrap_or_default();
-        self.shop_layout().1.into_iter().find_map(|(spot, rect)| {
-            let ware = match spot {
-                ShopSpot::Pick(i) => chest.get(i),
-                _ => None,
-            };
-            match ware.copied().flatten().filter(|_| rect.contains(at))? {
-                ware @ (Ware::Crest(_) | Ware::Card(_) | Ware::Medal(_)) => Some((
-                    ware,
-                    Rect::from_min_max(
-                        board.art_to_screen(rect.min.to_vec2()),
-                        board.art_to_screen(rect.max.to_vec2()),
-                    ),
-                )),
-                Ware::Piece(_) => None,
-            }
-        })
+        if self.shop_shown() {
+            let chest = pos
+                .chest_open()
+                .map(|c| pos.chest_wares(c))
+                .unwrap_or_default();
+            return self.shop_layout().1.into_iter().find_map(|(spot, rect)| {
+                let ware = match spot {
+                    ShopSpot::Pick(i) => chest.get(i),
+                    _ => None,
+                };
+                match ware.copied().flatten().filter(|_| rect.contains(at))? {
+                    Ware::Building(b) => Some((Tip::Building(b), screen(rect))),
+                    Ware::Card(card) => Some((Tip::Card(card), screen(rect))),
+                    Ware::Piece(_) => None,
+                }
+            });
+        }
+        if self.city_view() {
+            let placed = pos.building_at(board.square_at(pointer)?)?;
+            let rect = placed
+                .squares()
+                .into_iter()
+                .map(|sq| board.tile_rect(sq))
+                .reduce(|a, b| a.union(b))?;
+            return Some((Tip::Placed(placed), rect));
+        }
+        None
     }
 
-    /// Купленные гербы — колонкой слева; выбранный на продажу — в золотой рамке, под ним —
-    /// кнопка «Продать» с ценой.
-    fn paint_crests(&self, painter: &Painter, board: &BoardGeom, tex: &Textures) {
+    /// Купленные здания — колонкой слева на плашках; выбранное для постройки — в золотой рамке,
+    /// под ним — кнопка «Продать» с ценой.
+    fn paint_stash(&self, painter: &Painter, board: &BoardGeom, tex: &Textures) {
         let s = board.scale;
-        for (index, (crest, rect)) in self.crest_column(board).into_iter().enumerate() {
-            painter.image(tex.ui.crest(crest).id(), rect, UV, Color32::WHITE);
-            self.paint_crest_badge(painter, tex, rect, crest);
-            if self.crest_sell == Some(index) && self.crest_sell_spot(board).is_some() {
-                painter.rect_stroke(
-                    rect.expand(s),
-                    CornerRadius::ZERO,
-                    Stroke::new(s, Color32::from_rgb(0xff, 0xe2, 0x7a)),
-                    StrokeKind::Inside,
-                );
-            }
+        for (index, (building, rect)) in self.stash_column().into_iter().enumerate() {
+            let picked = self.place_pick == Some(index);
+            let edge = if picked {
+                Color32::from_rgb(0xff, 0xe2, 0x7a)
+            } else {
+                Color32::from_rgb(0x2a, 0x33, 0x45)
+            };
+            self.shop_plate(painter, board, rect, picked, edge);
+            let (icon, size) = tex.ui.building_icon(building);
+            let min = vec2(
+                rect.center().x - (size.x / 2.0).floor(),
+                rect.max.y - 2.0 - size.y,
+            );
+            let at = Rect::from_min_size(board.snap(board.art_to_screen(min)), size * s);
+            painter.image(icon.id(), at, UV, Color32::WHITE);
         }
-        if let Some((_, rect)) = self.crest_sell_spot(board) {
-            let edge = if self.crest_sell_hover {
+        if let Some((_, rect)) = self.stash_sell_spot() {
+            let edge = if self.stash_sell_hover {
                 Color32::from_rgb(0xff, 0xe2, 0x7a)
             } else {
                 Color32::from_rgb(0xd0, 0x7d, 0x1c)
             };
-            self.shop_plate(painter, board, rect, self.crest_sell_hover, edge);
+            self.shop_plate(painter, board, rect, self.stash_sell_hover, edge);
             let center = rect.center().to_vec2();
             painter.text(
                 board.art_to_screen(vec2(rect.min.x + 23.0, center.y)),
@@ -1886,34 +1894,34 @@ impl BattleChessApp {
                 board,
                 tex,
                 vec2(rect.max.x - 16.0, center.y),
-                crest_sell_price(),
+                building_sell_price(),
                 theme::GOLD,
             );
         }
     }
 
-    /// Место в списке гербов (`Position::crests`) герба колонки под курсором (экранные точки);
-    /// наползающие — верхний.
-    pub(super) fn column_crest_under(&self, board: &BoardGeom, pointer: Pos2) -> Option<usize> {
-        self.crest_column(board)
+    /// Место в колонке купленных зданий под курсором; наползающие — верхнее.
+    pub(super) fn stash_under(&self, board: &BoardGeom, pointer: Pos2) -> Option<usize> {
+        let at = board.to_art(pointer).to_pos2();
+        self.stash_column()
             .into_iter()
             .enumerate()
             .rev()
-            .find(|(_, (_, rect))| rect.contains(pointer))
+            .find(|(_, (_, rect))| rect.contains(at))
             .map(|(index, _)| index)
     }
 
-    /// Кнопка продажи выбранного герба (пиксели арта) — под ним, пока магазин ждёт.
-    pub(super) fn crest_sell_spot(&self, board: &BoardGeom) -> Option<(usize, Rect)> {
-        let index = self.crest_sell?;
-        if !self.shop_shown() || !self.game.position().can_sell() {
+    /// Кнопка продажи выбранного здания колонки (пиксели арта) — под ним, пока в городе можно
+    /// продавать.
+    pub(super) fn stash_sell_spot(&self) -> Option<(usize, Rect)> {
+        let index = self.place_pick?;
+        if !self.city_view() || !self.game.position().city_ready() {
             return None;
         }
-        let (_, rect) = *self.crest_column(board).get(index)?;
-        // Под гербом от его левого края, но не правее колонки (не заходит на руку карт).
+        let (_, rect) = *self.stash_column().get(index)?;
+        // Под зданием от его левого края, но не правее колонки (не заходит на руку карт).
         let right = CRESTS_AT.x + CREST_COLUMNS as f32 * (CREST.x + CREST_GAP) - CREST_GAP;
-        let (left, bottom) = (board.to_art(rect.min).x, board.to_art(rect.max).y);
-        let min = Pos2::new(left.min(right - CREST_SELL.x), bottom + 2.0);
+        let min = Pos2::new(rect.min.x.min(right - CREST_SELL.x), rect.max.y + 2.0);
         Some((index, Rect::from_min_size(min, CREST_SELL)))
     }
 
@@ -1933,45 +1941,51 @@ impl BattleChessApp {
                 .any(|&(s, ready, _)| s == stock && ready > 0)
     }
 
-    /// Подсказка герба или карты силы под курсором: название и что даёт — на плашке под его
-    /// местом (не помещается — над ним), в пределах поля.
-    fn paint_crest_tip(&self, painter: &Painter, board: &BoardGeom) {
-        let Some((ware, anchor)) = self.crest_hover else {
+    /// Подсказка под курсором: название и что даёт — на плашке под местом (не помещается — над
+    /// ним), у колонки — справа; в пределах поля. Здание в городе — ещё и его усиление.
+    fn paint_tip(&self, painter: &Painter, board: &BoardGeom) {
+        let Some((tip, anchor)) = self.tip_hover else {
             return;
         };
-        let (name, description) = match ware {
-            Ware::Crest(crest) => {
-                // Гербы с числами складываются (с 0.124): сколько таких уже есть.
-                let mut text = crest.description();
-                if crest.stacks() {
-                    let count = self.game.position().crest_count(crest);
-                    text += &match count {
-                        0 => " Складывается: можно купить ещё.".to_owned(),
-                        n => format!(" Складывается: можно купить ещё (у вас — {n})."),
-                    };
-                }
-                (crest.title().to_owned(), text)
-            }
-            Ware::Card(card) => {
+        let pos = self.game.position();
+        let (name, description) = match tip {
+            Tip::Card(card) => {
                 let mut text = card.description();
                 // Маска: во что превратится сейчас.
                 if card == Card::Mask {
-                    text += &match self.game.position().last_card() {
+                    text += &match pos.last_card() {
                         Some(last) => format!(" Сейчас — {}.", last.title().to_lowercase()),
                         None => " Карт ещё не играли.".to_owned(),
                     };
                 }
                 (card.title().to_owned(), text)
             }
-            Ware::Medal(kind) => {
-                let mut text = medal_description(kind);
-                let owned = self.game.position().medals()[kind as usize];
-                if owned > 0 {
-                    text += &format!(" У вас — {owned}.");
-                }
-                (medal_title(kind).to_owned(), text)
+            Tip::Building(building) => {
+                let mut text = building.description();
+                text += &format!(" Продаётся за {}.", coins_text(building_sell_price()));
+                (building.title().to_owned(), text)
             }
-            Ware::Piece(stock) => (stock.name(), String::new()),
+            Tip::Placed(placed) => {
+                let building = placed.building;
+                let mut text = building.description();
+                if building == Building::Main {
+                    let decrees = pos.rogue().map_or(0, |r| r.decrees);
+                    text += &format!("\nУказов у вас: {decrees}.");
+                } else if building == Building::Shop || building == Building::Recruit {
+                } else if Building::SHOP.contains(&building) {
+                    text += &match placed.upgrade {
+                        Some(crest) => {
+                            let mut line = format!("\nУсиление указа: {}", crest.description());
+                            if pos.crest_badge(crest).is_some() {
+                                line += &format!(" Мульти — только у {}.", building.whom());
+                            }
+                            line
+                        }
+                        None => "\nБез усиления: примените к нему королевский указ.".to_owned(),
+                    };
+                }
+                (building.title().to_owned(), text)
+            }
         };
         let s = board.scale;
         let pad = TIP_PAD * s;
@@ -1990,8 +2004,15 @@ impl BattleChessApp {
         let size = inner + Vec2::splat(2.0 * pad);
         let area = board.area;
         let below = anchor.max.y + 3.0 * s;
-        let (x, y) = if self.crest_column(board).iter().any(|&(_, r)| r == anchor) {
-            // Герб колонки — подсказка справа от него, не закрывая соседние гербы.
+        let in_column = matches!(tip, Tip::Building(_))
+            && self.stash_column().iter().any(|&(_, r)| {
+                Rect::from_min_max(
+                    board.art_to_screen(r.min.to_vec2()),
+                    board.art_to_screen(r.max.to_vec2()),
+                ) == anchor
+            });
+        let (x, y) = if in_column {
+            // Здание колонки — подсказка справа от него, не закрывая соседние.
             let y = anchor.min.y.min(area.max.y - size.y).max(area.min.y);
             (anchor.max.x + 3.0 * s, y)
         } else if below + size.y <= area.max.y {
@@ -2003,6 +2024,7 @@ impl BattleChessApp {
             )
         };
         let x = x.min(area.max.x - size.x).max(area.min.x);
+        let y = y.max(area.min.y);
         let rect = Rect::from_min_size(board.snap(Pos2::new(x, y)), size);
         painter.rect_filled(
             rect.translate(vec2(2.0, 3.0) * s),
@@ -2126,24 +2148,23 @@ impl BattleChessApp {
         self.paint_plate(painter, tex, min, s, &text, 1.0);
     }
 
-    /// Золото игрока справа снизу: большая монета, число над ней.
-    /// Число герба мульти (с 0.119) — «+2», «×1.5» из баланса — пиксельным шрифтом под знаком;
-    /// `rect` — картинка герба на экране.
-    fn paint_crest_badge(&self, painter: &Painter, tex: &Textures, rect: Rect, crest: Crest) {
-        let Some(badge) = self.game.position().crest_badge(crest) else {
-            return;
-        };
-        let text = paint(&Glyph::text(&badge), MULT_RED);
-        let px = rect.width() / CREST.x;
-        let width = self.text_width(&text) * px;
-        let corner = Pos2::new(rect.center().x - width / 2.0, rect.min.y + BADGE_TOP * px);
-        self.pixel_text(painter, tex, corner, px, &text);
-    }
-
-    /// Мульти игрока (с 0.119) — над золотом: «×1», «×2.25».
+    /// Мульти игрока (с 0.119) — над золотом: «×1», «×2.25». Выбрана своя фигура (с 0.131) —
+    /// вместо него её базовый урон × её мульти: синяя и красная таблички (`paint_damage_mult`).
     fn paint_mult(&self, painter: &Painter, board: &BoardGeom, tex: &Textures) {
         let pos = self.game.position();
-        if pos.rogue().is_none() {
+        let Some(r) = pos.rogue() else {
+            return;
+        };
+        if let Some(piece) = self
+            .selected
+            .and_then(|sq| pos.piece(sq))
+            .filter(|p| p.color == r.player)
+        {
+            self.paint_damage_mult(painter, board, tex, piece);
+            return;
+        }
+        // С 0.133 мульти у каждой фигуры своё (здания и их усиления): без выбранной — общее, 1.
+        if pos.mult() == 1.0 {
             return;
         }
         let text = paint(
@@ -2158,6 +2179,67 @@ impl BattleChessApp {
         // Длинное число — не правее поля (справа — панель).
         corner.x = corner.x.min(board.art_to_screen(VIEW_MAX).x - width);
         self.pixel_text(painter, tex, corner, px, &text);
+    }
+
+    /// Базовый урон выбранной фигуры × её мульти (с 0.131) — над золотом: синяя табличка с
+    /// уроном (число прижато к «×»), красный «×», красная с мульти. Таблички одной ширины.
+    fn paint_damage_mult(
+        &self,
+        painter: &Painter,
+        board: &BoardGeom,
+        tex: &Textures,
+        piece: Piece,
+    ) {
+        let pos = self.game.position();
+        let base = paint(
+            &Glyph::digits(crate::balance::shown(pos.base_damage(piece))),
+            PIXEL_WHITE,
+        );
+        let mult = paint(&Glyph::text(&mult_text(pos.piece_mult(piece))), PIXEL_WHITE);
+        let times = paint(&[Glyph::Times], MULT_RED);
+        let px = board.scale * POINTS_FONT;
+        // В пикселях шрифта: рамка 1, поля по 3 слева и справа, по высоте знак с контуром.
+        let digits = self.text_width(&paint(&Glyph::digits(888), PIXEL_WHITE));
+        let inner = self
+            .text_width(&base)
+            .max(self.text_width(&mult))
+            .max(digits);
+        let plate = vec2(inner + 8.0, GLYPH_HEIGHT + 7.0);
+        let cross = self.text_width(&times) + 4.0;
+        let width = (2.0 * plate.x + cross) * px;
+        let bottom = GOLD_AT.y - POINTS_RAISE - GLYPH_HEIGHT * POINTS_FONT - MULT_GAP;
+        let mut corner = board.art_to_screen(vec2(GOLD_AT.x + COIN.x / 2.0, bottom))
+            - vec2(width / 2.0, plate.y * px);
+        // Не правее поля (справа — панель).
+        corner.x = corner.x.min(board.art_to_screen(VIEW_MAX).x - width);
+        let corner = board.snap(corner);
+        // Табличка: тёмная рамка со срезанными углами, поле, светлая кромка сверху, тень снизу.
+        let slab = |min: Pos2, fill: u32, light: u32, dark: u32| {
+            let rect = |x: f32, y: f32, w: f32, h: f32, color: u32| {
+                let rect = Rect::from_min_size(min + vec2(x, y) * px, vec2(w, h) * px);
+                painter.rect_filled(rect, CornerRadius::ZERO, hex(color));
+            };
+            let (w, h) = (plate.x, plate.y);
+            rect(1.0, 0.0, w - 2.0, h, 0x08090d);
+            rect(0.0, 1.0, w, h - 2.0, 0x08090d);
+            rect(1.0, 1.0, w - 2.0, h - 2.0, fill);
+            rect(2.0, 1.0, w - 4.0, 1.0, light);
+            rect(1.0, h - 3.0, w - 2.0, 2.0, dark);
+        };
+        slab(corner, 0x2f8ae8, 0x7cbcff, 0x1d5aa8);
+        let right = corner + vec2(plate.x + cross, 0.0) * px;
+        slab(right, 0xe8473b, 0xff8a78, 0xa82a24);
+        let row = 3.0;
+        let base_at = corner + vec2(plate.x - 4.0 - self.text_width(&base), row) * px;
+        self.pixel_text(painter, tex, base_at, px, &base);
+        self.pixel_text(
+            painter,
+            tex,
+            corner + vec2(plate.x + 2.0, row) * px,
+            px,
+            &times,
+        );
+        self.pixel_text(painter, tex, right + vec2(4.0, row) * px, px, &mult);
     }
 
     pub(super) fn paint_gold(&self, painter: &Painter, board: &BoardGeom, tex: &Textures) {
@@ -2186,22 +2268,8 @@ impl BattleChessApp {
         if !self.shop_ready() {
             return;
         }
-        // Свёрнут (с 0.126) — только кнопка «Магазин» наверху посреди поля.
+        // Закрыт — виден город; открывает его здание магазина (с 0.134).
         if !self.shop_shown() {
-            let rect = unfold_rect();
-            let edge = if self.unfold_hover {
-                Color32::from_rgb(0xff, 0xe2, 0x7a)
-            } else {
-                Color32::from_rgb(0xd0, 0x7d, 0x1c)
-            };
-            self.shop_plate(painter, board, rect, self.unfold_hover, edge);
-            painter.text(
-                board.art_to_screen(rect.center().to_vec2()),
-                Align2::CENTER_CENTER,
-                "Магазин",
-                FontId::new(9.0 * board.scale, theme::bold()),
-                theme::GOLD,
-            );
             return;
         }
         let s = board.scale;
@@ -2267,7 +2335,7 @@ impl BattleChessApp {
                     painter.text(
                         board.art_to_screen(center),
                         Align2::CENTER_CENTER,
-                        "свернуть",
+                        "закрыть",
                         FontId::new(7.0 * s, theme::bold()),
                         theme::TEXT_BRIGHT,
                     );
@@ -2418,27 +2486,16 @@ impl BattleChessApp {
                 .shrink(s);
                 self.paint_stock(painter, tex, player, stock, sprite, cell, tint);
             }
-            Ware::Crest(crest) => {
+            Ware::Building(building) => {
+                let (icon, size) = tex.ui.building_icon(building);
                 let picture = Rect::from_min_size(
                     board.snap(board.art_to_screen(vec2(
-                        center.x - (CREST.x / 2.0).floor(),
-                        rect.min.y + CREST_TOP,
+                        center.x - (size.x / 2.0).floor(),
+                        rect.min.y + SHOP_GROUND - size.y,
                     ))),
-                    CREST * s,
+                    size * s,
                 );
-                painter.image(tex.ui.crest(crest).id(), picture, UV, tint);
-                self.paint_crest_badge(painter, tex, picture, crest);
-            }
-            Ware::Medal(kind) => {
-                let picture =
-                    Rect::from_min_size(
-                        board.snap(board.art_to_screen(vec2(
-                            center.x - (MEDAL.x / 2.0).floor(),
-                            rect.min.y + 6.0,
-                        ))),
-                        MEDAL * s,
-                    );
-                painter.image(tex.ui.medal(kind).id(), picture, UV, tint);
+                painter.image(icon.id(), picture, UV, tint);
             }
             Ware::Card(card) => {
                 // Карта во всё место: в сундуке её не сдвигают вниз (`Pick` — на 8).
@@ -2451,6 +2508,284 @@ impl BattleChessApp {
                         POWER_CARD * s,
                     );
                 painter.image(tex.ui.rogue_card(card).id(), picture, UV, tint);
+            }
+        }
+    }
+
+    // ----- Rogue-like: город (с 0.133) -----
+
+    /// Этап города между раундами (вместо магазина): удары доиграли, на поле — город.
+    pub(super) fn city_view(&self) -> bool {
+        self.shop_ready()
+    }
+
+    /// Здания в порядке рисования — как `draw_order` в `tools/breach_city.py`: здание раньше
+    /// другого, если целиком дальше; из остальных — по передней вершине.
+    fn city_order(city: Vec<Placed>) -> Vec<Placed> {
+        struct Info {
+            placed: Placed,
+            f0: i8,
+            f1: i8,
+            r0: i8,
+            r1: i8,
+            front: i32,
+        }
+        let mut left: Vec<Info> = city
+            .into_iter()
+            .map(|placed| {
+                let cells = placed.squares();
+                let files = cells.iter().map(|&sq| file_of(sq));
+                let ranks = cells.iter().map(|&sq| rank_of(sq));
+                Info {
+                    placed,
+                    f0: files.clone().min().unwrap_or(0),
+                    f1: files.max().unwrap_or(0),
+                    r0: ranks.clone().min().unwrap_or(0),
+                    r1: ranks.max().unwrap_or(0),
+                    front: cells
+                        .iter()
+                        .map(|&sq| i32::from(file_of(sq)) + 1 - i32::from(rank_of(sq)))
+                        .max()
+                        .unwrap_or(0),
+                }
+            })
+            .collect();
+        let behind = |a: &Info, b: &Info| {
+            let files = a.f0 <= b.f1 && b.f0 <= a.f1;
+            let ranks = a.r0 <= b.r1 && b.r0 <= a.r1;
+            (a.r0 > b.r1 && (files || a.f1 < b.f0)) || (a.f1 < b.f0 && ranks)
+        };
+        let mut order = Vec::new();
+        while !left.is_empty() {
+            let free: Vec<usize> = (0..left.len())
+                .filter(|&i| !(0..left.len()).any(|j| j != i && behind(&left[j], &left[i])))
+                .collect();
+            let pool = if free.is_empty() {
+                (0..left.len()).collect()
+            } else {
+                free
+            };
+            let pick = pool.into_iter().min_by_key(|&i| left[i].front).unwrap_or(0);
+            order.push(left.remove(pick).placed);
+        }
+        order
+    }
+
+    /// Прямоугольник спрайта здания на экране: точка начала осей — на левом углу клетки здания у
+    /// вертикали a и 1-й горизонтали.
+    fn building_rect(board: &BoardGeom, tex: &Textures, placed: Placed) -> Rect {
+        let (_, _, size, anchor) = tex.ui.building(placed.building, placed.mirrored);
+        let corner = board.to_screen(vec2(
+            f32::from(file_of(placed.at)),
+            f32::from(rank_of(placed.at)),
+        ));
+        Rect::from_min_size(
+            board.snap(corner - anchor * board.scale),
+            size * board.scale,
+        )
+    }
+
+    /// Здание, которое сейчас ставят: выбранное в колонке, углом на клетке под курсором; влезает ли.
+    fn place_ghost(&self) -> Option<(Placed, bool)> {
+        let pos = self.game.position();
+        let building = *pos.stash().get(self.place_pick?)?;
+        let at = self.city_hover?;
+        Some((
+            Placed::preview(building, at, self.place_mirror),
+            pos.can_place(building, at, self.place_mirror),
+        ))
+    }
+
+    /// Город: клетки ставящегося здания (зелёные — встанет, красные — нет) и здания с открытым
+    /// меню, тени, здания от дальних к ближним, «призрак» ставящегося.
+    pub(super) fn paint_city(&self, painter: &Painter, board: &BoardGeom, tex: &Textures) {
+        let pos = self.game.position();
+        let mark = |sq: Square, color: Color32| {
+            painter.image(tex.marker(Marker::Fill), board.tile_rect(sq), UV, color);
+        };
+        if let Some(placed) = self.building_menu.and_then(|sq| pos.building_at(sq)) {
+            for sq in placed.squares() {
+                mark(sq, rgba(255, 210, 90, 0.3));
+            }
+        }
+        let ghost = self.place_ghost();
+        if let Some((placed, fits)) = ghost {
+            let color = if fits {
+                rgba(90, 220, 120, 0.45)
+            } else {
+                rgba(255, 70, 50, 0.45)
+            };
+            for sq in placed.squares() {
+                mark(sq, color);
+            }
+        }
+        let order = Self::city_order(pos.city());
+        for &placed in &order {
+            let (_, shadow, ..) = tex.ui.building(placed.building, placed.mirrored);
+            let rect = Self::building_rect(board, tex, placed);
+            painter.image(shadow.id(), rect, UV, Color32::WHITE);
+        }
+        for &placed in &order {
+            let (body, ..) = tex.ui.building(placed.building, placed.mirrored);
+            let rect = Self::building_rect(board, tex, placed);
+            painter.image(body.id(), rect, UV, Color32::WHITE);
+        }
+        if let Some((placed, fits)) = ghost {
+            let (body, ..) = tex.ui.building(placed.building, placed.mirrored);
+            let rect = Self::building_rect(board, tex, placed);
+            let tint = if fits {
+                Color32::WHITE
+            } else {
+                Color32::from_rgb(255, 120, 110)
+            };
+            painter.image(body.id(), rect, UV, tint.gamma_multiply(CITY_GHOST));
+        }
+        // Купленные указы — табличка над главным зданием.
+        let decrees = pos.rogue().map_or(0, |r| r.decrees);
+        if decrees > 0
+            && let Some(main) = pos
+                .city()
+                .into_iter()
+                .find(|p| p.building == Building::Main)
+            && self.building_menu != Some(main.at)
+        {
+            let center = Self::footprint_center(board, main);
+            let rect = Rect::from_center_size((center - vec2(0.0, 40.0)).to_pos2(), CREST_SELL);
+            self.shop_plate(
+                painter,
+                board,
+                rect,
+                false,
+                Color32::from_rgb(0xd0, 0x7d, 0x1c),
+            );
+            painter.text(
+                board.art_to_screen(rect.center().to_vec2()),
+                Align2::CENTER_CENTER,
+                format!("Указы: {decrees}"),
+                FontId::new(7.0 * board.scale, theme::bold()),
+                theme::GOLD,
+            );
+        }
+    }
+
+    /// Середина клеток здания на доске, пиксели арта.
+    fn footprint_center(board: &BoardGeom, placed: Placed) -> Vec2 {
+        let cells = placed.squares();
+        let sum = cells
+            .iter()
+            .map(|&sq| board.to_art(board.ground(sq)))
+            .fold(Vec2::ZERO, |a, b| a + b);
+        sum / cells.len().max(1) as f32
+    }
+
+    /// Плашки меню здания в городе (пиксели арта), стопкой над серединой его клеток: у главного —
+    /// «Купить указ», у набора — «Купить пешку», у здания вида или силы — «Указ» и «Продать»;
+    /// магазин открывается сразу, без меню.
+    pub(super) fn building_menu_spots(&self, board: &BoardGeom) -> Vec<(BuildingMenu, Rect)> {
+        let pos = self.game.position();
+        let Some(placed) = self.building_menu.and_then(|sq| pos.building_at(sq)) else {
+            return Vec::new();
+        };
+        let items: &[BuildingMenu] = match placed.building {
+            Building::Main => &[BuildingMenu::BuyDecree],
+            Building::Recruit => &[BuildingMenu::BuyRecruit],
+            Building::Shop => &[],
+            _ => &[BuildingMenu::Decree, BuildingMenu::Sell],
+        };
+        let center = Self::footprint_center(board, placed);
+        let step = BUILDING_MENU.y + CITY_MENU_GAP;
+        let top = center.y - 30.0 - step * items.len() as f32;
+        items
+            .iter()
+            .enumerate()
+            .map(|(i, &item)| {
+                let min = Pos2::new(center.x - BUILDING_MENU.x / 2.0, top + step * i as f32);
+                (item, Rect::from_min_size(min, BUILDING_MENU))
+            })
+            .collect()
+    }
+
+    /// Плашка меню здания под курсором.
+    pub(super) fn building_menu_under(
+        &self,
+        board: &BoardGeom,
+        pointer: Pos2,
+    ) -> Option<BuildingMenu> {
+        let at = board.to_art(pointer).to_pos2();
+        self.building_menu_spots(board)
+            .into_iter()
+            .find(|(_, rect)| rect.contains(at))
+            .map(|(item, _)| item)
+    }
+
+    /// Можно ли нажать плашку меню здания: на указ хватает золота, указ есть и здание без
+    /// усиления, продавать можно.
+    pub(super) fn building_menu_usable(&self, item: BuildingMenu) -> bool {
+        let pos = self.game.position();
+        match item {
+            BuildingMenu::BuyDecree => {
+                pos.city_ready() && pos.rogue().is_some_and(|r| r.gold >= decree_price())
+            }
+            BuildingMenu::Decree => self.building_menu.is_some_and(|sq| pos.can_decree(sq)),
+            BuildingMenu::Sell => pos.city_ready(),
+            BuildingMenu::BuyRecruit => {
+                pos.city_ready() && pos.rogue().is_some_and(|r| r.gold >= recruit_price())
+            }
+        }
+    }
+
+    /// Меню здания: «Купить указ» с ценой, «Указ» (сколько есть), «Продать» с ценой.
+    fn paint_building_menu(&self, painter: &Painter, board: &BoardGeom, tex: &Textures) {
+        let s = board.scale;
+        let dim = Color32::from_rgb(0x6c, 0x76, 0x8a);
+        let decrees = self.game.position().rogue().map_or(0, |r| r.decrees);
+        for (item, rect) in self.building_menu_spots(board) {
+            let usable = self.building_menu_usable(item);
+            let hovered = usable && self.building_menu_hover == Some(item);
+            let edge = if hovered {
+                Color32::from_rgb(0xff, 0xe2, 0x7a)
+            } else if usable {
+                Color32::from_rgb(0xd0, 0x7d, 0x1c)
+            } else {
+                Color32::from_rgb(0x2a, 0x33, 0x45)
+            };
+            self.shop_plate(painter, board, rect, hovered, edge);
+            let center = rect.center().to_vec2();
+            let color = if usable { theme::TEXT_BRIGHT } else { dim };
+            let (label, price) = match item {
+                BuildingMenu::BuyDecree => ("Купить указ", Some(decree_price())),
+                BuildingMenu::Decree => ("", None),
+                BuildingMenu::Sell => ("Продать", Some(building_sell_price())),
+                BuildingMenu::BuyRecruit => ("Купить пешку", Some(recruit_price())),
+            };
+            let font = FontId::new(7.0 * s, theme::bold());
+            match price {
+                Some(price) => {
+                    painter.text(
+                        board.art_to_screen(vec2((rect.min.x + rect.max.x - 24.0) / 2.0, center.y)),
+                        Align2::CENTER_CENTER,
+                        label,
+                        font,
+                        color,
+                    );
+                    self.paint_price(
+                        painter,
+                        board,
+                        tex,
+                        vec2(rect.max.x - 14.0, center.y),
+                        price,
+                        theme::GOLD,
+                    );
+                }
+                None => {
+                    painter.text(
+                        board.art_to_screen(center),
+                        Align2::CENTER_CENTER,
+                        format!("Указ (есть {decrees})"),
+                        font,
+                        color,
+                    );
+                }
             }
         }
     }
@@ -2561,44 +2896,6 @@ impl BattleChessApp {
         }
     }
 
-    /// Медали игрока (с 0.126): вид, сколько, место в пикселях арта — в ряд у правого верхнего
-    /// угла поля, по порядку видов.
-    pub(super) fn medal_row(&self) -> Vec<(Kind, u8, Rect)> {
-        let medals = self.game.position().medals();
-        let owned: Vec<(Kind, u8)> = Kind::ALL
-            .into_iter()
-            .map(|kind| (kind, medals[kind as usize]))
-            .filter(|&(_, n)| n > 0)
-            .collect();
-        let n = owned.len() as f32;
-        let left = MEDALS_AT.x - n * (MEDAL.x + MEDAL_GAP) + MEDAL_GAP;
-        owned
-            .into_iter()
-            .enumerate()
-            .map(|(i, (kind, count))| {
-                let min = vec2(left + i as f32 * (MEDAL.x + MEDAL_GAP), MEDALS_AT.y);
-                (kind, count, Rect::from_min_size(min.to_pos2(), MEDAL))
-            })
-            .collect()
-    }
-
-    /// Медали игрока и их число «×N» под каждой.
-    fn paint_medals(&self, painter: &Painter, board: &BoardGeom, tex: &Textures) {
-        let s = board.scale;
-        for (kind, count, rect) in self.medal_row() {
-            let picture = Rect::from_min_size(
-                board.snap(board.art_to_screen(rect.min.to_vec2())),
-                MEDAL * s,
-            );
-            painter.image(tex.ui.medal(kind).id(), picture, UV, Color32::WHITE);
-            let text = paint(&Glyph::text(&format!("×{count}")), theme::GOLD);
-            let width = self.text_width(&text) * s;
-            let corner = board.art_to_screen(vec2(rect.center().x, rect.max.y + 2.0))
-                - vec2(width / 2.0, 0.0);
-            self.pixel_text(painter, tex, corner, s, &text);
-        }
-    }
-
     /// Карта руки под курсором.
     pub(super) fn hand_under(&self, board: &BoardGeom, pointer: Pos2) -> Option<usize> {
         let at = board.to_art(pointer).to_pos2();
@@ -2667,11 +2964,19 @@ impl BattleChessApp {
 
     /// Кнопка работает, когда человек сходил фигурой и может закончить ход.
     pub(super) fn button_active(&self) -> bool {
-        self.human_to_move() && self.game.can_end_turn() && self.aiming.is_none()
+        self.human_to_move()
+            && (self.game.can_end_turn() || self.city_leavable())
+            && self.aiming.is_none()
+    }
+
+    /// Из города можно уйти большой кнопкой (с 0.134) — к расстановке: город на поле, сундук не
+    /// открыт.
+    pub(super) fn city_leavable(&self) -> bool {
+        self.city_view() && self.game.position().city_ready()
     }
 
     fn button_look(&self) -> Button {
-        if !self.human_to_move() || self.game.position().shop_open() {
+        if !self.human_to_move() || (self.game.position().shop_open() && !self.city_leavable()) {
             Button::Disabled
         } else if !self.button_active() {
             Button::Normal
@@ -2679,7 +2984,9 @@ impl BattleChessApp {
             Button::Pressed
         } else if self.button_hover {
             Button::Hover
-        } else if pos_ready(self.game.position(), self.game.legal_moves().is_empty()) {
+        } else if self.city_leavable()
+            || pos_ready(self.game.position(), self.game.legal_moves().is_empty())
+        {
             // Фигурой уже сходили (или ходить нечем, или расстановка) — пора заканчивать ход.
             Button::Ready
         } else {
@@ -2724,12 +3031,14 @@ impl BattleChessApp {
         self.paint_reserve(painter, board, tex);
         self.paint_hand(painter, board, tex);
         self.paint_gold(painter, board, tex);
-        self.paint_mult(painter, board, tex);
-        self.paint_medals(painter, board, tex);
-        self.paint_crests(painter, board, tex);
+        if !self.city_view() {
+            self.paint_mult(painter, board, tex);
+        }
+        self.paint_stash(painter, board, tex);
         self.paint_shop(painter, board, tex);
         self.paint_card_menu(painter, board, tex);
-        self.paint_crest_tip(painter, board);
+        self.paint_building_menu(painter, board, tex);
+        self.paint_tip(painter, board);
 
         for seat in [Seat::Near, Seat::Far].into_iter().filter(|_| SHOW_CARDS) {
             let color = self.seat_color(seat);

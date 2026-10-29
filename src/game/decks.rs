@@ -1,7 +1,7 @@
 //! Колоды игры — пять, как в меню «Выбрать колоду» (порядок тот же, что у `DECKS` в
-//! `app/menu.rs`). Здесь — стандартный состав (собран пользователем в
-//! `tools/deck_builder.html`, 2026-10-15): вид карты и число копий; действующий состав берётся
-//! из `balance.ini` (`crate::balance`). Порядок в списке не важен — колода перемешивается.
+//! `app/menu.rs`). Здесь — состав (собран пользователем в странице-конструкторе, 2026-10-15):
+//! вид карты и число копий; правила берут его через `crate::balance`. Порядок в списке не
+//! важен — колода перемешивается.
 
 use super::CardKind::{self, *};
 use crate::balance::balance;
@@ -136,7 +136,7 @@ pub const UNSHUFFLED: [CardKind; 34] = [
 // `BC1-` и base64url (без «=») от байтов: [сколько пар] + пары [номер вида карты, копий] по
 // возрастанию номера + контрольный байт. Номер вида — `CardKind as usize` (порядок `CardKind::ALL`:
 // новые виды карт только в конец, иначе старые коды сломаются — порядок закреплён тестом). Тот же
-// формат пишет и читает страница `tools/deck_builder.html`.
+// формат читала и страница-конструктор (до 0.133).
 
 const CODE_PREFIX: &str = "BC1-";
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -175,6 +175,7 @@ pub fn encode_deck_code(recipe: &Recipe) -> String {
     code
 }
 
+#[cfg(test)]
 /// Состав колоды из кода (пробелы и переводы строк в нём не мешают) — или понятная ошибка.
 pub fn decode_deck_code(code: &str) -> Result<Vec<(CardKind, u8)>, String> {
     let code: String = code.chars().filter(|c| !c.is_whitespace()).collect();
